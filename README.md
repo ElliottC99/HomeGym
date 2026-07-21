@@ -2,17 +2,16 @@
 
 This folder has everything needed for a proper "tap the icon, opens like an app" experience on Android. It's a Progressive Web App (PWA) — not a Play Store listing (that needs a signed native app and a developer account, which isn't achievable here), but functionally very close: home screen icon, full-screen launch, works offline after the first load.
 
-## What's new in this version
+## What's new in this version (v3)
 
-Rebuilt around full session plans (transcribed from your workout doc) instead of a simplified lift list:
+- **Sync between your phone and Chloe's.** Both phones now share the same data via a small cloud database, gated by a shared PIN (2605 by default — change it any time in the ⚙ Settings modal, both phones need to match). The header shows a small dot: green = synced, amber = connecting, grey = local only (works fine offline, just won't share until back online).
+- **Move a session for just one week.** Each session card now has a "this week" day selector — swap Tuesday's Lower Body to Friday just for this week without touching its permanent default. It reverts automatically the following week.
+- **Full in-app plan editor.** Plan tab → "Edit plan" reveals add/remove/reorder controls for sessions, groups, exercises, and warm-up/cooldown lists — no more needing to round-trip through an AI chat for structural changes (though that route still works too).
+- **Reset a week-1 baseline.** Editing an exercise's starting weight in the plan editor now shifts its whole 8-week block ladder by the same amount, keeping the originally planned progression shape.
+- **Free-text weight field.** The weight box in Log Session now accepts a plain number as before, or text like "medium band" or "added 5kg plate" — numbers still drive PRs and the progress chart, text entries just show in your history.
 
-- Every session (Lower Body, Upper Body, Full Body, Run) now includes its actual warm-up and cool-down/stretch list, shown as reference on the session card.
-- Supersets are grouped visually the way your plan writes them (Superset A, B, Finisher, etc).
-- Every exercise is loggable — sets + reps (or seconds for holds like planks/wall sits) + an always-optional weight field, so bodyweight and banded moves log cleanly too.
-- Reassigning a day now moves the whole session at once (Plan tab), not one exercise at a time.
-- Optional target-weight + target-date milestones per exercise, with pacing shown in Progress (ahead/on-track/behind).
-- A rest timer using each exercise's plan rest time, auto-filled weight/reps from your last session for that exercise, and a PR flag when you log a new best.
-- The plan export now documents the full schema so a future AI-regenerated plan can be pasted straight back in.
+### From v2
+Full session plans transcribed from your workout doc (not just a lift list): warm-up/cooldown reference lists, superset grouping, sets+reps+weight logging on every exercise, whole-session day reassignment, target-weight milestones, a rest timer, auto-fill from your last session, and PR flags.
 
 ## What's in this folder
 
@@ -20,25 +19,28 @@ Rebuilt around full session plans (transcribed from your workout doc) instead of
 - `app.bundle.js` — the compiled app (React + your training logic)
 - `manifest.json` — tells Android how to install it (name, icon, colors)
 - `sw.js` — service worker, caches the app so it opens offline
+- `firebase-config.js` — sync configuration (the shared cloud database connection)
 - `icon-*.png` — home screen icons
 
-All 8 files need to be deployed together, at the same folder level (don't nest them in a subfolder).
+All 9 files need to be deployed together, at the same folder level (don't nest them in a subfolder).
 
 ## Deploy with GitHub Pages (free)
 
 1. Go to github.com, sign in (or create a free account), and create a new repository — public is fine, name it anything (e.g. `home-gym-log`). Don't initialize it with a README.
-2. On the new repo's page, click **Add file → Upload files**, then drag in all 8 files from this folder. Commit the upload.
+2. On the new repo's page, click **Add file → Upload files**, then drag in all 9 files from this folder. Commit the upload.
 3. Go to **Settings → Pages** (left sidebar). Under "Build and deployment", set Source to **Deploy from a branch**, branch **main**, folder **/ (root)**. Save.
 4. Wait about a minute, then refresh that Settings → Pages screen — it'll show your live URL, something like `https://yourusername.github.io/home-gym-log/`.
 
-## Install it on your phone
+## Install it on your phone (and Chloe's)
 
 1. Open that URL in Chrome on your Android phone.
 2. Chrome will either show an "Install app" banner automatically, or tap the **⋮** menu → **Add to Home screen** / **Install app**.
 3. Confirm. You'll get a Home Gym Log icon that opens full-screen, no browser bar.
+4. Send Chloe the same URL to install on her phone too. The PIN (2605, or whatever you change it to in Settings) is already baked in, so both phones sync automatically once both are online — no extra setup needed on her end.
 
 ## Worth knowing
 
-- **Your data stays on your phone.** All the logged sessions, weights, and plan live in this device's local storage — GitHub Pages only serves the static app files, never sees your training data. That also means it's single-device: logging on your phone won't show up if you open the same URL on a laptop, and vice versa.
-- **Back it up.** Use the "Export full backup (.json)" button in the Plan tab occasionally (email it to yourself, save to a drive) — if you ever clear your phone's browser data or switch phones, that file is the only way to get your history back.
-- **Updating the app later.** If you want changes to the code down the line, re-upload the updated files to the same GitHub repo (overwrite) and bump `CACHE_NAME` in `sw.js` by one so the service worker knows to fetch the new version instead of serving the cached one.
+- **Sync is casual privacy, not real security.** The PIN gates access by being part of the storage path — anyone who knows it can read/write your data, but there's no login system behind it. Fine for two people sharing workout logs; worth knowing if you'd ever want stronger protection.
+- **Offline still works.** If either phone loses signal mid-session, logging still works from local storage and catches up with the other phone once back online.
+- **Back it up anyway.** Sync isn't a substitute for a backup — a bad restore or a bug could still affect both copies at once since they're the same data. Use "Export full backup (.json)" in the Plan tab occasionally (email it to yourself, save to a drive).
+- **Updating the app later.** Re-upload changed files to the same GitHub repo (overwrite) and bump `CACHE_NAME` in `sw.js` by one so the service worker fetches the new version instead of serving the cached one. Your data (local and synced) isn't affected by an app update — it lives separately from the app files.

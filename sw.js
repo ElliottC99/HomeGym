@@ -2,18 +2,21 @@
 // Cache-first for the app shell so it opens instantly and works offline
 // once it's been loaded at least once. Bump CACHE_NAME to force an update
 // the next time you deploy a change.
-const CACHE_NAME = "home-gym-log-v2";
+const CACHE_NAME = "home-gym-log-v3";
 const PRECACHE_URLS = [
   "./",
   "./index.html",
   "./manifest.json",
   "./app.bundle.js",
+  "./firebase-config.js",
   "./icon-192.png",
   "./icon-512.png",
   "./icon-192-maskable.png",
   "./icon-512-maskable.png",
   "https://unpkg.com/react@18/umd/react.production.min.js",
   "https://unpkg.com/react-dom@18/umd/react-dom.production.min.js",
+  "https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js",
+  "https://www.gstatic.com/firebasejs/10.13.0/firebase-database-compat.js",
 ];
 
 self.addEventListener("install", (event) => {
