@@ -2,6 +2,18 @@
 
 This folder has everything needed for a proper "tap the icon, opens like an app" experience on Android. It's a Progressive Web App (PWA) — not a Play Store listing (that needs a signed native app and a developer account, which isn't achievable here), but functionally very close: home screen icon, full-screen launch, works offline after the first load.
 
+## What's new in this version
+
+Rebuilt around full session plans (transcribed from your workout doc) instead of a simplified lift list:
+
+- Every session (Lower Body, Upper Body, Full Body, Run) now includes its actual warm-up and cool-down/stretch list, shown as reference on the session card.
+- Supersets are grouped visually the way your plan writes them (Superset A, B, Finisher, etc).
+- Every exercise is loggable — sets + reps (or seconds for holds like planks/wall sits) + an always-optional weight field, so bodyweight and banded moves log cleanly too.
+- Reassigning a day now moves the whole session at once (Plan tab), not one exercise at a time.
+- Optional target-weight + target-date milestones per exercise, with pacing shown in Progress (ahead/on-track/behind).
+- A rest timer using each exercise's plan rest time, auto-filled weight/reps from your last session for that exercise, and a PR flag when you log a new best.
+- The plan export now documents the full schema so a future AI-regenerated plan can be pasted straight back in.
+
 ## What's in this folder
 
 - `index.html` — the app shell
