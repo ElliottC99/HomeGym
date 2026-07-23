@@ -16,6 +16,40 @@
 
   <style>
     html, body { background: #14171C; margin: 0; }
+
+    /* --- HIG-aligned polish, applied globally so it survives app updates --- */
+
+    /* Clarity: never let iOS auto-zoom the page when a field is focused —
+       Safari does this automatically for any input under 16px, which is a
+       jarring, disorienting layout shift. */
+    input, select, textarea { font-size: 16px !important; }
+
+    /* Clarity / accessibility: a visible, on-brand focus ring for keyboard
+       and switch-control navigation (the app didn't suppress the default,
+       but browser defaults look inconsistent on a dark background). */
+    button:focus-visible, a:focus-visible, input:focus-visible,
+    select:focus-visible, textarea:focus-visible, [tabindex]:focus-visible {
+      outline: 2px solid #7AA6FF;
+      outline-offset: 2px;
+    }
+
+    /* Deference: respect the iPhone home-indicator / notch safe areas so
+       controls near the bottom or edges are never obscured. */
+    body { padding-bottom: env(safe-area-inset-bottom); }
+
+    /* Consistency: standard cross-browser tap feedback and text handling. */
+    button, [role="button"] { -webkit-tap-highlight-color: transparent; touch-action: manipulation; }
+    html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+
+    /* Feedback: every tappable control should read as tappable and give a
+       little press feedback, matching platform-native affordances. */
+    button, select, input, a { cursor: pointer; }
+    input, textarea { cursor: text; }
+    button:active { opacity: 0.85; }
+
+    @media (prefers-reduced-motion: reduce) {
+      * { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
+    }
   </style>
 </head>
 <body>
@@ -25,7 +59,9 @@
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
   <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-database-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-messaging-compat.js"></script>
   <script src="./firebase-config.js"></script>
+  <script src="./notifications.js"></script>
   <script src="./app.bundle.js"></script>
 
   <script>

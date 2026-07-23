@@ -2,7 +2,18 @@
 
 This folder has everything needed for a proper "tap the icon, opens like an app" experience on Android. It's a Progressive Web App (PWA) — not a Play Store listing (that needs a signed native app and a developer account, which isn't achievable here), but functionally very close: home screen icon, full-screen launch, works offline after the first load.
 
-## What's new in this version (v3)
+## What's new in this version (v4)
+
+- **Body weight tracking.** New Metrics tab — log weight (+ an optional note) over time, with a running total-change stat and a simple trend line.
+- **Daily readiness check-in.** A quick sleep/soreness/motivation log on the Dashboard.
+- **Streaks.** A running count of consecutive weeks where every scheduled session was completed.
+- **Manual deload.** A "Force a deload this week" toggle on the Dashboard, for when you need to back off before the fixed week-9 slot comes around.
+- **Add a run/cardio day.** The Plan tab's "Edit plan" now offers two explicit buttons — "+ Add strength session" and "+ Add run / cardio session" — instead of only ever creating strength sessions.
+- **Real push notifications (optional, needs setup).** See `PUSH_SETUP.md` for the one-time deployment steps. Once set up, Settings (⚙) → Notifications lets each phone opt in to a daily reminder at a chosen time.
+- Fixed: run sessions weren't logging correctly on some phones — likely a stale cached copy of an older version; the service worker cache version has been bumped so every phone picks up this build cleanly.
+- Small accessibility/HIG polish: 16px minimum form-field size (stops iOS's auto-zoom-on-focus), visible keyboard focus rings, safe-area padding for the iPhone home indicator.
+
+## What was new in v3
 
 - **Sync between your phone and Chloe's.** Both phones now share the same data via a small cloud database, gated by a shared PIN (2605 by default — change it any time in the ⚙ Settings modal, both phones need to match). The header shows a small dot: green = synced, amber = connecting, grey = local only (works fine offline, just won't share until back online).
 - **Move a session for just one week.** Each session card now has a "this week" day selector — swap Tuesday's Lower Body to Friday just for this week without touching its permanent default. It reverts automatically the following week.
@@ -18,11 +29,12 @@ Full session plans transcribed from your workout doc (not just a lift list): war
 - `index.html` — the app shell
 - `app.bundle.js` — the compiled app (React + your training logic)
 - `manifest.json` — tells Android how to install it (name, icon, colors)
-- `sw.js` — service worker, caches the app so it opens offline
+- `sw.js` — service worker, caches the app so it opens offline, and handles push notifications
 - `firebase-config.js` — sync configuration (the shared cloud database connection)
+- `notifications.js` — registers a device to receive push notifications (needs one-time setup, see `PUSH_SETUP.md`)
 - `icon-*.png` — home screen icons
 
-All 9 files need to be deployed together, at the same folder level (don't nest them in a subfolder).
+These files need to be deployed together, at the same folder level (don't nest them in a subfolder). `functions/` and `PUSH_SETUP.md` are **not** part of the static site — don't upload them to GitHub Pages; they're only used once, from your own computer, to set up push notifications (optional).
 
 ## Deploy with GitHub Pages (free)
 
