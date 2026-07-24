@@ -2,7 +2,7 @@
 // Cache-first for the app shell so it opens instantly and works offline
 // once it's been loaded at least once. Bump CACHE_NAME to force an update
 // the next time you deploy a change.
-const CACHE_NAME = "home-gym-log-v5";
+const CACHE_NAME = "home-gym-log-v6";
 const PRECACHE_URLS = [
   "./",
   "./index.html",
