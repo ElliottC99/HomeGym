@@ -643,10 +643,33 @@
     );
   }
 
-  function TodayView({ personId, data, meta, active, onStart, showToast }) {
+  function TodayView({ personId, data, meta, active, onStart, updateData, showToast }) {
     const sessions = todaySessions(data);
     const next = nextScheduled(data);
     const today = I.W();
+    const monday = I.j(today);
+    const todayDay = I.De(today);
+    const [sessionToSwitch, setSessionToSwitch] = useState(null);
+    const switchOptions = data.sessions.filter(session =>
+      I.ue(data, session, monday) !== todayDay
+    );
+
+    function switchWorkout(chosenSession) {
+      if (!sessionToSwitch || !chosenSession) return;
+      const chosenDay = I.ue(data, chosenSession, monday);
+      updateData(personId, current => {
+        const firstSwap = I.dt(current, monday, sessionToSwitch.id, chosenDay);
+        const secondSwap = I.dt(
+          { ...current, weekOverrides: firstSwap },
+          monday,
+          chosenSession.id,
+          todayDay
+        );
+        return { ...current, weekOverrides: secondSwap };
+      });
+      setSessionToSwitch(null);
+      showToast(`${chosenSession.name} is now today; ${sessionToSwitch.name} moved to ${I._[chosenDay]}`);
+    }
 
     return h(React.Fragment, null,
       h("div", { className: "hg-view-header" },
@@ -681,6 +704,9 @@
               primary: true,
               onClick: () => onStart(session),
             }, isActive ? "Resume workout" : status === "partial" ? "Continue workout" : "Start workout"),
+            status !== "done" && switchOptions.length > 0 && h(Button, {
+              onClick: () => setSessionToSwitch(session),
+            }, "Switch workout"),
             status === "done" && h(Button, { onClick: () => onStart(session) }, "Review workout")
           )
         );
@@ -688,6 +714,55 @@
       sessions.length > 0 && h("div", { className: "hg-callout" },
         h("strong", null, `${I.Re(data.startDate).blockWeeksLabel} · Week ${I.Re(data.startDate).week}`),
         h("div", { className: "hg-history-meta" }, "Your targets and previous performance will appear inside the workout.")
+      ),
+      sessionToSwitch && h("div", {
+        className: "hg-modal-wrap",
+        role: "presentation",
+        onClick: () => setSessionToSwitch(null),
+      },
+        h("div", {
+          className: "hg-modal",
+          role: "dialog",
+          "aria-modal": "true",
+          "aria-labelledby": "switch-workout-title",
+          onClick: event => event.stopPropagation(),
+        },
+          h("div", { className: "hg-modal-head" },
+            h("div", null,
+              h("h2", { id: "switch-workout-title" }, "Switch today’s workout"),
+              h("p", { className: "hg-card-copy" }, `Choose what to do instead of ${sessionToSwitch.name}.`)
+            ),
+            h("button", {
+              type: "button",
+              className: "hg-icon-button",
+              onClick: () => setSessionToSwitch(null),
+              "aria-label": "Close workout switcher",
+            }, "×")
+          ),
+          h("div", { className: "hg-callout", style: { marginTop: 0 } },
+            "This swaps the two workout days for this week only. Your usual plan will stay unchanged."
+          ),
+          h("div", { className: "hg-swap-options" },
+            switchOptions.map(option => {
+              const optionDay = I.ue(data, option, monday);
+              return h("button", {
+                key: option.id,
+                type: "button",
+                className: "hg-swap-option",
+                onClick: () => switchWorkout(option),
+              },
+                h("span", null,
+                  h("strong", null, option.name),
+                  h("small", null, `${option.duration}${option.type === "run" && option.targetKm ? ` · ${option.targetKm}km` : ""}`)
+                ),
+                h("span", { className: "hg-swap-days" }, `${I._[optionDay]} → Today`)
+              );
+            })
+          ),
+          h("div", { className: "hg-actions" },
+            h(Button, { onClick: () => setSessionToSwitch(null) }, "Cancel")
+          )
+        )
       )
     );
   }
@@ -1196,7 +1271,7 @@
     }
 
     let content;
-    if (view === "today") content = h(TodayView, { personId, data, meta, active, onStart: startWorkout, showToast });
+    if (view === "today") content = h(TodayView, { personId, data, meta, active, onStart: startWorkout, updateData, showToast });
     if (view === "history") content = h(HistoryView, { personId, data, updateData, showToast });
     if (view === "progress") content = h(ProgressView, { personId, data, meta, weekInfo, showToast });
     if (view === "metrics") content = h(React.Fragment, null,

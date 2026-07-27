@@ -266,6 +266,26 @@ textarea.hg-input { min-height: 82px; resize: vertical; }
 }
 .hg-modal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
 .hg-modal-head h2 { margin: 0; font-size: 20px; }
+.hg-swap-options { display: grid; gap: 9px; margin-top: 14px; }
+.hg-swap-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-height: 62px;
+  width: 100%;
+  padding: 11px 13px;
+  border: 1px solid var(--hg-border);
+  border-radius: 13px;
+  background: var(--hg-surface);
+  color: var(--hg-text);
+  text-align: left;
+}
+.hg-swap-option:hover { border-color: var(--person-accent, var(--hg-action)); background: var(--hg-surface-2); }
+.hg-swap-option > span:first-child { display: grid; gap: 3px; min-width: 0; }
+.hg-swap-option strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hg-swap-option small { color: var(--hg-text-2); }
+.hg-swap-days { flex: 0 0 auto; color: var(--person-accent, var(--hg-action)); font-size: 12px; font-weight: 750; }
 .hg-segment { display: grid; grid-template-columns: repeat(3,1fr); gap: 4px; padding: 4px; border-radius: 12px; background: var(--hg-surface-2); }
 .hg-segment button { min-height: 44px; border: 0; border-radius: 9px; background: transparent; color: var(--hg-text-2); font-weight: 700; }
 .hg-segment button[aria-pressed="true"] { background: var(--hg-surface); color: var(--hg-action); box-shadow: 0 1px 5px rgba(0,0,0,.12); }
