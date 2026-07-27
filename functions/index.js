@@ -4,7 +4,7 @@
 // deployed separately via the Firebase CLI (see ../PUSH_SETUP.md) and does
 // NOT get uploaded to GitHub Pages.
 //
-// Runs once an hour. For each household (identified by PIN) and each
+// Runs once an hour. For each household (identified by its private key) and each
 // registered device (Elliott's phone, Chloe's phone), it checks whether the
 // device's chosen reminder hour matches the current hour in Europe/London.
 // If so, it looks at that person's synced session schedule, works out
