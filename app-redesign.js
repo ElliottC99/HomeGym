@@ -652,6 +652,7 @@
     const todayDay = I.De(today);
     const [sessionToMove, setSessionToMove] = useState(null);
     const [bringToTodayOpen, setBringToTodayOpen] = useState(false);
+    const [rearrangeWeekOpen, setRearrangeWeekOpen] = useState(false);
     const otherSessions = data.sessions.filter(session =>
       I.ue(data, session, monday) !== todayDay
     );
@@ -664,6 +665,7 @@
       });
       setSessionToMove(null);
       setBringToTodayOpen(false);
+      setRearrangeWeekOpen(false);
       showToast(`${session.name} moved to ${targetDay === todayDay ? "today" : I._[targetDay]} for this week`);
     }
 
@@ -677,7 +679,8 @@
         h("h2", { style: { marginTop: 13 } }, "Nothing scheduled today"),
         h("p", null, next ? `Next: ${next.session.name} on ${I._[next.day]}.` : "Your next session will appear here."),
         otherSessions.length > 0 && h("div", { className: "hg-actions", style: { justifyContent: "center" } },
-          h(Button, { primary: true, onClick: () => setBringToTodayOpen(true) }, "Move a workout here")
+          h(Button, { primary: true, onClick: () => setBringToTodayOpen(true) }, "Move a workout here"),
+          h(Button, { onClick: () => setRearrangeWeekOpen(true) }, "Rearrange this week")
         )
       ),
       sessions.map(session => {
@@ -706,12 +709,13 @@
             status !== "done" && h(Button, {
               onClick: () => setSessionToMove(session),
             }, "Move workout"),
-            status === "done" && h(Button, { onClick: () => onStart(session) }, "Review workout")
+            status === "done" && h(Button, { primary: true, onClick: () => onStart(session) }, "Start workout")
           )
         );
       }),
-      sessions.length > 0 && otherSessions.length > 0 && h("div", { className: "hg-actions" },
-        h(Button, { onClick: () => setBringToTodayOpen(true) }, "Add another workout today")
+      sessions.length > 0 && h("div", { className: "hg-actions" },
+        otherSessions.length > 0 && h(Button, { onClick: () => setBringToTodayOpen(true) }, "Add another workout today"),
+        h(Button, { onClick: () => setRearrangeWeekOpen(true) }, "Rearrange this week")
       ),
       sessions.length > 0 && h("div", { className: "hg-callout" },
         h("strong", null, `${I.Re(data.startDate).blockWeeksLabel} · Week ${I.Re(data.startDate).week}`),
@@ -731,8 +735,10 @@
         },
           h("div", { className: "hg-modal-head" },
             h("div", null,
-              h("h2", { id: "move-workout-title" }, "Move today’s workout"),
-              h("p", { className: "hg-card-copy" }, `Choose a new day for ${sessionToMove.name}.`)
+              h("h2", { id: "move-workout-title" }, "Move workout"),
+              h("p", { className: "hg-card-copy" },
+                `${sessionToMove.name} is currently on ${I._[I.ue(data, sessionToMove, monday)]}. Choose a new day.`
+              )
             ),
             h("button", {
               type: "button",
@@ -742,10 +748,10 @@
             }, "×")
           ),
           h("div", { className: "hg-callout", style: { marginTop: 0 } },
-            "Only this week changes. Choosing an occupied day will put both workouts on that day and leave today free."
+            "Only this week changes. Choosing an occupied day will put both workouts there; the current day becomes free."
           ),
           h("div", { className: "hg-swap-options" },
-            WEEK_DAYS.filter(day => day !== todayDay).map(day => {
+            WEEK_DAYS.filter(day => day !== I.ue(data, sessionToMove, monday)).map(day => {
               const workoutsThere = data.sessions.filter(option =>
                 option.id !== sessionToMove.id && I.ue(data, option, monday) === day
               );
@@ -767,6 +773,62 @@
           ),
           h("div", { className: "hg-actions" },
             h(Button, { onClick: () => setSessionToMove(null) }, "Cancel")
+          )
+        )
+      ),
+      rearrangeWeekOpen && h("div", {
+        className: "hg-modal-wrap",
+        role: "presentation",
+        onClick: () => setRearrangeWeekOpen(false),
+      },
+        h("div", {
+          className: "hg-modal",
+          role: "dialog",
+          "aria-modal": "true",
+          "aria-labelledby": "rearrange-week-title",
+          onClick: event => event.stopPropagation(),
+        },
+          h("div", { className: "hg-modal-head" },
+            h("div", null,
+              h("h2", { id: "rearrange-week-title" }, "Rearrange this week"),
+              h("p", { className: "hg-card-copy" }, "Choose any workout, then choose its new day.")
+            ),
+            h("button", {
+              type: "button",
+              className: "hg-icon-button",
+              onClick: () => setRearrangeWeekOpen(false),
+              "aria-label": "Close weekly rearranger",
+            }, "×")
+          ),
+          h("div", { className: "hg-callout", style: { marginTop: 0 } },
+            "You can repeat this as many times as needed. Free slots and doubled-up days are both supported."
+          ),
+          h("div", { className: "hg-swap-options" },
+            [...data.sessions]
+              .sort((a, b) =>
+                WEEK_DAYS.indexOf(I.ue(data, a, monday)) - WEEK_DAYS.indexOf(I.ue(data, b, monday))
+              )
+              .map(option => {
+                const optionDay = I.ue(data, option, monday);
+                return h("button", {
+                  key: option.id,
+                  type: "button",
+                  className: "hg-swap-option",
+                  onClick: () => {
+                    setRearrangeWeekOpen(false);
+                    setSessionToMove(option);
+                  },
+                },
+                  h("span", null,
+                    h("strong", null, option.name),
+                    h("small", null, option.duration)
+                  ),
+                  h("span", { className: "hg-swap-days" }, I._[optionDay])
+                );
+              })
+          ),
+          h("div", { className: "hg-actions" },
+            h(Button, { onClick: () => setRearrangeWeekOpen(false) }, "Cancel")
           )
         )
       ),
