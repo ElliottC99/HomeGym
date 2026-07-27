@@ -24,6 +24,7 @@
     ["metrics", "◇", "Metrics"],
     ["plan", "☰", "Plan"],
   ];
+  const WEEK_DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
   function storageGet(key, fallback) {
     try {
@@ -649,26 +650,21 @@
     const today = I.W();
     const monday = I.j(today);
     const todayDay = I.De(today);
-    const [sessionToSwitch, setSessionToSwitch] = useState(null);
-    const switchOptions = data.sessions.filter(session =>
+    const [sessionToMove, setSessionToMove] = useState(null);
+    const [bringToTodayOpen, setBringToTodayOpen] = useState(false);
+    const otherSessions = data.sessions.filter(session =>
       I.ue(data, session, monday) !== todayDay
     );
 
-    function switchWorkout(chosenSession) {
-      if (!sessionToSwitch || !chosenSession) return;
-      const chosenDay = I.ue(data, chosenSession, monday);
+    function moveWorkout(session, targetDay) {
+      if (!session || !targetDay) return;
       updateData(personId, current => {
-        const firstSwap = I.dt(current, monday, sessionToSwitch.id, chosenDay);
-        const secondSwap = I.dt(
-          { ...current, weekOverrides: firstSwap },
-          monday,
-          chosenSession.id,
-          todayDay
-        );
-        return { ...current, weekOverrides: secondSwap };
+        const weekOverrides = I.dt(current, monday, session.id, targetDay);
+        return { ...current, weekOverrides };
       });
-      setSessionToSwitch(null);
-      showToast(`${chosenSession.name} is now today; ${sessionToSwitch.name} moved to ${I._[chosenDay]}`);
+      setSessionToMove(null);
+      setBringToTodayOpen(false);
+      showToast(`${session.name} moved to ${targetDay === todayDay ? "today" : I._[targetDay]} for this week`);
     }
 
     return h(React.Fragment, null,
@@ -679,7 +675,10 @@
       sessions.length === 0 && h("div", { className: "hg-card hg-empty" },
         h("div", { className: "hg-pill success" }, "Rest day"),
         h("h2", { style: { marginTop: 13 } }, "Nothing scheduled today"),
-        h("p", null, next ? `Next: ${next.session.name} on ${I._[next.day]}.` : "Your next session will appear here.")
+        h("p", null, next ? `Next: ${next.session.name} on ${I._[next.day]}.` : "Your next session will appear here."),
+        otherSessions.length > 0 && h("div", { className: "hg-actions", style: { justifyContent: "center" } },
+          h(Button, { primary: true, onClick: () => setBringToTodayOpen(true) }, "Move a workout here")
+        )
       ),
       sessions.map(session => {
         const status = I.Fe(data, session, today, today);
@@ -704,63 +703,121 @@
               primary: true,
               onClick: () => onStart(session),
             }, isActive ? "Resume workout" : status === "partial" ? "Continue workout" : "Start workout"),
-            status !== "done" && switchOptions.length > 0 && h(Button, {
-              onClick: () => setSessionToSwitch(session),
-            }, "Switch workout"),
+            status !== "done" && h(Button, {
+              onClick: () => setSessionToMove(session),
+            }, "Move workout"),
             status === "done" && h(Button, { onClick: () => onStart(session) }, "Review workout")
           )
         );
       }),
+      sessions.length > 0 && otherSessions.length > 0 && h("div", { className: "hg-actions" },
+        h(Button, { onClick: () => setBringToTodayOpen(true) }, "Add another workout today")
+      ),
       sessions.length > 0 && h("div", { className: "hg-callout" },
         h("strong", null, `${I.Re(data.startDate).blockWeeksLabel} · Week ${I.Re(data.startDate).week}`),
         h("div", { className: "hg-history-meta" }, "Your targets and previous performance will appear inside the workout.")
       ),
-      sessionToSwitch && h("div", {
+      sessionToMove && h("div", {
         className: "hg-modal-wrap",
         role: "presentation",
-        onClick: () => setSessionToSwitch(null),
+        onClick: () => setSessionToMove(null),
       },
         h("div", {
           className: "hg-modal",
           role: "dialog",
           "aria-modal": "true",
-          "aria-labelledby": "switch-workout-title",
+          "aria-labelledby": "move-workout-title",
           onClick: event => event.stopPropagation(),
         },
           h("div", { className: "hg-modal-head" },
             h("div", null,
-              h("h2", { id: "switch-workout-title" }, "Switch today’s workout"),
-              h("p", { className: "hg-card-copy" }, `Choose what to do instead of ${sessionToSwitch.name}.`)
+              h("h2", { id: "move-workout-title" }, "Move today’s workout"),
+              h("p", { className: "hg-card-copy" }, `Choose a new day for ${sessionToMove.name}.`)
             ),
             h("button", {
               type: "button",
               className: "hg-icon-button",
-              onClick: () => setSessionToSwitch(null),
-              "aria-label": "Close workout switcher",
+              onClick: () => setSessionToMove(null),
+              "aria-label": "Close workout mover",
             }, "×")
           ),
           h("div", { className: "hg-callout", style: { marginTop: 0 } },
-            "This swaps the two workout days for this week only. Your usual plan will stay unchanged."
+            "Only this week changes. Choosing an occupied day will put both workouts on that day and leave today free."
           ),
           h("div", { className: "hg-swap-options" },
-            switchOptions.map(option => {
+            WEEK_DAYS.filter(day => day !== todayDay).map(day => {
+              const workoutsThere = data.sessions.filter(option =>
+                option.id !== sessionToMove.id && I.ue(data, option, monday) === day
+              );
+              return h("button", {
+                key: day,
+                type: "button",
+                className: "hg-swap-option",
+                onClick: () => moveWorkout(sessionToMove, day),
+              },
+                h("span", null,
+                  h("strong", null, I._[day]),
+                  h("small", null, workoutsThere.length
+                    ? `Also scheduled: ${workoutsThere.map(option => option.name).join(", ")}`
+                    : "Free slot")
+                ),
+                h("span", { className: "hg-swap-days" }, workoutsThere.length ? "Double up" : "Move here")
+              );
+            })
+          ),
+          h("div", { className: "hg-actions" },
+            h(Button, { onClick: () => setSessionToMove(null) }, "Cancel")
+          )
+        )
+      ),
+      bringToTodayOpen && h("div", {
+        className: "hg-modal-wrap",
+        role: "presentation",
+        onClick: () => setBringToTodayOpen(false),
+      },
+        h("div", {
+          className: "hg-modal",
+          role: "dialog",
+          "aria-modal": "true",
+          "aria-labelledby": "bring-workout-title",
+          onClick: event => event.stopPropagation(),
+        },
+          h("div", { className: "hg-modal-head" },
+            h("div", null,
+              h("h2", { id: "bring-workout-title" }, "Add a workout today"),
+              h("p", { className: "hg-card-copy" }, sessions.length
+                ? "Choose another workout to double up today."
+                : "Choose a workout from later this week.")
+            ),
+            h("button", {
+              type: "button",
+              className: "hg-icon-button",
+              onClick: () => setBringToTodayOpen(false),
+              "aria-label": "Close workout picker",
+            }, "×")
+          ),
+          h("div", { className: "hg-callout", style: { marginTop: 0 } },
+            "The workout moves here and its original day becomes free. Your usual plan is unchanged."
+          ),
+          h("div", { className: "hg-swap-options" },
+            otherSessions.map(option => {
               const optionDay = I.ue(data, option, monday);
               return h("button", {
                 key: option.id,
                 type: "button",
                 className: "hg-swap-option",
-                onClick: () => switchWorkout(option),
+                onClick: () => moveWorkout(option, todayDay),
               },
                 h("span", null,
                   h("strong", null, option.name),
-                  h("small", null, `${option.duration}${option.type === "run" && option.targetKm ? ` · ${option.targetKm}km` : ""}`)
+                  h("small", null, `${I._[optionDay]} · ${option.duration}`)
                 ),
-                h("span", { className: "hg-swap-days" }, `${I._[optionDay]} → Today`)
+                h("span", { className: "hg-swap-days" }, "Move to today")
               );
             })
           ),
           h("div", { className: "hg-actions" },
-            h(Button, { onClick: () => setSessionToSwitch(null) }, "Cancel")
+            h(Button, { onClick: () => setBringToTodayOpen(false) }, "Cancel")
           )
         )
       )
