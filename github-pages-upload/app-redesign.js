@@ -100,6 +100,294 @@
     return "very_hard";
   }
 
+  // --- Equipment & Progressive Overload Helpers ---
+
+  function getAvailablePlates(data, personId) {
+    if (Array.isArray(data?.equipment?.plates) && data.equipment.plates.length > 0) {
+      return data.equipment.plates;
+    }
+    const saved = storageGet(`hg_equipment_${personId}`, null);
+    if (Array.isArray(saved?.plates) && saved.plates.length > 0) {
+      return saved.plates;
+    }
+    return [1.5, 2.5, 5]; // Default plates requested by user (5kg, 2.5kg, 1.5kg)
+  }
+
+  function getEquipmentConfig(data, personId) {
+    const custom = data?.equipment || storageGet(`hg_equipment_${personId}`, null) || {};
+    return {
+      plates: Array.isArray(custom.plates) && custom.plates.length > 0 ? custom.plates : [1.5, 2.5, 5],
+      barbellWeight: Number(custom.barbellWeight) || 20,
+      dbHandleWeight: Number(custom.dbHandleWeight) || 2,
+    };
+  }
+
+  function saveEquipmentConfig(personId, config, updateData) {
+    storageSet(`hg_equipment_${personId}`, config);
+    if (updateData) {
+      updateData(personId, current => ({
+        ...current,
+        equipment: config,
+      }));
+    }
+  }
+
+  function getAchievableIncrements(plates, isPerSide) {
+    const sortedPlates = [...new Set(plates.map(Number))].filter(p => p > 0).sort((a, b) => a - b);
+    if (sortedPlates.length === 0) return [1.5, 2.5, 5];
+
+    const jumps = new Set();
+    if (isPerSide) {
+      // Dumbbells per handle
+      for (const p of sortedPlates) {
+        jumps.add(p);
+        jumps.add(p * 2);
+      }
+      for (let i = 0; i < sortedPlates.length; i++) {
+        for (let j = i + 1; j < sortedPlates.length; j++) {
+          jumps.add(sortedPlates[i] + sortedPlates[j]);
+          jumps.add(sortedPlates[i] * 2 + sortedPlates[j] * 2);
+        }
+      }
+    } else {
+      // Barbells (pairs added to both sides)
+      for (const p of sortedPlates) {
+        jumps.add(p * 2);
+      }
+      for (let i = 0; i < sortedPlates.length; i++) {
+        for (let j = i + 1; j < sortedPlates.length; j++) {
+          jumps.add(sortedPlates[i] * 2 + sortedPlates[j] * 2);
+        }
+      }
+      for (const p of sortedPlates) {
+        jumps.add(p * 4);
+      }
+    }
+    return Array.from(jumps).sort((a, b) => a - b);
+  }
+
+  function getPossibleWeightJumps(currentWeight, plates, isPerSide, count = 4) {
+    const base = Number(currentWeight) || 0;
+    const increments = getAchievableIncrements(plates, isPerSide);
+    const possible = increments.map(inc => ({
+      increment: inc,
+      totalWeight: Math.round((base + inc) * 100) / 100,
+      label: `+${inc}kg (${Math.round((base + inc) * 100) / 100}kg)`
+    }));
+    return possible.slice(0, count);
+  }
+
+  function snapToAchievable(rawWeight, currentWeight, plates, isPerSide) {
+    if (rawWeight == null || !Number.isFinite(Number(rawWeight))) return rawWeight;
+    const target = Number(rawWeight);
+    const base = currentWeight != null && Number.isFinite(Number(currentWeight)) ? Number(currentWeight) : null;
+    
+    if (base != null && target > base) {
+      const jumps = getPossibleWeightJumps(base, plates, isPerSide, 12);
+      let best = jumps[0]?.totalWeight || target;
+      let minDiff = Math.abs(best - target);
+      for (const j of jumps) {
+        const diff = Math.abs(j.totalWeight - target);
+        if (diff < minDiff) {
+          minDiff = diff;
+          best = j.totalWeight;
+        }
+      }
+      return best;
+    }
+    return Math.round(target * 2) / 2;
+  }
+
+  function getExerciseRecommendation({ exercise, data, weekInfo, personId }) {
+    if (!exercise) return null;
+    
+    const plates = getAvailablePlates(data, personId);
+    const isPerSide = exercise.weightMode === "perSide";
+
+    const logs = [...(data?.logs || [])].filter(l => l.exerciseId === exercise.id && l.weight != null && Number.isFinite(Number(l.weight)));
+    logs.sort((a, b) => b.date.localeCompare(a.date));
+    const previous = logs[0] || null;
+
+    const isDeload = weekInfo?.isDeload;
+    const blockTarget = exercise.primary ? I.de(exercise, weekInfo) : null;
+
+    let recWeight = null;
+    let reason = "";
+    let overloadType = "maintain";
+    let weightDiff = 0;
+
+    if (isDeload) {
+      const baseVal = previous?.weight ?? blockTarget ?? exercise.startValue ?? 20;
+      recWeight = Math.round((baseVal * 0.8) * 2) / 2;
+      reason = "Deload week: Lightened load (80%) for active recovery";
+      overloadType = "deload";
+    } else if (previous) {
+      const prevW = Number(previous.weight);
+      const feel = previous.feeling || rpeToFeeling(previous.rpe);
+
+      if (feel === "very_easy" || feel === "good") {
+        overloadType = "increase";
+        const possibleJumps = getPossibleWeightJumps(prevW, plates, isPerSide, 4);
+        
+        if (blockTarget && blockTarget > prevW) {
+          const snapped = snapToAchievable(blockTarget, prevW, plates, isPerSide);
+          recWeight = snapped;
+          weightDiff = Math.round((recWeight - prevW) * 10) / 10;
+          reason = `Progressive overload: Target ${recWeight}kg for Week ${weekInfo?.blockWeeksLabel || "this block"} (+${weightDiff}kg over last ${prevW}kg)`;
+        } else {
+          const smallestJump = possibleJumps[0];
+          recWeight = smallestJump ? smallestJump.totalWeight : prevW + (isPerSide ? 1.5 : 3.0);
+          weightDiff = Math.round((recWeight - prevW) * 10) / 10;
+          reason = `Progressive overload: +${weightDiff}kg over previous ${prevW}kg (last session felt ${FEELING_LABELS[feel] || "good"})`;
+        }
+      } else if (feel === "very_hard" || feel === "pain") {
+        recWeight = prevW;
+        reason = `Maintain ${prevW}kg — last session felt ${FEELING_LABELS[feel] || "very hard"}`;
+        overloadType = "maintain";
+      } else {
+        if (blockTarget && blockTarget > prevW) {
+          const snapped = snapToAchievable(blockTarget, prevW, plates, isPerSide);
+          recWeight = snapped;
+          weightDiff = Math.round((recWeight - prevW) * 10) / 10;
+          reason = `Block target: ${recWeight}kg (+${weightDiff}kg over previous ${prevW}kg)`;
+          overloadType = "increase";
+        } else {
+          recWeight = prevW;
+          reason = `Consolidate at ${prevW}kg before increasing load`;
+          overloadType = "maintain";
+        }
+      }
+    } else {
+      if (blockTarget != null) {
+        recWeight = snapToAchievable(blockTarget, 0, plates, isPerSide);
+        reason = `Program starting target for Week ${weekInfo?.blockWeeksLabel || "1"}`;
+        overloadType = "initial";
+      } else if (exercise.startValue != null) {
+        recWeight = exercise.startValue;
+        reason = `Starting plan weight: ${exercise.startValue}kg`;
+        overloadType = "initial";
+      } else {
+        recWeight = null;
+        reason = exercise.startLabel || "Bodyweight / Band";
+        overloadType = "initial";
+      }
+    }
+
+    let possibleJumps = [];
+    if (recWeight != null && Number.isFinite(recWeight)) {
+      const baseW = previous ? Number(previous.weight) : recWeight;
+      possibleJumps = getPossibleWeightJumps(baseW, plates, isPerSide, 4);
+    }
+
+    return {
+      recommendedWeight: recWeight,
+      formattedWeight: recWeight != null ? I.z(recWeight, isPerSide) : (exercise.startLabel || "Bodyweight"),
+      reason,
+      overloadType,
+      previousWeight: previous?.weight ?? null,
+      possibleJumps,
+      plates,
+    };
+  }
+
+  function EquipmentSection({ personId, data, updateData, showToast }) {
+    const config = getEquipmentConfig(data, personId);
+    const [selectedPlates, setSelectedPlates] = useState(config.plates);
+    const [barbellWeight, setBarbellWeight] = useState(String(config.barbellWeight));
+    const [dbHandleWeight, setDbHandleWeight] = useState(String(config.dbHandleWeight));
+    const [customPlate, setCustomPlate] = useState("");
+
+    const ALL_COMMON_PLATES = [0.5, 1.25, 1.5, 2.5, 5, 10, 15, 20];
+
+    function togglePlate(weightVal) {
+      setSelectedPlates(prev => {
+        if (prev.includes(weightVal)) {
+          if (prev.length <= 1) return prev;
+          return prev.filter(p => p !== weightVal);
+        } else {
+          return [...prev, weightVal].sort((a, b) => a - b);
+        }
+      });
+    }
+
+    function addCustomPlate() {
+      const val = parseFloat(customPlate);
+      if (!val || val <= 0) return;
+      if (!selectedPlates.includes(val)) {
+        setSelectedPlates(prev => [...prev, val].sort((a, b) => a - b));
+      }
+      setCustomPlate("");
+    }
+
+    function saveEquipment() {
+      const newConfig = {
+        plates: selectedPlates,
+        barbellWeight: Number(barbellWeight) || 20,
+        dbHandleWeight: Number(dbHandleWeight) || 2,
+      };
+      saveEquipmentConfig(personId, newConfig, updateData);
+      showToast("Equipment & plates updated");
+    }
+
+    const bbJumps = getPossibleWeightJumps(Number(barbellWeight) || 20, selectedPlates, false, 5);
+    const dbJumps = getPossibleWeightJumps(Number(dbHandleWeight) || 2, selectedPlates, true, 5);
+
+    return h("div", { className: "hg-setting-section" },
+      h("h3", null, "Available Weight Plates & Equipment"),
+      h("p", null, "Select available weight plates (e.g., 1.5kg, 2.5kg, 5kg) to calculate progressive overload jumps."),
+      
+      h("div", { className: "hg-field", style: { marginBottom: 12 } },
+        h("label", null, "Available Weight Plates (kg)"),
+        h("div", { className: "hg-plates-grid" },
+          ALL_COMMON_PLATES.map(p => {
+            const isSel = selectedPlates.includes(p);
+            return h("button", {
+              key: p,
+              type: "button",
+              className: `hg-plate-tag${isSel ? " selected" : ""}`,
+              onClick: () => togglePlate(p)
+            }, isSel ? `✓ ${p}kg` : `+ ${p}kg`);
+          })
+        )
+      ),
+
+      h("div", { style: { display: "flex", gap: 8, alignItems: "center", marginBottom: 14 } },
+        h("input", {
+          className: "hg-input",
+          type: "number",
+          step: ".25",
+          placeholder: "Custom plate kg",
+          value: customPlate,
+          onChange: e => setCustomPlate(e.target.value),
+          style: { width: 150 }
+        }),
+        h(Button, { onClick: addCustomPlate }, "Add plate")
+      ),
+
+      h("div", { className: "hg-fields" },
+        h(Field, { label: "Empty Barbell Weight (kg)" },
+          h("input", { className: "hg-input", type: "number", step: "1", value: barbellWeight, onChange: e => setBarbellWeight(e.target.value) })
+        ),
+        h(Field, { label: "Dumbbell Handle Weight (kg)" },
+          h("input", { className: "hg-input", type: "number", step: ".5", value: dbHandleWeight, onChange: e => setDbHandleWeight(e.target.value) })
+        )
+      ),
+
+      h("div", { className: "hg-callout", style: { marginTop: 12 } },
+        h("strong", null, "Calculated Weight Increases:"),
+        h("div", { style: { marginTop: 4, fontSize: 12 } },
+          `Barbell (+2 plates): ${bbJumps.map(j => j.label).join(", ")}`,
+          h("br"),
+          `Dumbbells (per side): ${dbJumps.map(j => j.label).join(", ")}`
+        )
+      ),
+
+      h("div", { className: "hg-actions" },
+        h(Button, { primary: true, onClick: saveEquipment }, "Save equipment")
+      )
+    );
+  }
+
   function randomHouseholdKey() {
     const bytes = new Uint8Array(16);
     crypto.getRandomValues(bytes);
@@ -256,19 +544,29 @@
     const records = storageGet(key, []);
     const current = records.find(item => item.date === today);
     const [open, setOpen] = useState(!current);
-    const [sleep, setSleep] = useState(current ? String(current.sleep) : "");
+
+    const initialHours = current?.sleepHours != null ? current.sleepHours : (current?.sleep != null ? Math.floor(Number(current.sleep)) : "");
+    const initialMins = current?.sleepMins != null ? current.sleepMins : (current?.sleep != null ? Math.round((Number(current.sleep) % 1) * 60) : "");
+
+    const [sleepHours, setSleepHours] = useState(current ? String(initialHours) : "7");
+    const [sleepMins, setSleepMins] = useState(current ? String(initialMins) : "30");
     const [soreness, setSoreness] = useState(current ? String(current.soreness) : "3");
     const [motivation, setMotivation] = useState(current ? String(current.motivation) : "3");
 
     function save() {
-      if (!sleep) {
-        showToast("Add hours of sleep");
+      const hrs = Number(sleepHours) || 0;
+      const mins = Number(sleepMins) || 0;
+      if (!sleepHours && !sleepMins) {
+        showToast("Add hours and minutes of sleep");
         return;
       }
+      const decimalSleep = Math.round((hrs + mins / 60) * 100) / 100;
       const entry = {
         id: current?.id || `read_${Date.now()}`,
         date: today,
-        sleep: Number(sleep),
+        sleep: decimalSleep,
+        sleepHours: hrs,
+        sleepMins: mins,
         soreness: Number(soreness),
         motivation: Number(motivation),
       };
@@ -277,12 +575,19 @@
       showToast("Readiness saved");
     }
 
+    const formatSleepSummary = (item) => {
+      if (!item) return "";
+      const h = item.sleepHours != null ? item.sleepHours : Math.floor(Number(item.sleep) || 0);
+      const m = item.sleepMins != null ? item.sleepMins : Math.round(((Number(item.sleep) || 0) % 1) * 60);
+      return `${h}h ${m}m sleep`;
+    };
+
     return h("div", { className: "hg-callout" },
       h("div", { style: { display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" } },
         h("div", null,
           h("strong", null, "Today's readiness"),
           current && !open && h("div", { className: "hg-history-meta" },
-            `${current.sleep}h sleep · soreness ${current.soreness}/5 · motivation ${current.motivation}/5`
+            `${formatSleepSummary(current)} · soreness ${current.soreness}/5 · motivation ${current.motivation}/5`
           )
         ),
         h("button", { type: "button", className: "hg-link-button", onClick: () => setOpen(value => !value) },
@@ -291,13 +596,39 @@
       ),
       open && h(React.Fragment, null,
         h("div", { className: "hg-fields" },
-          h(Field, { label: "Sleep (hours)" },
-            h("input", { className: "hg-input", type: "number", step: ".5", value: sleep, onChange: event => setSleep(event.target.value) })
+          h(Field, { label: "Sleep duration", full: true },
+            h("div", { style: { display: "flex", gap: 10, alignItems: "center" } },
+              h("div", { style: { display: "flex", alignItems: "center", gap: 6, flex: 1 } },
+                h("input", {
+                  className: "hg-input",
+                  type: "number",
+                  min: "0",
+                  max: "24",
+                  placeholder: "7",
+                  value: sleepHours,
+                  onChange: event => setSleepHours(event.target.value)
+                }),
+                h("span", { style: { fontSize: 13, fontWeight: 700, color: "var(--hg-text-2)" } }, "hrs")
+              ),
+              h("div", { style: { display: "flex", alignItems: "center", gap: 6, flex: 1 } },
+                h("input", {
+                  className: "hg-input",
+                  type: "number",
+                  min: "0",
+                  max: "59",
+                  step: "5",
+                  placeholder: "30",
+                  value: sleepMins,
+                  onChange: event => setSleepMins(event.target.value)
+                }),
+                h("span", { style: { fontSize: 13, fontWeight: 700, color: "var(--hg-text-2)" } }, "mins")
+              )
+            )
           ),
           h(Field, { label: "Soreness (1–5)" },
             h("input", { className: "hg-input", type: "number", min: 1, max: 5, value: soreness, onChange: event => setSoreness(event.target.value) })
           ),
-          h(Field, { label: "Motivation (1–5)", full: true },
+          h(Field, { label: "Motivation (1–5)" },
             h("input", { className: "hg-input", type: "number", min: 1, max: 5, value: motivation, onChange: event => setMotivation(event.target.value) })
           )
         ),
@@ -337,12 +668,25 @@
       log.type === "exercise" && log.exerciseId === exercise.id && log.id !== sameDay?.id
     ).sort((a, b) => b.date.localeCompare(a.date))[0];
     const prescribed = parsePrescription(exercise.setsReps);
-    const [weight, setWeight] = useState(sameDay?.weight != null ? String(sameDay.weight) : previous?.weight != null ? String(previous.weight) : "");
+
+    const recommendation = getExerciseRecommendation({ exercise, data, weekInfo, personId });
+
+    const initialWeight = sameDay?.weight != null ? String(sameDay.weight) :
+      recommendation?.recommendedWeight != null ? String(recommendation.recommendedWeight) :
+      previous?.weight != null ? String(previous.weight) : "";
+
+    const [weight, setWeight] = useState(initialWeight);
     const [sets, setSets] = useState(sameDay?.sets != null ? String(sameDay.sets) : prescribed.sets);
     const [reps, setReps] = useState(sameDay?.reps != null ? String(sameDay.reps) : prescribed.reps);
     const [feeling, setFeeling] = useState(sameDay?.feeling || rpeToFeeling(sameDay?.rpe));
     const [notes, setNotes] = useState(sameDay?.notes || "");
     const target = I.de(exercise, weekInfo);
+
+    useEffect(() => {
+      if (!sameDay && recommendation?.recommendedWeight != null && (weight === "" || weight === undefined)) {
+        setWeight(String(recommendation.recommendedWeight));
+      }
+    }, [exercise.id, sameDay]);
 
     function save() {
       if (!sets || !reps) {
@@ -389,6 +733,32 @@
         )
       ),
       exercise.note && h("div", { className: "hg-callout" }, exercise.note),
+      recommendation && recommendation.recommendedWeight != null && h("div", { className: "hg-recommendation-card" },
+        h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10 } },
+          h("div", null,
+            h("div", { className: "hg-rec-label" }, "RECOMMENDED WEIGHT (PROGRESSIVE OVERLOAD)"),
+            h("div", { className: "hg-rec-weight" }, recommendation.formattedWeight)
+          ),
+          h("button", {
+            type: "button",
+            className: "hg-button primary",
+            style: { minHeight: 36, padding: "6px 12px", fontSize: 13 },
+            onClick: () => setWeight(String(recommendation.recommendedWeight))
+          }, "Use " + recommendation.formattedWeight)
+        ),
+        h("div", { className: "hg-rec-reason" }, recommendation.reason),
+        recommendation.possibleJumps && recommendation.possibleJumps.length > 0 && h("div", { className: "hg-rec-jumps" },
+          h("span", { className: "hg-rec-jumps-title" }, `Possible increases with your ${recommendation.plates.join("kg, ")}kg plates:`),
+          recommendation.possibleJumps.map(j =>
+            h("button", {
+              key: j.totalWeight,
+              type: "button",
+              className: `hg-jump-chip${String(weight) === String(j.totalWeight) ? " active" : ""}`,
+              onClick: () => setWeight(String(j.totalWeight))
+            }, j.label)
+          )
+        )
+      ),
       previous && h("div", { className: "hg-previous" },
         h("strong", null, "Previous performance"),
         h("div", null,
@@ -652,6 +1022,7 @@
     const todayDay = I.De(today);
     const [sessionToMove, setSessionToMove] = useState(null);
     const [bringToTodayOpen, setBringToTodayOpen] = useState(false);
+    const [rearrangeWeekOpen, setRearrangeWeekOpen] = useState(false);
     const otherSessions = data.sessions.filter(session =>
       I.ue(data, session, monday) !== todayDay
     );
@@ -664,6 +1035,7 @@
       });
       setSessionToMove(null);
       setBringToTodayOpen(false);
+      setRearrangeWeekOpen(false);
       showToast(`${session.name} moved to ${targetDay === todayDay ? "today" : I._[targetDay]} for this week`);
     }
 
@@ -677,7 +1049,8 @@
         h("h2", { style: { marginTop: 13 } }, "Nothing scheduled today"),
         h("p", null, next ? `Next: ${next.session.name} on ${I._[next.day]}.` : "Your next session will appear here."),
         otherSessions.length > 0 && h("div", { className: "hg-actions", style: { justifyContent: "center" } },
-          h(Button, { primary: true, onClick: () => setBringToTodayOpen(true) }, "Move a workout here")
+          h(Button, { primary: true, onClick: () => setBringToTodayOpen(true) }, "Move a workout here"),
+          h(Button, { onClick: () => setRearrangeWeekOpen(true) }, "Rearrange this week")
         )
       ),
       sessions.map(session => {
@@ -698,6 +1071,20 @@
             h("summary", { className: "hg-link-button", style: { cursor: "pointer", display: "inline-flex" } }, "Session notes"),
             h("div", { className: "hg-callout", style: { marginTop: 4 } }, session.notes)
           ),
+          session.type === "strength" && h("details", { style: { marginTop: 10 } },
+            h("summary", { className: "hg-link-button", style: { cursor: "pointer", display: "inline-flex" } }, "Exercises & Recommended Weights"),
+            h("div", { className: "hg-callout", style: { marginTop: 4, display: "grid", gap: 6 } },
+              flattenExercises(session).map(({ exercise }) => {
+                const rec = getExerciseRecommendation({ exercise, data, weekInfo: I.Re(data.startDate), personId });
+                return h("div", { key: exercise.id, style: { display: "flex", justifyContent: "space-between", alignItems: "baseline", fontSize: 13 } },
+                  h("span", { style: { fontWeight: 600 } }, exercise.name),
+                  h("span", { style: { color: "var(--person-accent, var(--hg-action))", fontWeight: 700, fontFamily: "monospace" } },
+                    rec?.recommendedWeight != null ? `Rec: ${rec.formattedWeight}` : (exercise.startLabel || exercise.setsReps)
+                  )
+                );
+              })
+            )
+          ),
           h("div", { className: "hg-actions" },
             status !== "done" && h(Button, {
               primary: true,
@@ -706,12 +1093,13 @@
             status !== "done" && h(Button, {
               onClick: () => setSessionToMove(session),
             }, "Move workout"),
-            status === "done" && h(Button, { onClick: () => onStart(session) }, "Review workout")
+            status === "done" && h(Button, { primary: true, onClick: () => onStart(session) }, "Start workout")
           )
         );
       }),
-      sessions.length > 0 && otherSessions.length > 0 && h("div", { className: "hg-actions" },
-        h(Button, { onClick: () => setBringToTodayOpen(true) }, "Add another workout today")
+      sessions.length > 0 && h("div", { className: "hg-actions" },
+        otherSessions.length > 0 && h(Button, { onClick: () => setBringToTodayOpen(true) }, "Add another workout today"),
+        h(Button, { onClick: () => setRearrangeWeekOpen(true) }, "Rearrange this week")
       ),
       sessions.length > 0 && h("div", { className: "hg-callout" },
         h("strong", null, `${I.Re(data.startDate).blockWeeksLabel} · Week ${I.Re(data.startDate).week}`),
@@ -731,8 +1119,10 @@
         },
           h("div", { className: "hg-modal-head" },
             h("div", null,
-              h("h2", { id: "move-workout-title" }, "Move today’s workout"),
-              h("p", { className: "hg-card-copy" }, `Choose a new day for ${sessionToMove.name}.`)
+              h("h2", { id: "move-workout-title" }, "Move workout"),
+              h("p", { className: "hg-card-copy" },
+                `${sessionToMove.name} is currently on ${I._[I.ue(data, sessionToMove, monday)]}. Choose a new day.`
+              )
             ),
             h("button", {
               type: "button",
@@ -742,10 +1132,10 @@
             }, "×")
           ),
           h("div", { className: "hg-callout", style: { marginTop: 0 } },
-            "Only this week changes. Choosing an occupied day will put both workouts on that day and leave today free."
+            "Only this week changes. Choosing an occupied day will put both workouts there; the current day becomes free."
           ),
           h("div", { className: "hg-swap-options" },
-            WEEK_DAYS.filter(day => day !== todayDay).map(day => {
+            WEEK_DAYS.filter(day => day !== I.ue(data, sessionToMove, monday)).map(day => {
               const workoutsThere = data.sessions.filter(option =>
                 option.id !== sessionToMove.id && I.ue(data, option, monday) === day
               );
@@ -767,6 +1157,62 @@
           ),
           h("div", { className: "hg-actions" },
             h(Button, { onClick: () => setSessionToMove(null) }, "Cancel")
+          )
+        )
+      ),
+      rearrangeWeekOpen && h("div", {
+        className: "hg-modal-wrap",
+        role: "presentation",
+        onClick: () => setRearrangeWeekOpen(false),
+      },
+        h("div", {
+          className: "hg-modal",
+          role: "dialog",
+          "aria-modal": "true",
+          "aria-labelledby": "rearrange-week-title",
+          onClick: event => event.stopPropagation(),
+        },
+          h("div", { className: "hg-modal-head" },
+            h("div", null,
+              h("h2", { id: "rearrange-week-title" }, "Rearrange this week"),
+              h("p", { className: "hg-card-copy" }, "Choose any workout, then choose its new day.")
+            ),
+            h("button", {
+              type: "button",
+              className: "hg-icon-button",
+              onClick: () => setRearrangeWeekOpen(false),
+              "aria-label": "Close weekly rearranger",
+            }, "×")
+          ),
+          h("div", { className: "hg-callout", style: { marginTop: 0 } },
+            "You can repeat this as many times as needed. Free slots and doubled-up days are both supported."
+          ),
+          h("div", { className: "hg-swap-options" },
+            [...data.sessions]
+              .sort((a, b) =>
+                WEEK_DAYS.indexOf(I.ue(data, a, monday)) - WEEK_DAYS.indexOf(I.ue(data, b, monday))
+              )
+              .map(option => {
+                const optionDay = I.ue(data, option, monday);
+                return h("button", {
+                  key: option.id,
+                  type: "button",
+                  className: "hg-swap-option",
+                  onClick: () => {
+                    setRearrangeWeekOpen(false);
+                    setSessionToMove(option);
+                  },
+                },
+                  h("span", null,
+                    h("strong", null, option.name),
+                    h("small", null, option.duration)
+                  ),
+                  h("span", { className: "hg-swap-days" }, I._[optionDay])
+                );
+              })
+          ),
+          h("div", { className: "hg-actions" },
+            h(Button, { onClick: () => setRearrangeWeekOpen(false) }, "Cancel")
           )
         )
       ),
@@ -1011,6 +1457,7 @@
         h("h1", null, "Plan"),
         h("p", null, "Schedule, progression, deloads, backups, and plan editing.")
       ),
+      h(EquipmentSection, { personId, data, updateData, showToast }),
       h("div", { className: "hg-card", style: { marginBottom: 18 } },
         h("div", { className: "hg-card-title" }, "Recovery controls"),
         h("div", { className: "hg-card-copy" }, "Use a manual deload when fatigue is unusually high."),
@@ -1115,7 +1562,8 @@
             ),
             h(Button, { disabled: enabling || !key, onClick: enableNotifications }, enabling ? "Enabling…" : "Enable")
           )
-        )
+        ),
+        h(EquipmentSection, { personId, data: store[personId], updateData, showToast })
       )
     );
   }

@@ -297,6 +297,92 @@ textarea.hg-input { min-height: 82px; resize: vertical; }
 .hg-toast { position: fixed; z-index: 700; left: 50%; bottom: calc(82px + env(safe-area-inset-bottom)); transform: translateX(-50%); width: max-content; max-width: calc(100% - 30px); padding: 11px 16px; border-radius: 11px; background: var(--hg-text); color: var(--hg-bg); box-shadow: var(--hg-shadow); font-size: 13px; font-weight: 700; }
 .hg-update { position: fixed; z-index: 650; left: 12px; right: 12px; bottom: calc(82px + env(safe-area-inset-bottom)); display: flex; align-items: center; justify-content: space-between; gap: 12px; width: min(520px, calc(100% - 24px)); margin: auto; padding: 12px 14px; border: 1px solid var(--hg-border); border-radius: 14px; background: var(--hg-surface); box-shadow: var(--hg-shadow); }
 
+/* --- Progressive Overload Recommendation & Equipment Plate Styles --- */
+.hg-recommendation-card {
+  margin-top: 14px;
+  padding: 14px 15px;
+  border: 1px solid color-mix(in srgb, var(--person-accent, var(--hg-action)) 45%, var(--hg-border));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--person-accent, var(--hg-action)) 10%, var(--hg-surface));
+}
+.hg-rec-label {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--person-accent, var(--hg-action));
+}
+.hg-rec-weight {
+  margin-top: 2px;
+  font-size: 22px;
+  font-weight: 800;
+  color: var(--hg-text);
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+}
+.hg-rec-reason {
+  margin-top: 6px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--hg-text-2);
+}
+.hg-rec-jumps {
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px dashed var(--hg-border);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.hg-rec-jumps-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--hg-text-3);
+  width: 100%;
+}
+.hg-jump-chip {
+  padding: 5px 10px;
+  border: 1px solid var(--hg-border-strong);
+  border-radius: 8px;
+  background: var(--hg-surface);
+  color: var(--hg-text);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.hg-jump-chip:hover, .hg-jump-chip.active {
+  border-color: var(--person-accent, var(--hg-action));
+  background: var(--person-accent, var(--hg-action));
+  color: #0f1115;
+}
+
+.hg-plates-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+.hg-plate-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border: 1px solid var(--hg-border);
+  border-radius: 9px;
+  background: var(--hg-surface-2);
+  color: var(--hg-text-2);
+  font-size: 13px;
+  font-weight: 650;
+  cursor: pointer;
+  user-select: none;
+}
+.hg-plate-tag.selected {
+  border-color: var(--person-accent, var(--hg-action));
+  background: color-mix(in srgb, var(--person-accent, var(--hg-action)) 15%, var(--hg-surface));
+  color: var(--hg-text);
+}
+
 .hg-legacy-wrap { color: var(--hg-text); }
 .hg-legacy-wrap > div { max-width: 100%; }
 html[data-theme="light"] .hg-legacy-wrap [style*="background: rgb(28, 32, 39)"],
