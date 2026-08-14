@@ -9,6 +9,7 @@
 
   const h = React.createElement;
   const { useState, useEffect, useCallback, useRef } = React;
+  const APP_VERSION = "v2.0";
   const FEELINGS = [
     ["very_easy", "Very easy"],
     ["good", "Good"],
@@ -207,9 +208,9 @@
     const logs = [...(data?.logs || [])].filter(l => l.exerciseId === exercise.id && l.weight != null && Number.isFinite(Number(l.weight)));
     logs.sort((a, b) => b.date.localeCompare(a.date));
     const previous = logs[0] || null;
+    const prev2 = logs[1] || null;
 
     const isDeload = weekInfo?.isDeload;
-    const blockTarget = exercise.primary ? I.de(exercise, weekInfo) : null;
 
     let recWeight = null;
     let reason = "";
@@ -217,52 +218,51 @@
     let weightDiff = 0;
 
     if (isDeload) {
-      const baseVal = previous?.weight ?? blockTarget ?? exercise.startValue ?? 20;
+      const baseVal = previous?.weight ?? exercise.startValue ?? 20;
       recWeight = Math.round((baseVal * 0.8) * 2) / 2;
       reason = "Deload week: Lightened load (80%) for active recovery";
       overloadType = "deload";
     } else if (previous) {
       const prevW = Number(previous.weight);
       const feel = previous.feeling || rpeToFeeling(previous.rpe);
+      const feel2 = prev2 ? (prev2.feeling || rpeToFeeling(prev2.rpe)) : null;
 
-      if (feel === "very_easy" || feel === "good") {
+      const isEasy = feel === "very_easy" || feel === "easy" || feel === "good_easy";
+      const isGood = feel === "good";
+      const prev2IsGoodOrBetter = prev2 && (feel2 === "good" || feel2 === "very_easy" || feel2 === "easy" || feel2 === "good_easy");
+
+      if (isEasy) {
+        // Immediate weight increase if rated Easy or Very Easy
         overloadType = "increase";
         const possibleJumps = getPossibleWeightJumps(prevW, plates, isPerSide, 4);
-        
-        if (blockTarget && blockTarget > prevW) {
-          const snapped = snapToAchievable(blockTarget, prevW, plates, isPerSide);
-          recWeight = snapped;
-          weightDiff = Math.round((recWeight - prevW) * 10) / 10;
-          reason = `Progressive overload: Target ${recWeight}kg for Week ${weekInfo?.blockWeeksLabel || "this block"} (+${weightDiff}kg over last ${prevW}kg)`;
-        } else {
-          const smallestJump = possibleJumps[0];
-          recWeight = smallestJump ? smallestJump.totalWeight : prevW + (isPerSide ? 1.5 : 3.0);
-          weightDiff = Math.round((recWeight - prevW) * 10) / 10;
-          reason = `Progressive overload: +${weightDiff}kg over previous ${prevW}kg (last session felt ${FEELING_LABELS[feel] || "good"})`;
-        }
+        const smallestJump = possibleJumps[0];
+        recWeight = smallestJump ? smallestJump.totalWeight : prevW + (isPerSide ? 1.5 : 3.0);
+        weightDiff = Math.round((recWeight - prevW) * 10) / 10;
+        reason = `Progressive overload: +${weightDiff}kg increase (last session felt ${FEELING_LABELS[feel] || "Easy"})`;
+      } else if (isGood && prev2IsGoodOrBetter && Number(prev2.weight) >= prevW) {
+        // Increase weight after 2 consecutive 'Good' sessions
+        overloadType = "increase";
+        const possibleJumps = getPossibleWeightJumps(prevW, plates, isPerSide, 4);
+        const smallestJump = possibleJumps[0];
+        recWeight = smallestJump ? smallestJump.totalWeight : prevW + (isPerSide ? 1.5 : 3.0);
+        weightDiff = Math.round((recWeight - prevW) * 10) / 10;
+        reason = `Progressive overload: +${weightDiff}kg increase (rated 'Good' 2 sessions in a row at ${prevW}kg)`;
+      } else if (isGood) {
+        // First good session -> consolidate at current weight
+        recWeight = prevW;
+        reason = `Consolidating at ${prevW}kg (1 of 2 'Good' sessions completed before next weight increase)`;
+        overloadType = "maintain";
       } else if (feel === "very_hard" || feel === "pain") {
         recWeight = prevW;
         reason = `Maintain ${prevW}kg — last session felt ${FEELING_LABELS[feel] || "very hard"}`;
         overloadType = "maintain";
       } else {
-        if (blockTarget && blockTarget > prevW) {
-          const snapped = snapToAchievable(blockTarget, prevW, plates, isPerSide);
-          recWeight = snapped;
-          weightDiff = Math.round((recWeight - prevW) * 10) / 10;
-          reason = `Block target: ${recWeight}kg (+${weightDiff}kg over previous ${prevW}kg)`;
-          overloadType = "increase";
-        } else {
-          recWeight = prevW;
-          reason = `Consolidate at ${prevW}kg before increasing load`;
-          overloadType = "maintain";
-        }
+        recWeight = prevW;
+        reason = `Maintain ${prevW}kg for current block`;
+        overloadType = "maintain";
       }
     } else {
-      if (blockTarget != null) {
-        recWeight = snapToAchievable(blockTarget, 0, plates, isPerSide);
-        reason = `Program starting target for Week ${weekInfo?.blockWeeksLabel || "1"}`;
-        overloadType = "initial";
-      } else if (exercise.startValue != null) {
+      if (exercise.startValue != null) {
         recWeight = exercise.startValue;
         reason = `Starting plan weight: ${exercise.startValue}kg`;
         overloadType = "initial";
@@ -1572,7 +1572,10 @@
     return h("header", { className: "hg-header" },
       h("div", { className: "hg-brand" },
         h("div", { className: "hg-eyebrow" }, syncStatus === "synced" ? "Synced" : syncStatus === "connecting" ? "Connecting" : "Home training"),
-        h("div", { className: "hg-brand-name" }, "Home Gym")
+        h("div", { className: "hg-brand-name" },
+          "Home Gym",
+          h("span", { className: "hg-version-tag" }, APP_VERSION)
+        )
       ),
       h("div", { className: "hg-header-actions" },
         h("div", { className: "hg-person-switch", role: "group", "aria-label": "Person" },
