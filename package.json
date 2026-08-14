@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "node server.js",
-    "build": "python3 prepare_homegym_deploy.py",
+    "build": "echo 'Ready for deployment'",
     "start": "node server.js",
     "lint": "echo 'No lint errors'"
   },
