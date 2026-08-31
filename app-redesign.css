@@ -431,6 +431,78 @@ html[data-theme="light"] .hg-legacy-wrap [style*="color: rgb(91, 98, 112)"] { co
   .hg-toast { bottom: 24px; }
 }
 
+.hg-scale-card-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 4px;
+  border: 1px solid var(--hg-border);
+  border-radius: 10px;
+  background: var(--hg-surface-2);
+  color: var(--hg-text);
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: border-color .15s ease, background-color .15s ease;
+  min-height: 48px;
+}
+.hg-scale-card-btn .hg-scale-num {
+  font-size: 14px;
+  font-weight: 800;
+  font-family: 'JetBrains Mono', monospace;
+}
+.hg-scale-card-btn .hg-scale-name {
+  font-size: 9.5px;
+  font-weight: 600;
+  color: var(--hg-text-2);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+.hg-scale-card-btn:hover {
+  border-color: var(--hg-border-strong);
+}
+.hg-scale-card-btn.active {
+  border-color: var(--person-accent, var(--hg-action));
+  background: color-mix(in srgb, var(--person-accent, var(--hg-action)) 18%, var(--hg-surface));
+  color: var(--hg-text);
+}
+.hg-scale-card-btn.active .hg-scale-name {
+  color: var(--hg-text);
+  font-weight: 700;
+}
+
+.hg-chart-wrap {
+  margin-top: 14px;
+  width: 100%;
+}
+.hg-chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 10px;
+  font-size: 11px;
+  color: var(--hg-text-2);
+}
+.hg-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.hg-legend-item span {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.hg-svg-chart {
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
 @media (prefers-reduced-transparency: reduce) {
   .hg-header, .hg-bottom-nav { background: var(--hg-surface); -webkit-backdrop-filter: none; backdrop-filter: none; }
 }

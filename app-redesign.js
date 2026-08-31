@@ -9,7 +9,7 @@
 
   const h = React.createElement;
   const { useState, useEffect, useCallback, useRef } = React;
-  const APP_VERSION = "v2.0";
+  const APP_VERSION = "v2.1";
   const FEELINGS = [
     ["very_easy", "Very easy"],
     ["good", "Good"],
@@ -18,6 +18,36 @@
     ["pain", "Pain / discomfort"],
   ];
   const FEELING_LABELS = Object.fromEntries(FEELINGS);
+
+  const SORENESS_MAP = {
+    1: "Fresh",
+    2: "Mild",
+    3: "Moderate",
+    4: "High",
+    5: "Severe"
+  };
+  const SORENESS_OPTIONS = [
+    { val: 1, label: "Fresh", desc: "No soreness" },
+    { val: 2, label: "Mild", desc: "Slight tightness" },
+    { val: 3, label: "Moderate", desc: "Noticeable stiffness" },
+    { val: 4, label: "High", desc: "Tender / fatigued" },
+    { val: 5, label: "Severe", desc: "Very sore" }
+  ];
+
+  const MOTIVATION_MAP = {
+    1: "Very Low",
+    2: "Low",
+    3: "Moderate",
+    4: "High",
+    5: "Fired Up"
+  };
+  const MOTIVATION_OPTIONS = [
+    { val: 1, label: "Very Low", desc: "Drained" },
+    { val: 2, label: "Low", desc: "Sluggish" },
+    { val: 3, label: "Moderate", desc: "Ready to work" },
+    { val: 4, label: "High", desc: "Energized" },
+    { val: 5, label: "Fired Up", desc: "Peak drive" }
+  ];
   const NAV = [
     ["today", "◉", "Today"],
     ["history", "≡", "History"],
@@ -550,8 +580,8 @@
 
     const [sleepHours, setSleepHours] = useState(current ? String(initialHours) : "7");
     const [sleepMins, setSleepMins] = useState(current ? String(initialMins) : "30");
-    const [soreness, setSoreness] = useState(current ? String(current.soreness) : "3");
-    const [motivation, setMotivation] = useState(current ? String(current.motivation) : "3");
+    const [soreness, setSoreness] = useState(current ? Number(current.soreness) : 2);
+    const [motivation, setMotivation] = useState(current ? Number(current.motivation) : 4);
 
     function save() {
       const hrs = Number(sleepHours) || 0;
@@ -587,7 +617,7 @@
         h("div", null,
           h("strong", null, "Today's readiness"),
           current && !open && h("div", { className: "hg-history-meta" },
-            `${formatSleepSummary(current)} · soreness ${current.soreness}/5 · motivation ${current.motivation}/5`
+            `${formatSleepSummary(current)} · soreness ${current.soreness} (${SORENESS_MAP[current.soreness] || ""}) · drive ${current.motivation} (${MOTIVATION_MAP[current.motivation] || ""})`
           )
         ),
         h("button", { type: "button", className: "hg-link-button", onClick: () => setOpen(value => !value) },
@@ -625,11 +655,35 @@
               )
             )
           ),
-          h(Field, { label: "Soreness (1–5)" },
-            h("input", { className: "hg-input", type: "number", min: 1, max: 5, value: soreness, onChange: event => setSoreness(event.target.value) })
+          h(Field, { label: `Soreness: ${soreness} · ${SORENESS_MAP[soreness] || ""}`, full: true },
+            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 6, marginTop: 4 } },
+              SORENESS_OPTIONS.map(opt =>
+                h("button", {
+                  key: opt.val,
+                  type: "button",
+                  className: `hg-scale-card-btn ${Number(soreness) === opt.val ? "active" : ""}`,
+                  onClick: () => setSoreness(opt.val)
+                },
+                  h("span", { className: "hg-scale-num" }, opt.val),
+                  h("span", { className: "hg-scale-name" }, opt.label)
+                )
+              )
+            )
           ),
-          h(Field, { label: "Motivation (1–5)" },
-            h("input", { className: "hg-input", type: "number", min: 1, max: 5, value: motivation, onChange: event => setMotivation(event.target.value) })
+          h(Field, { label: `Motivation to Train: ${motivation} · ${MOTIVATION_MAP[motivation] || ""}`, full: true },
+            h("div", { style: { display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 6, marginTop: 4 } },
+              MOTIVATION_OPTIONS.map(opt =>
+                h("button", {
+                  key: opt.val,
+                  type: "button",
+                  className: `hg-scale-card-btn ${Number(motivation) === opt.val ? "active" : ""}`,
+                  onClick: () => setMotivation(opt.val)
+                },
+                  h("span", { className: "hg-scale-num" }, opt.val),
+                  h("span", { className: "hg-scale-name" }, opt.label)
+                )
+              )
+            )
           )
         ),
         h("div", { className: "hg-actions" }, h(Button, { onClick: save }, "Save readiness"))
@@ -1101,10 +1155,6 @@
         otherSessions.length > 0 && h(Button, { onClick: () => setBringToTodayOpen(true) }, "Add another workout today"),
         h(Button, { onClick: () => setRearrangeWeekOpen(true) }, "Rearrange this week")
       ),
-      sessions.length > 0 && h("div", { className: "hg-callout" },
-        h("strong", null, `${I.Re(data.startDate).blockWeeksLabel} · Week ${I.Re(data.startDate).week}`),
-        h("div", { className: "hg-history-meta" }, "Your targets and previous performance will appear inside the workout.")
-      ),
       sessionToMove && h("div", {
         className: "hg-modal-wrap",
         role: "presentation",
@@ -1430,6 +1480,338 @@
         personId, data, initialLog: editor.log || null, updateData, showToast,
         onClose: () => setEditor(null),
       })
+    );
+  }
+
+  // --- Chart & Metrics Components (HIG Compliant with Axes & Grids) ---
+
+  function WeightTrendChart({ records, accent }) {
+    if (!records || records.length < 2) return null;
+    const sorted = [...records].sort((a, b) => a.date.localeCompare(b.date));
+    const weights = sorted.map(r => Number(r.weight));
+    const minW = Math.floor(Math.min(...weights) - 0.5);
+    const maxW = Math.ceil(Math.max(...weights) + 0.5);
+    const rangeW = maxW - minW || 1;
+
+    const width = 360;
+    const height = 180;
+    const padLeft = 46;
+    const padRight = 16;
+    const padTop = 18;
+    const padBottom = 32;
+
+    const plotW = width - padLeft - padRight;
+    const plotH = height - padTop - padBottom;
+
+    const getX = index => padLeft + (index / (sorted.length - 1)) * plotW;
+    const getY = val => padTop + plotH - ((val - minW) / rangeW) * plotH;
+
+    const points = sorted.map((r, i) => `${getX(i).toFixed(1)},${getY(Number(r.weight)).toFixed(1)}`).join(" ");
+
+    // Y axis ticks (3-4 grid lines)
+    const yTicks = [minW, minW + rangeW / 2, maxW];
+
+    // X axis ticks (first, middle, last dates)
+    const xIndices = sorted.length === 2 ? [0, 1] : [0, Math.floor(sorted.length / 2), sorted.length - 1];
+
+    return h("div", { className: "hg-chart-wrap" },
+      h("svg", { viewBox: `0 0 ${width} ${height}`, className: "hg-svg-chart" },
+        // Grid lines & Y-axis labels
+        yTicks.map((tick, idx) => {
+          const y = getY(tick);
+          return h("g", { key: idx },
+            h("line", { x1: padLeft, y1: y, x2: width - padRight, y2: y, stroke: "var(--hg-border)", strokeDasharray: "3,3", strokeWidth: 1 }),
+            h("text", { x: padLeft - 8, y: y + 4, textAnchor: "end", fontSize: 11, fill: "var(--hg-text-3)", fontFamily: "system-ui, sans-serif" }, `${tick.toFixed(1)}kg`)
+          );
+        }),
+        // X-axis baseline
+        h("line", { x1: padLeft, y1: padTop + plotH, x2: width - padRight, y2: padTop + plotH, stroke: "var(--hg-border-strong)", strokeWidth: 1.5 }),
+        // X-axis date labels
+        xIndices.map(idx => {
+          const item = sorted[idx];
+          const x = getX(idx);
+          const dateLabel = item.date.slice(5); // MM-DD
+          return h("text", {
+            key: idx,
+            x,
+            y: height - 10,
+            textAnchor: idx === 0 ? "start" : idx === sorted.length - 1 ? "end" : "middle",
+            fontSize: 11,
+            fill: "var(--hg-text-3)",
+            fontFamily: "system-ui, sans-serif"
+          }, dateLabel);
+        }),
+        // Area under curve
+        h("polygon", {
+          points: `${padLeft},${padTop + plotH} ${points} ${getX(sorted.length - 1)},${padTop + plotH}`,
+          fill: accent,
+          fillOpacity: 0.12
+        }),
+        // Polyline
+        h("polyline", { points, fill: "none", stroke: accent, strokeWidth: 2.5, strokeLinecap: "round", strokeLinejoin: "round" }),
+        // Data dots
+        sorted.map((r, i) =>
+          h("circle", {
+            key: i,
+            cx: getX(i),
+            cy: getY(Number(r.weight)),
+            r: 3.5,
+            fill: accent,
+            stroke: "var(--hg-surface)",
+            strokeWidth: 1.5
+          })
+        )
+      )
+    );
+  }
+
+  function ReadinessTrendsChart({ records, accent }) {
+    if (!records || records.length === 0) return null;
+    const sorted = [...records].sort((a, b) => a.date.localeCompare(b.date)).slice(-14);
+    if (sorted.length < 2) return null;
+
+    const width = 360;
+    const height = 180;
+    const padLeft = 40;
+    const padRight = 16;
+    const padTop = 18;
+    const padBottom = 32;
+    const plotW = width - padLeft - padRight;
+    const plotH = height - padTop - padBottom;
+
+    const getX = index => padLeft + (index / (sorted.length - 1)) * plotW;
+    const getYSleep = val => padTop + plotH - (Math.min(12, Math.max(4, val)) - 4) / 8 * plotH;
+    const getYScore = val => padTop + plotH - ((Math.min(5, Math.max(1, val)) - 1) / 4) * plotH;
+
+    const sleepPoints = sorted.map((r, i) => `${getX(i).toFixed(1)},${getYSleep(Number(r.sleep) || 7).toFixed(1)}`).join(" ");
+    const sorePoints = sorted.map((r, i) => `${getX(i).toFixed(1)},${getYScore(Number(r.soreness) || 3).toFixed(1)}`).join(" ");
+    const motPoints = sorted.map((r, i) => `${getX(i).toFixed(1)},${getYScore(Number(r.motivation) || 3).toFixed(1)}`).join(" ");
+
+    const xIndices = sorted.length === 2 ? [0, 1] : [0, Math.floor(sorted.length / 2), sorted.length - 1];
+
+    return h("div", { className: "hg-chart-wrap" },
+      h("div", { className: "hg-chart-legend" },
+        h("span", { className: "hg-legend-item" }, h("span", { style: { background: "#38BDF8" } }), "Sleep (hrs)"),
+        h("span", { className: "hg-legend-item" }, h("span", { style: { background: "#F0728C" } }), "Soreness (1-5)"),
+        h("span", { className: "hg-legend-item" }, h("span", { style: { background: "#4ADE80" } }), "Motivation (1-5)")
+      ),
+      h("svg", { viewBox: `0 0 ${width} ${height}`, className: "hg-svg-chart" },
+        // Grid lines for scores 1 to 5
+        [1, 3, 5].map(score => {
+          const y = getYScore(score);
+          return h("g", { key: score },
+            h("line", { x1: padLeft, y1: y, x2: width - padRight, y2: y, stroke: "var(--hg-border)", strokeDasharray: "3,3", strokeWidth: 1 }),
+            h("text", { x: padLeft - 6, y: y + 4, textAnchor: "end", fontSize: 10, fill: "var(--hg-text-3)" }, `${score}`)
+          );
+        }),
+        h("line", { x1: padLeft, y1: padTop + plotH, x2: width - padRight, y2: padTop + plotH, stroke: "var(--hg-border-strong)", strokeWidth: 1.5 }),
+        xIndices.map(idx => {
+          const item = sorted[idx];
+          return h("text", {
+            key: idx,
+            x: getX(idx),
+            y: height - 10,
+            textAnchor: idx === 0 ? "start" : idx === sorted.length - 1 ? "end" : "middle",
+            fontSize: 11,
+            fill: "var(--hg-text-3)"
+          }, item.date.slice(5));
+        }),
+        // Lines
+        h("polyline", { points: sleepPoints, fill: "none", stroke: "#38BDF8", strokeWidth: 2 }),
+        h("polyline", { points: sorePoints, fill: "none", stroke: "#F0728C", strokeWidth: 2, strokeDasharray: "4,2" }),
+        h("polyline", { points: motPoints, fill: "none", stroke: "#4ADE80", strokeWidth: 2 }),
+        // Dots
+        sorted.map((r, i) => h("circle", { key: `s-${i}`, cx: getX(i), cy: getYSleep(Number(r.sleep) || 7), r: 3, fill: "#38BDF8" })),
+        sorted.map((r, i) => h("circle", { key: `sr-${i}`, cx: getX(i), cy: getYScore(Number(r.soreness) || 3), r: 3, fill: "#F0728C" })),
+        sorted.map((r, i) => h("circle", { key: `m-${i}`, cx: getX(i), cy: getYScore(Number(r.motivation) || 3), r: 3, fill: "#4ADE80" }))
+      )
+    );
+  }
+
+  function MetricsView({ meta, personId, data, showToast }) {
+    const [subTab, setSubTab] = useState("weight"); // "weight" | "readiness"
+    const weightKey = `hg_metrics_${personId}`;
+    const readinessKey = `hg_readiness_${personId}`;
+
+    const [weights, setWeights] = useState(() => storageGet(weightKey, []));
+    const [readiness, setReadiness] = useState(() => storageGet(readinessKey, []));
+
+    useEffect(() => {
+      setWeights(storageGet(weightKey, []));
+      setReadiness(storageGet(readinessKey, []));
+    }, [personId]);
+
+    const [weightDate, setWeightDate] = useState(I.W());
+    const [weightVal, setWeightVal] = useState("");
+    const [weightNote, setWeightNote] = useState("");
+
+    function logWeight() {
+      if (!weightVal) return showToast("Enter a weight value");
+      const num = parseFloat(weightVal);
+      if (Number.isNaN(num)) return showToast("Invalid weight number");
+      const entry = {
+        id: I.HGuid ? I.HGuid("metric") : `w_${Date.now()}`,
+        date: weightDate,
+        weight: num,
+        note: weightNote.trim()
+      };
+      const next = [...weights.filter(w => w.date !== weightDate), entry].sort((a, b) => a.date.localeCompare(b.date));
+      setWeights(next);
+      storageSet(weightKey, next);
+      showToast("Body weight logged");
+      setWeightVal("");
+      setWeightNote("");
+    }
+
+    function deleteWeight(id) {
+      const next = weights.filter(w => w.id !== id);
+      setWeights(next);
+      storageSet(weightKey, next);
+      showToast("Weight entry deleted");
+    }
+
+    function deleteReadiness(id) {
+      const next = readiness.filter(r => r.id !== id);
+      setReadiness(next);
+      storageSet(readinessKey, next);
+      showToast("Readiness entry deleted");
+    }
+
+    const sortedWeights = [...weights].sort((a, b) => a.date.localeCompare(b.date));
+    const latestW = sortedWeights.length ? sortedWeights[sortedWeights.length - 1] : null;
+    const earliestW = sortedWeights.length ? sortedWeights[0] : null;
+    const diffW = latestW && earliestW && latestW !== earliestW ? Math.round((latestW.weight - earliestW.weight) * 10) / 10 : 0;
+
+    const sortedReadiness = [...readiness].sort((a, b) => a.date.localeCompare(b.date));
+    const latestR = sortedReadiness.length ? sortedReadiness[sortedReadiness.length - 1] : null;
+
+    return h(React.Fragment, null,
+      h("div", { className: "hg-view-header" },
+        h("h1", null, "Metrics & Trends"),
+        h("p", null, `Tracking body weight, sleep, soreness, and motivation for ${meta.label}.`)
+      ),
+
+      h("div", { className: "hg-segment", style: { marginBottom: 18 }, role: "group", "aria-label": "Metrics tab" },
+        h("button", {
+          type: "button",
+          "aria-pressed": subTab === "weight",
+          onClick: () => setSubTab("weight")
+        }, "Body Weight"),
+        h("button", {
+          type: "button",
+          "aria-pressed": subTab === "readiness",
+          onClick: () => setSubTab("readiness")
+        }, "Sleep & Readiness")
+      ),
+
+      subTab === "weight" && h(React.Fragment, null,
+        h("div", { className: "hg-card" },
+          h("div", { className: "hg-card-title" }, "Log Body Weight"),
+          h("div", { className: "hg-fields" },
+            h(Field, { label: "Date" },
+              h("input", { className: "hg-input", type: "date", value: weightDate, onChange: e => setWeightDate(e.target.value) })
+            ),
+            h(Field, { label: "Weight (kg)" },
+              h("input", { className: "hg-input", type: "number", step: "0.1", placeholder: "e.g. 74.5", value: weightVal, onChange: e => setWeightVal(e.target.value) })
+            ),
+            h(Field, { label: "Note (optional)", full: true },
+              h("input", { className: "hg-input", type: "text", placeholder: "Time of day, digestion, hydration...", value: weightNote, onChange: e => setWeightNote(e.target.value) })
+            )
+          ),
+          h("div", { className: "hg-actions" },
+            h(Button, { primary: true, onClick: logWeight }, "Save weigh-in")
+          )
+        ),
+
+        latestW && h("div", { className: "hg-stats", style: { marginTop: 14 } },
+          h("div", { className: "hg-stat" },
+            h("span", null, "Latest weight"),
+            h("strong", null, `${latestW.weight} kg`)
+          ),
+          h("div", { className: "hg-stat" },
+            h("span", null, "Net change"),
+            h("strong", { style: { color: diffW < 0 ? "var(--hg-success)" : diffW > 0 ? "var(--hg-danger)" : "inherit" } },
+              `${diffW > 0 ? "+" : ""}${diffW} kg`
+            )
+          )
+        ),
+
+        sortedWeights.length >= 2 && h("div", { className: "hg-card", style: { marginTop: 14 } },
+          h("div", { className: "hg-card-title" }, "Weight Trend & Axis"),
+          h("div", { className: "hg-card-copy" }, "Historical weigh-in curve with clear grid scale and date references."),
+          h(WeightTrendChart, { records: sortedWeights, accent: meta.accent })
+        ),
+
+        h("div", { className: "hg-card", style: { marginTop: 14 } },
+          h("div", { className: "hg-card-title" }, "Weight History"),
+          sortedWeights.length === 0 ? h("p", { className: "hg-card-copy" }, "No weigh-ins logged yet.") :
+          h("div", null,
+            [...sortedWeights].reverse().map(w =>
+              h("div", { key: w.id, className: "hg-history-row" },
+                h("div", null,
+                  h("div", { className: "hg-history-result" }, `${w.weight} kg`),
+                  h("div", { className: "hg-history-meta" }, w.date),
+                  w.note && h("div", { className: "hg-history-meta", style: { fontStyle: "italic" } }, w.note)
+                ),
+                h("button", {
+                  type: "button",
+                  className: "hg-link-button",
+                  style: { color: "var(--hg-danger)" },
+                  onClick: () => deleteWeight(w.id)
+                }, "Delete")
+              )
+            )
+          )
+        )
+      ),
+
+      subTab === "readiness" && h(React.Fragment, null,
+        latestR && h("div", { className: "hg-stats", style: { marginBottom: 14 } },
+          h("div", { className: "hg-stat" },
+            h("span", null, "Latest sleep"),
+            h("strong", null, `${latestR.sleepHours ?? Math.floor(latestR.sleep)}h ${latestR.sleepMins ?? Math.round((latestR.sleep % 1) * 60)}m`)
+          ),
+          h("div", { className: "hg-stat" },
+            h("span", null, "Soreness (1-5)"),
+            h("strong", null, `${latestR.soreness} · ${SORENESS_MAP[latestR.soreness] || ""}`)
+          ),
+          h("div", { className: "hg-stat" },
+            h("span", null, "Motivation (1-5)"),
+            h("strong", null, `${latestR.motivation} · ${MOTIVATION_MAP[latestR.motivation] || ""}`)
+          )
+        ),
+
+        sortedReadiness.length >= 2 && h("div", { className: "hg-card" },
+          h("div", { className: "hg-card-title" }, "Readiness Trends (Last 14 days)"),
+          h("div", { className: "hg-card-copy" }, "Comparison of sleep duration against soreness and motivation scores."),
+          h(ReadinessTrendsChart, { records: sortedReadiness, accent: meta.accent })
+        ),
+
+        h("div", { className: "hg-card", style: { marginTop: 14 } },
+          h("div", { className: "hg-card-title" }, "Readiness Log History"),
+          sortedReadiness.length === 0 ? h("p", { className: "hg-card-copy" }, "No readiness check-ins logged yet.") :
+          h("div", null,
+            [...sortedReadiness].reverse().map(r =>
+              h("div", { key: r.id, className: "hg-history-row" },
+                h("div", null,
+                  h("div", { className: "hg-history-result" },
+                    `${r.sleepHours ?? Math.floor(r.sleep)}h ${r.sleepMins ?? Math.round((r.sleep % 1) * 60)}m sleep`
+                  ),
+                  h("div", { className: "hg-history-meta" },
+                    `${r.date} · Soreness: ${r.soreness}/5 (${SORENESS_MAP[r.soreness] || ""}) · Motivation: ${r.motivation}/5 (${MOTIVATION_MAP[r.motivation] || ""})`
+                  )
+                ),
+                h("button", {
+                  type: "button",
+                  className: "hg-link-button",
+                  style: { color: "var(--hg-danger)" },
+                  onClick: () => deleteReadiness(r.id)
+                }, "Delete")
+              )
+            )
+          )
+        )
+      )
     );
   }
 
@@ -1782,10 +2164,7 @@
     if (view === "today") content = h(TodayView, { personId, data, meta, active, onStart: startWorkout, updateData, showToast });
     if (view === "history") content = h(HistoryView, { personId, data, updateData, showToast });
     if (view === "progress") content = h(ProgressView, { personId, data, meta, weekInfo, showToast });
-    if (view === "metrics") content = h(React.Fragment, null,
-      h("div", { className: "hg-view-header" }, h("h1", null, "Metrics"), h("p", null, "Body-weight trend and check-in history.")),
-      h("div", { className: "hg-legacy-wrap" }, h(I.HGMetricsTab, { meta, personId, showToast }))
-    );
+    if (view === "metrics") content = h(MetricsView, { meta, personId, data, showToast });
     if (view === "plan") content = h(PlanView, { personId, data, store, meta, updateData, showToast });
 
     return h("div", { className: "hg-app", style: { "--person-accent": meta.accent } },
