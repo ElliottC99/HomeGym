@@ -9,7 +9,7 @@
 
   const h = React.createElement;
   const { useState, useEffect, useCallback, useRef } = React;
-  const APP_VERSION = "v2.1";
+  const APP_VERSION = "v2.2";
   const FEELINGS = [
     ["very_easy", "Very easy"],
     ["good", "Good"],
