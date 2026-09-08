@@ -9,7 +9,7 @@
 
   const h = React.createElement;
   const { useState, useEffect, useCallback, useRef } = React;
-  const APP_VERSION = "v2.2";
+  const APP_VERSION = "v2.3.0";
   const FEELINGS = [
     ["very_easy", "Very easy"],
     ["good", "Good"],
@@ -131,6 +131,493 @@
     return "very_hard";
   }
 
+  function normalizeExerciseName(name) {
+    if (!name) return "";
+    return String(name)
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, "")
+      .trim();
+  }
+
+  function findLogsForExercise(logs, exercise) {
+    if (!logs || !exercise) return [];
+    const exId = String(exercise.id || "");
+    const targetNorm = normalizeExerciseName(exercise.name);
+    return logs.filter(l => {
+      if (!l) return false;
+      if (l.exerciseId && String(l.exerciseId) === exId) return true;
+      if (targetNorm && l.exerciseName && normalizeExerciseName(l.exerciseName) === targetNorm) return true;
+      if (targetNorm && l.name && normalizeExerciseName(l.name) === targetNorm) return true;
+      if (targetNorm && l.exerciseId && normalizeExerciseName(l.exerciseId) === targetNorm) return true;
+      return false;
+    });
+  }
+
+  function mergeDeduplicatedLogs(baseLogs, incomingLogs) {
+    const map = new Map();
+    (baseLogs || []).forEach(l => {
+      if (!l) return;
+      const key = l.id ? String(l.id) : `${l.date}_${l.exerciseId || l.name}_${l.weight}_${l.sets}_${l.reps}`;
+      map.set(String(key), l);
+    });
+    (incomingLogs || []).forEach(l => {
+      if (!l) return;
+      const key = l.id ? String(l.id) : `${l.date}_${l.exerciseId || l.name}_${l.weight}_${l.sets}_${l.reps}`;
+      const existing = map.get(String(key));
+      map.set(String(key), { ...(existing || {}), ...l });
+    });
+    return Array.from(map.values()).sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  }
+
+  const GymCloudEngine = {
+    getFirestore() {
+      try {
+        if (window.firebase && window.firebase.firestore) {
+          if (!window.firebase.apps || !window.firebase.apps.length) {
+            if (window.FIREBASE_CONFIG) window.firebase.initializeApp(window.FIREBASE_CONFIG);
+          }
+          return window.firebase.firestore();
+        }
+      } catch (err) {
+        console.warn("Firestore access:", err?.message);
+      }
+      return null;
+    },
+
+    getRTDB() {
+      try {
+        if (window.firebase && window.firebase.database) {
+          if (!window.firebase.apps || !window.firebase.apps.length) {
+            if (window.FIREBASE_CONFIG) window.firebase.initializeApp(window.FIREBASE_CONFIG);
+          }
+          return window.firebase.database();
+        }
+      } catch (err) {
+        console.warn("RTDB access:", err?.message);
+      }
+      return null;
+    },
+
+    async saveExerciseLog(profileId, log) {
+      if (!profileId || !log || !log.id) return;
+      const clean = {
+        id: String(log.id),
+        type: log.type || "exercise",
+        sessionId: log.sessionId || "",
+        exerciseId: log.exerciseId || "",
+        exerciseName: log.exerciseName || "",
+        normalizedName: normalizeExerciseName(log.exerciseName || log.exerciseId),
+        date: log.date || I.W(),
+        weight: log.weight != null ? Number(log.weight) : null,
+        sets: log.sets != null ? Number(log.sets) : null,
+        reps: log.reps != null ? Number(log.reps) : null,
+        completed: log.completed ?? true,
+        feeling: log.feeling || rpeToFeeling(log.rpe),
+        rpe: log.rpe ?? null,
+        notes: log.notes || "",
+        distance: log.distance != null ? Number(log.distance) : undefined,
+        duration: log.duration != null ? Number(log.duration) : undefined,
+        effort: log.effort || undefined,
+        timestamp: log.timestamp || Date.now(),
+        updatedAt: Date.now()
+      };
+      Object.keys(clean).forEach(k => clean[k] === undefined && delete clean[k]);
+
+      const fs = this.getFirestore();
+      if (fs) {
+        try {
+          await fs.collection("gym_users").doc(profileId).collection("exercise_logs").doc(String(clean.id)).set(clean, { merge: true });
+        } catch (e) {
+          console.warn("Firestore saveExerciseLog:", e?.message);
+        }
+      }
+
+      const rtdb = this.getRTDB();
+      if (rtdb) {
+        try {
+          await rtdb.ref(`gym_users/${profileId}/exercise_logs/${clean.id}`).set(clean);
+        } catch (e) {
+          console.warn("RTDB saveExerciseLog:", e?.message);
+        }
+      }
+    },
+
+    async deleteExerciseLog(profileId, logId) {
+      if (!profileId || !logId) return;
+      const fs = this.getFirestore();
+      if (fs) {
+        try { await fs.collection("gym_users").doc(profileId).collection("exercise_logs").doc(String(logId)).delete(); } catch (e) {}
+      }
+      const rtdb = this.getRTDB();
+      if (rtdb) {
+        try { await rtdb.ref(`gym_users/${profileId}/exercise_logs/${logId}`).remove(); } catch (e) {}
+      }
+    },
+
+    async saveReadinessLog(profileId, log) {
+      if (!profileId || !log || !log.id) return;
+      const clean = {
+        id: String(log.id),
+        date: log.date || I.W(),
+        sleep: log.sleep != null ? Number(log.sleep) : 7.5,
+        sleepHours: log.sleepHours != null ? Number(log.sleepHours) : 7,
+        sleepMins: log.sleepMins != null ? Number(log.sleepMins) : 30,
+        soreness: log.soreness != null ? Number(log.soreness) : 3,
+        motivation: log.motivation != null ? Number(log.motivation) : 3,
+        notes: log.notes || "",
+        timestamp: log.timestamp || Date.now(),
+        updatedAt: Date.now()
+      };
+      const fs = this.getFirestore();
+      if (fs) {
+        try { await fs.collection("gym_users").doc(profileId).collection("readiness_logs").doc(String(clean.id)).set(clean, { merge: true }); } catch (e) {}
+      }
+      const rtdb = this.getRTDB();
+      if (rtdb) {
+        try { await rtdb.ref(`gym_users/${profileId}/readiness_logs/${clean.id}`).set(clean); } catch (e) {}
+      }
+    },
+
+    async deleteReadinessLog(profileId, logId) {
+      if (!profileId || !logId) return;
+      const fs = this.getFirestore();
+      if (fs) {
+        try { await fs.collection("gym_users").doc(profileId).collection("readiness_logs").doc(String(logId)).delete(); } catch (e) {}
+      }
+      const rtdb = this.getRTDB();
+      if (rtdb) {
+        try { await rtdb.ref(`gym_users/${profileId}/readiness_logs/${logId}`).remove(); } catch (e) {}
+      }
+    },
+
+    async saveBodyweightLog(profileId, log) {
+      if (!profileId || !log || !log.id) return;
+      const clean = {
+        id: String(log.id),
+        date: log.date || I.W(),
+        weight: Number(log.weight),
+        note: log.note || "",
+        timestamp: log.timestamp || Date.now(),
+        updatedAt: Date.now()
+      };
+      const fs = this.getFirestore();
+      if (fs) {
+        try { await fs.collection("gym_users").doc(profileId).collection("bodyweight_logs").doc(String(clean.id)).set(clean, { merge: true }); } catch (e) {}
+      }
+      const rtdb = this.getRTDB();
+      if (rtdb) {
+        try { await rtdb.ref(`gym_users/${profileId}/bodyweight_logs/${clean.id}`).set(clean); } catch (e) {}
+      }
+    },
+
+    async deleteBodyweightLog(profileId, logId) {
+      if (!profileId || !logId) return;
+      const fs = this.getFirestore();
+      if (fs) {
+        try { await fs.collection("gym_users").doc(profileId).collection("bodyweight_logs").doc(String(logId)).delete(); } catch (e) {}
+      }
+      const rtdb = this.getRTDB();
+      if (rtdb) {
+        try { await rtdb.ref(`gym_users/${profileId}/bodyweight_logs/${logId}`).remove(); } catch (e) {}
+      }
+    },
+
+    async saveActiveProgram(profileId, programData) {
+      if (!profileId || !programData) return;
+      const payload = {
+        programId: programData.programId || "current",
+        name: programData.programName || programData.name || "Active Routine",
+        startDate: programData.startDate || "",
+        goals: programData.goals || "",
+        resumeNote: programData.resumeNote || "",
+        sessions: programData.sessions || [],
+        weekOverrides: programData.weekOverrides || {},
+        equipment: programData.equipment || null,
+        updatedAt: Date.now()
+      };
+      const fs = this.getFirestore();
+      if (fs) {
+        try {
+          await fs.collection("gym_users").doc(profileId).collection("active_program").doc("current").set(payload, { merge: true });
+        } catch (e) {
+          console.warn("Firestore saveActiveProgram:", e?.message);
+        }
+      }
+      const rtdb = this.getRTDB();
+      if (rtdb) {
+        try {
+          await rtdb.ref(`gym_users/${profileId}/active_program/current`).set(payload);
+        } catch (e) {
+          console.warn("RTDB saveActiveProgram:", e?.message);
+        }
+      }
+    },
+
+    subscribe(profileId, onRemoteUpdate, onStatusChange) {
+      const unsubscribers = [];
+
+      const fs = this.getFirestore();
+      if (fs) {
+        try {
+          const unsubLogs = fs.collection("gym_users").doc(profileId).collection("exercise_logs")
+            .onSnapshot(snap => {
+              const logs = [];
+              snap.forEach(doc => logs.push({ id: doc.id, ...doc.data() }));
+              if (logs.length > 0) {
+                onStatusChange?.("synced");
+                onRemoteUpdate?.("exercise_logs", logs);
+              }
+            }, err => console.warn("Firestore logs error:", err?.message));
+          unsubscribers.push(unsubLogs);
+
+          const unsubRead = fs.collection("gym_users").doc(profileId).collection("readiness_logs")
+            .onSnapshot(snap => {
+              const items = [];
+              snap.forEach(doc => items.push({ id: doc.id, ...doc.data() }));
+              if (items.length > 0) {
+                onStatusChange?.("synced");
+                onRemoteUpdate?.("readiness_logs", items);
+              }
+            }, () => {});
+          unsubscribers.push(unsubRead);
+
+          const unsubBw = fs.collection("gym_users").doc(profileId).collection("bodyweight_logs")
+            .onSnapshot(snap => {
+              const items = [];
+              snap.forEach(doc => items.push({ id: doc.id, ...doc.data() }));
+              if (items.length > 0) {
+                onStatusChange?.("synced");
+                onRemoteUpdate?.("bodyweight_logs", items);
+              }
+            }, () => {});
+          unsubscribers.push(unsubBw);
+
+          const unsubProg = fs.collection("gym_users").doc(profileId).collection("active_program").doc("current")
+            .onSnapshot(doc => {
+              if (doc.exists) {
+                onStatusChange?.("synced");
+                onRemoteUpdate?.("active_program", doc.data());
+              }
+            }, () => {});
+          unsubscribers.push(unsubProg);
+        } catch (e) {
+          console.warn("Firestore subscribe exception:", e?.message);
+        }
+      }
+
+      const rtdb = this.getRTDB();
+      if (rtdb) {
+        try {
+          const logsRef = rtdb.ref(`gym_users/${profileId}/exercise_logs`);
+          const onLogs = snap => {
+            const val = snap.val();
+            if (val) {
+              onStatusChange?.("synced");
+              const logs = Object.keys(val).map(k => ({ id: k, ...val[k] }));
+              onRemoteUpdate?.("exercise_logs", logs);
+            }
+          };
+          logsRef.on("value", onLogs);
+          unsubscribers.push(() => logsRef.off("value", onLogs));
+
+          const progRef = rtdb.ref(`gym_users/${profileId}/active_program/current`);
+          const onProg = snap => {
+            const val = snap.val();
+            if (val) {
+              onStatusChange?.("synced");
+              onRemoteUpdate?.("active_program", val);
+            }
+          };
+          progRef.on("value", onProg);
+          unsubscribers.push(() => progRef.off("value", onProg));
+        } catch (e) {
+          console.warn("RTDB subscribe exception:", e?.message);
+        }
+      }
+
+      return () => {
+        unsubscribers.forEach(fn => {
+          try { fn(); } catch (e) {}
+        });
+      };
+    }
+  };
+
+  async function runLegacyDataRecoveryAndMigration() {
+    const profiles = ["elliott", "chloe"];
+    for (const profileId of profiles) {
+      try {
+        const recoveredLogs = [];
+        const logSeen = new Set();
+        function addLogCandidate(l) {
+          if (!l) return;
+          const exId = l.exerciseId || l.liftId || l.sessionId || "";
+          const name = l.exerciseName || l.name || exId;
+          const normName = normalizeExerciseName(name);
+          const date = l.date || "";
+          const dedupKey = l.id ? String(l.id) : `${date}_${normName}_${l.weight}_${l.sets}_${l.reps}`;
+          if (logSeen.has(dedupKey)) return;
+          logSeen.add(dedupKey);
+
+          recoveredLogs.push({
+            id: String(l.id || `rec_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`),
+            type: l.type || (l.distance != null ? "run" : "exercise"),
+            sessionId: l.sessionId || "",
+            exerciseId: exId,
+            exerciseName: name,
+            normalizedName: normName,
+            date: date || I.W(),
+            weight: l.weight != null && Number.isFinite(Number(l.weight)) ? Number(l.weight) : null,
+            sets: l.sets != null ? Number(l.sets) : null,
+            reps: l.reps != null ? Number(l.reps) : null,
+            completed: l.completed ?? true,
+            feeling: l.feeling || rpeToFeeling(l.rpe),
+            rpe: l.rpe ?? null,
+            notes: l.notes || "",
+            distance: l.distance != null ? Number(l.distance) : undefined,
+            duration: l.duration != null ? Number(l.duration) : undefined,
+            effort: l.effort || undefined,
+            timestamp: l.timestamp || (date ? new Date(`${date}T12:00:00`).getTime() : Date.now()),
+          });
+        }
+
+        let legacyData = null;
+        try {
+          const raw = localStorage.getItem(`data:${profileId}`);
+          if (raw) legacyData = JSON.parse(raw);
+        } catch (e) {}
+        if (legacyData?.logs && Array.isArray(legacyData.logs)) {
+          legacyData.logs.forEach(addLogCandidate);
+        }
+
+        for (let i = 0; i < localStorage.length; i++) {
+          const key = localStorage.key(i);
+          if (key && (key.includes("backup") || key.includes("snapshot") || key.includes("hg_"))) {
+            if (key.includes(profileId)) {
+              try {
+                const parsed = JSON.parse(localStorage.getItem(key));
+                if (parsed?.logs && Array.isArray(parsed.logs)) {
+                  parsed.logs.forEach(addLogCandidate);
+                } else if (parsed?.people?.[profileId]?.logs) {
+                  parsed.people[profileId].logs.forEach(addLogCandidate);
+                }
+              } catch (e) {}
+            }
+          }
+        }
+
+        const fs = GymCloudEngine.getFirestore();
+        if (fs) {
+          try {
+            const docSnap = await fs.collection("gym_users").doc(profileId).get();
+            if (docSnap.exists) {
+              const rootData = docSnap.data();
+              if (rootData?.logs && Array.isArray(rootData.logs)) {
+                rootData.logs.forEach(addLogCandidate);
+              }
+            }
+          } catch (e) {}
+        }
+
+        const rtdb = GymCloudEngine.getRTDB();
+        if (rtdb) {
+          try {
+            const snap = await rtdb.ref(`gym_users/${profileId}`).once("value");
+            const val = snap.val();
+            if (val?.logs && Array.isArray(val.logs)) {
+              val.logs.forEach(addLogCandidate);
+            }
+          } catch (e) {}
+        }
+
+        const recoveredReadiness = [];
+        const readSeen = new Set();
+        function addReadinessCandidate(r) {
+          if (!r || !r.date) return;
+          const id = String(r.id || `r_${r.date}`);
+          if (readSeen.has(id)) return;
+          readSeen.add(id);
+          recoveredReadiness.push({
+            id,
+            date: r.date,
+            sleep: r.sleep != null ? Number(r.sleep) : 7.5,
+            sleepHours: r.sleepHours != null ? Number(r.sleepHours) : 7,
+            sleepMins: r.sleepMins != null ? Number(r.sleepMins) : 30,
+            soreness: r.soreness != null ? Number(r.soreness) : 3,
+            motivation: r.motivation != null ? Number(r.motivation) : 3,
+            notes: r.notes || r.note || "",
+            timestamp: r.timestamp || new Date(`${r.date}T12:00:00`).getTime(),
+          });
+        }
+        try {
+          const localR = JSON.parse(localStorage.getItem(`hg_readiness_${profileId}`) || "[]");
+          if (Array.isArray(localR)) localR.forEach(addReadinessCandidate);
+        } catch (e) {}
+        if (legacyData?.readiness && Array.isArray(legacyData.readiness)) {
+          legacyData.readiness.forEach(addReadinessCandidate);
+        }
+
+        const recoveredWeights = [];
+        const weightSeen = new Set();
+        function addWeightCandidate(w) {
+          if (!w || !w.date || w.weight == null) return;
+          const id = String(w.id || `bw_${w.date}`);
+          if (weightSeen.has(id)) return;
+          weightSeen.add(id);
+          recoveredWeights.push({
+            id,
+            date: w.date,
+            weight: Number(w.weight),
+            note: w.note || "",
+            timestamp: w.timestamp || new Date(`${w.date}T12:00:00`).getTime(),
+          });
+        }
+        try {
+          const localW = JSON.parse(localStorage.getItem(`hg_metrics_${profileId}`) || "[]");
+          if (Array.isArray(localW)) localW.forEach(addWeightCandidate);
+        } catch (e) {}
+        if (legacyData?.bodyweight && Array.isArray(legacyData.bodyweight)) {
+          legacyData.bodyweight.forEach(addWeightCandidate);
+        }
+
+        const logSaves = recoveredLogs.map(log => GymCloudEngine.saveExerciseLog(profileId, log));
+        const readSaves = recoveredReadiness.map(r => GymCloudEngine.saveReadinessLog(profileId, r));
+        const bwSaves = recoveredWeights.map(w => GymCloudEngine.saveBodyweightLog(profileId, w));
+
+        if (legacyData) {
+          await GymCloudEngine.saveActiveProgram(profileId, {
+            startDate: legacyData.startDate,
+            goals: legacyData.goals,
+            resumeNote: legacyData.resumeNote,
+            sessions: legacyData.sessions,
+            weekOverrides: legacyData.weekOverrides,
+            equipment: legacyData.equipment,
+          });
+        }
+
+        await Promise.allSettled([...logSaves, ...readSaves, ...bwSaves]);
+        localStorage.setItem(`hg_v23_migration_confirmed_${profileId}`, "true");
+        console.info(`[v2.3.0] Legacy recovery & migration confirmed for ${profileId}`);
+      } catch (err) {
+        console.error(`[v2.3.0] Recovery notice for ${profileId}:`, err);
+      }
+    }
+  }
+
+  async function loadDecoupledProfile(profileId) {
+    const base = await I.fe(profileId);
+    try {
+      const raw = localStorage.getItem(`data:${profileId}`);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed?.logs && Array.isArray(parsed.logs)) {
+          base.logs = mergeDeduplicatedLogs(base.logs || [], parsed.logs);
+        }
+      }
+    } catch (e) {}
+    return base;
+  }
+
   // --- Equipment & Progressive Overload Helpers ---
 
   function getAvailablePlates(data, personId) {
@@ -235,7 +722,7 @@
     const plates = getAvailablePlates(data, personId);
     const isPerSide = exercise.weightMode === "perSide";
 
-    const logs = [...(data?.logs || [])].filter(l => l.exerciseId === exercise.id && l.weight != null && Number.isFinite(Number(l.weight)));
+    const logs = findLogsForExercise(data?.logs || [], exercise).filter(l => l.weight != null && Number.isFinite(Number(l.weight)));
     logs.sort((a, b) => b.date.localeCompare(a.date));
     const previous = logs[0] || null;
     const prev2 = logs[1] || null;
@@ -599,7 +1086,10 @@
         sleepMins: mins,
         soreness: Number(soreness),
         motivation: Number(motivation),
+        notes: "",
+        timestamp: Date.now()
       };
+      GymCloudEngine.saveReadinessLog(personId, entry);
       storageSet(key, [...records.filter(item => item.date !== today), entry]);
       setOpen(false);
       showToast("Readiness saved");
@@ -752,6 +1242,8 @@
         type: "exercise",
         sessionId: session.id,
         exerciseId: exercise.id,
+        exerciseName: exercise.name,
+        normalizedName: normalizeExerciseName(exercise.name),
         date,
         weight: I.Ae(weight),
         sets: Number.parseInt(sets, 10),
@@ -760,8 +1252,10 @@
         feeling,
         rpe: sameDay?.rpe ?? null,
         notes: notes.trim(),
+        timestamp: Date.now()
       };
       const isPr = I.ye(data.logs, exercise.id, entry);
+      GymCloudEngine.saveExerciseLog(personId, entry);
       updateData(personId, current => ({
         ...current,
         logs: sameDay
@@ -872,12 +1366,16 @@
         type: "run",
         sessionId: session.id,
         exerciseId: session.id,
+        exerciseName: session.name || "Run",
+        normalizedName: normalizeExerciseName(session.name || "run"),
         date,
         distance: Number(distance),
         duration: Number(duration),
         effort,
         notes: notes.trim(),
+        timestamp: Date.now()
       };
+      GymCloudEngine.saveExerciseLog(personId, entry);
       updateData(personId, current => ({
         ...current,
         logs: sameDay
@@ -1369,17 +1867,23 @@
         if (!distance || !duration) return showToast("Add distance and duration");
         entry = {
           id: initialLog?.id || `${Date.now()}`, type: "run", sessionId: selected.session.id,
-          exerciseId: selected.session.id, date, distance: Number(distance), duration: Number(duration),
-          effort, notes: notes.trim(),
+          exerciseId: selected.session.id, exerciseName: selected.session.name || "Run",
+          normalizedName: normalizeExerciseName(selected.session.name || "run"),
+          date, distance: Number(distance), duration: Number(duration),
+          effort, notes: notes.trim(), timestamp: Date.now()
         };
       } else {
         if (!sets || !reps) return showToast("Add sets and reps");
         entry = {
           id: initialLog?.id || `${Date.now()}`, type: "exercise", sessionId: selected.session.id,
-          exerciseId: selected.exercise.id, date, weight: I.Ae(weight), sets: Number(sets),
+          exerciseId: selected.exercise.id, exerciseName: selected.exercise.name,
+          normalizedName: normalizeExerciseName(selected.exercise.name),
+          date, weight: I.Ae(weight), sets: Number(sets),
           reps: Number(reps), completed: true, feeling, rpe: initialLog?.rpe ?? null, notes: notes.trim(),
+          timestamp: Date.now()
         };
       }
+      GymCloudEngine.saveExerciseLog(personId, entry);
       updateData(personId, current => ({
         ...current,
         logs: initialLog ? current.logs.map(log => log.id === initialLog.id ? entry : log) : [...current.logs, entry],
@@ -1441,6 +1945,7 @@
 
     function remove(log) {
       if (!window.confirm("Delete this history entry? This cannot be undone.")) return;
+      GymCloudEngine.deleteExerciseLog(personId, log.id);
       updateData(personId, current => ({ ...current, logs: current.logs.filter(item => item.id !== log.id) }));
       showToast("Entry deleted");
     }
@@ -1462,7 +1967,7 @@
           const session = data.sessions.find(item => item.id === log.sessionId);
           return h("div", { className: "hg-history-row", key: log.id },
             h("div", null,
-              h("div", { className: "hg-history-result" }, log.type === "run" ? session?.name || "Run" : found?.exercise?.name || log.exerciseId),
+              h("div", { className: "hg-history-result" }, log.type === "run" ? (session?.name || log.exerciseName || "Run") : (found?.exercise?.name || log.exerciseName || log.exerciseId)),
               h("div", null, logDisplay(data, log)),
               h("div", { className: "hg-history-meta" },
                 `${log.date}${log.feeling ? ` · ${FEELING_LABELS[log.feeling] || log.feeling}` : log.rpe != null ? ` · RPE ${log.rpe}` : ""}${log.type === "run" ? ` · ${log.effort}` : ""}`
@@ -1653,8 +2158,10 @@
         id: I.HGuid ? I.HGuid("metric") : `w_${Date.now()}`,
         date: weightDate,
         weight: num,
-        note: weightNote.trim()
+        note: weightNote.trim(),
+        timestamp: Date.now()
       };
+      GymCloudEngine.saveBodyweightLog(personId, entry);
       const next = [...weights.filter(w => w.date !== weightDate), entry].sort((a, b) => a.date.localeCompare(b.date));
       setWeights(next);
       storageSet(weightKey, next);
@@ -1664,6 +2171,7 @@
     }
 
     function deleteWeight(id) {
+      GymCloudEngine.deleteBodyweightLog(personId, id);
       const next = weights.filter(w => w.id !== id);
       setWeights(next);
       storageSet(weightKey, next);
@@ -1671,6 +2179,7 @@
     }
 
     function deleteReadiness(id) {
+      GymCloudEngine.deleteReadinessLog(personId, id);
       const next = readiness.filter(r => r.id !== id);
       setReadiness(next);
       storageSet(readinessKey, next);
@@ -1838,6 +2347,37 @@
       h("div", { className: "hg-view-header" },
         h("h1", null, "Plan"),
         h("p", null, "Schedule, progression, deloads, backups, and plan editing.")
+      ),
+      h("div", { className: "hg-card", style: { marginBottom: 18 } },
+        h("div", { className: "hg-card-title" }, "Sub-Collection Cloud Engine & Continuity"),
+        h("div", { className: "hg-card-copy" },
+          "Exercise logs, 1RM progression, readiness, and weight logs are strictly decoupled from your workout plan. Updating or swapping your .json routine updates your active program without purging or resetting your history."
+        ),
+        h("div", { className: "hg-actions" },
+          h(Button, {
+            onClick: async () => {
+              showToast("Syncing & linking history to current routine…");
+              await runLegacyDataRecoveryAndMigration();
+              const exMap = new Map();
+              data.sessions.forEach(s => s.groups?.forEach(g => g.exercises?.forEach(ex => {
+                if (ex) exMap.set(normalizeExerciseName(ex.name), ex);
+              })));
+              let linked = 0;
+              const reLinked = (data.logs || []).map(l => {
+                const norm = normalizeExerciseName(l.exerciseName || l.exerciseId);
+                const matched = exMap.get(norm);
+                if (matched) {
+                  linked++;
+                  return { ...l, exerciseId: matched.id, exerciseName: matched.name, normalizedName: norm };
+                }
+                return l;
+              });
+              updateData(personId, c => ({ ...c, logs: reLinked }));
+              reLinked.forEach(l => GymCloudEngine.saveExerciseLog(personId, l));
+              showToast(`History linked & synced: ${linked} matching logs connected to current routine`);
+            }
+          }, "Re-link History & Sync Sub-Collections")
+        )
       ),
       h(EquipmentSection, { personId, data, updateData, showToast }),
       h("div", { className: "hg-card", style: { marginBottom: 18 } },
@@ -2021,50 +2561,72 @@
     const toastTimer = useRef(null);
 
     useEffect(() => {
-      Promise.all([I.fe("elliott"), I.fe("chloe")]).then(([elliott, chloe]) => {
+      async function initializeData() {
+        await runLegacyDataRecoveryAndMigration();
+        const [elliott, chloe] = await Promise.all([
+          loadDecoupledProfile("elliott"),
+          loadDecoupledProfile("chloe")
+        ]);
         setStore({ elliott, chloe });
         setLoading(false);
-      });
-    }, []);
-
-    useEffect(() => {
-      if (!window.firebase?.auth) return undefined;
-      I.Ke();
-      const auth = window.firebase.auth();
-      const unsubscribe = auth.onAuthStateChanged(user => {
-        if (user) setAuthEpoch(value => value + 1);
-        else auth.signInAnonymously().catch(error => {
-          console.warn("Anonymous Firebase authentication is not enabled:", error?.message);
-        });
-      });
-      return unsubscribe;
-    }, []);
-
-    useEffect(() => {
-      const database = I.Ke();
-      dbRef.current = database;
-      if (!database || !pin) {
-        setSyncStatus("local-only");
-        return undefined;
       }
-      setSyncStatus("connecting");
-      let received = false;
-      const update = id => remote => {
-        received = true;
-        setSyncStatus("synced");
-        setStore(current => I.Ze(current, id, remote));
+      initializeData();
+    }, []);
+
+    // Direct profile-based cloud sync with sub-collections gym_users/{profileId}
+    // No failing anonymous auth calls!
+    useEffect(() => {
+      const handleRemoteUpdate = (id, subCollection, remoteData) => {
+        setStore(current => {
+          if (!current[id]) return current;
+          const currentProfile = current[id];
+          if (subCollection === "exercise_logs") {
+            const mergedLogs = mergeDeduplicatedLogs(currentProfile.logs || [], remoteData);
+            const next = { ...currentProfile, logs: mergedLogs, updatedAt: Date.now() };
+            I.Ee(id, next);
+            return { ...current, [id]: next };
+          }
+          if (subCollection === "active_program") {
+            // Decoupled: Updating active program MUST NEVER overwrite exercise history
+            const next = {
+              ...currentProfile,
+              startDate: remoteData.startDate || currentProfile.startDate,
+              goals: remoteData.goals || currentProfile.goals,
+              resumeNote: remoteData.resumeNote || currentProfile.resumeNote,
+              sessions: remoteData.sessions || currentProfile.sessions,
+              weekOverrides: remoteData.weekOverrides || currentProfile.weekOverrides,
+              equipment: remoteData.equipment || currentProfile.equipment,
+              updatedAt: Date.now()
+            };
+            I.Ee(id, next);
+            return { ...current, [id]: next };
+          }
+          return current;
+        });
       };
-      const offElliott = I.be(database, pin, "elliott", update("elliott"), () => setSyncStatus("local-only"));
-      const offChloe = I.be(database, pin, "chloe", update("chloe"), () => setSyncStatus("local-only"));
+
+      const unsubElliott = GymCloudEngine.subscribe(
+        "elliott",
+        (subCol, data) => handleRemoteUpdate("elliott", subCol, data),
+        status => setSyncStatus(status)
+      );
+
+      const unsubChloe = GymCloudEngine.subscribe(
+        "chloe",
+        (subCol, data) => handleRemoteUpdate("chloe", subCol, data),
+        status => setSyncStatus(status)
+      );
+
       const timeout = setTimeout(() => {
-        if (!received) setSyncStatus("local-only");
+        setSyncStatus(prev => (prev === "connecting" ? "local-only" : prev));
       }, 5000);
+
       return () => {
-        offElliott();
-        offChloe();
+        unsubElliott();
+        unsubChloe();
         clearTimeout(timeout);
       };
-    }, [pin, authEpoch]);
+    }, []);
 
     useEffect(() => {
       setActiveState(loadActive(personId));
@@ -2079,12 +2641,29 @@
     const updateData = useCallback((id, updater) => {
       setStore(current => {
         if (!current[id]) return current;
-        const next = { ...updater(current[id]), updatedAt: Date.now() };
+        const currentProfile = current[id];
+        const updated = updater(currentProfile);
+
+        // Decoupled preservation: NEVER purge or overwrite exercise history, readiness, or weight logs
+        const preservedLogs = (Array.isArray(updated.logs) && updated.logs.length > 0)
+          ? mergeDeduplicatedLogs(currentProfile.logs || [], updated.logs)
+          : (currentProfile.logs || []);
+
+        const next = {
+          ...updated,
+          logs: preservedLogs,
+          updatedAt: Date.now()
+        };
+
+        // Save active program to sub-collection
+        GymCloudEngine.saveActiveProgram(id, next);
+
+        // Mirror to local storage
         I.Ee(id, next);
-        I.Ye(dbRef.current, pin, id, next);
+
         return { ...current, [id]: next };
       });
-    }, [pin]);
+    }, []);
 
     function setPersonId(id) {
       if (!I.J.includes(id)) return;
@@ -2126,14 +2705,10 @@
     function saveHouseholdKey(value) {
       I.Je(value);
       setPin(value);
-      const database = I.Ke();
-      if (database) {
-        I.J.forEach(id => {
-          if (store[id]) I.Ye(database, value, id, { ...store[id], updatedAt: Date.now() });
-        });
-      }
+      GymCloudEngine.saveActiveProgram("elliott", store.elliott);
+      GymCloudEngine.saveActiveProgram("chloe", store.chloe);
       setSettingsOpen(false);
-      showToast("Household key saved on this phone");
+      showToast("Settings saved & sub-collections synced");
     }
 
     if (loading || !store[personId]) {

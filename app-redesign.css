@@ -330,6 +330,17 @@ textarea.hg-input { min-height: 82px; resize: vertical; }
   color: var(--hg-text);
   font-family: 'JetBrains Mono', ui-monospace, monospace;
 }
+
+.hg-rec-badge {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--person-accent, var(--hg-action));
+  background: color-mix(in srgb, var(--person-accent, var(--hg-action)) 15%, transparent);
+  border: 1px solid color-mix(in srgb, var(--person-accent, var(--hg-action)) 30%, transparent);
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+}
 .hg-rec-reason {
   margin-top: 6px;
   font-size: 13px;

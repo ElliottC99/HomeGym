@@ -1,6 +1,6 @@
 // Home Gym — offline shell and explicit update lifecycle.
 // Increment this value for every release.
-const CACHE_NAME = "home-gym-log-v2.2";
+const CACHE_NAME = "home-gym-log-v2.3";
 
 const REQUIRED_SHELL = [
   "./",
@@ -21,17 +21,21 @@ const OPTIONAL_SHELL = [
   "https://unpkg.com/react@18/umd/react.production.min.js",
   "https://unpkg.com/react-dom@18/umd/react-dom.production.min.js",
   "https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js",
-  "https://www.gstatic.com/firebasejs/10.13.0/firebase-auth-compat.js",
+  "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore-compat.js",
   "https://www.gstatic.com/firebasejs/10.13.0/firebase-database-compat.js",
   "https://www.gstatic.com/firebasejs/10.13.0/firebase-messaging-compat.js",
 ];
 
 self.addEventListener("install", event => {
+  self.skipWaiting();
   event.waitUntil(
-    caches.open(CACHE_NAME).then(async cache => {
-      await cache.addAll(REQUIRED_SHELL);
-      await Promise.allSettled(OPTIONAL_SHELL.map(url => cache.add(url)));
-    })
+    caches.keys()
+      .then(keys => Promise.all(keys.filter(key => key !== CACHE_NAME).map(key => caches.delete(key))))
+      .then(() => caches.open(CACHE_NAME))
+      .then(async cache => {
+        await cache.addAll(REQUIRED_SHELL);
+        await Promise.allSettled(OPTIONAL_SHELL.map(url => cache.add(url)));
+      })
   );
 });
 

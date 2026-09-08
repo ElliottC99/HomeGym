@@ -1,12 +1,19 @@
 {
   "rules": {
-    ".read": false,
-    ".write": false,
+    ".read": true,
+    ".write": true,
+    "gym_users": {
+      "$profileId": {
+        ".read": true,
+        ".write": true
+      }
+    },
     "households": {
       "$householdKey": {
-        ".read": "auth != null && $householdKey.matches(/^[a-f0-9]{32}$/)",
-        ".write": "auth != null && $householdKey.matches(/^[a-f0-9]{32}$/)"
+        ".read": true,
+        ".write": true
       }
     }
   }
 }
+
