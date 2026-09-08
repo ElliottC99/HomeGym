@@ -9,7 +9,7 @@
 
   const h = React.createElement;
   const { useState, useEffect, useCallback, useRef } = React;
-  const APP_VERSION = "v2.3.0";
+  const APP_VERSION = "v2.3.1";
   const FEELINGS = [
     ["very_easy", "Very easy"],
     ["good", "Good"],
@@ -445,6 +445,7 @@
 
   async function runLegacyDataRecoveryAndMigration() {
     const profiles = ["elliott", "chloe"];
+    const results = { elliott: [], chloe: [] };
     for (const profileId of profiles) {
       try {
         const recoveredLogs = [];
@@ -596,16 +597,18 @@
         }
 
         await Promise.allSettled([...logSaves, ...readSaves, ...bwSaves]);
+        results[profileId] = recoveredLogs;
         localStorage.setItem(`hg_v23_migration_confirmed_${profileId}`, "true");
-        console.info(`[v2.3.0] Legacy recovery & migration confirmed for ${profileId}`);
+        console.info(`[v2.3.1] Legacy recovery & migration confirmed for ${profileId} (${recoveredLogs.length} logs synced)`);
       } catch (err) {
-        console.error(`[v2.3.0] Recovery notice for ${profileId}:`, err);
+        console.error(`[v2.3.1] Recovery notice for ${profileId}:`, err);
       }
     }
+    return results;
   }
 
-  async function loadDecoupledProfile(profileId) {
-    const base = await I.fe(profileId);
+  function loadDecoupledProfile(profileId) {
+    const base = I.fe(profileId);
     try {
       const raw = localStorage.getItem(`data:${profileId}`);
       if (raw) {
@@ -1224,7 +1227,6 @@
     const [reps, setReps] = useState(sameDay?.reps != null ? String(sameDay.reps) : prescribed.reps);
     const [feeling, setFeeling] = useState(sameDay?.feeling || rpeToFeeling(sameDay?.rpe));
     const [notes, setNotes] = useState(sameDay?.notes || "");
-    const target = I.de(exercise, weekInfo);
 
     useEffect(() => {
       if (!sameDay && recommendation?.recommendedWeight != null && (weight === "" || weight === undefined)) {
@@ -1276,8 +1278,10 @@
             exercise.restNote && exercise.restNote !== "—" ? ` · rest ${exercise.restNote}` : ""
           )
         ),
-        h("div", { className: "hg-exercise-target" },
-          target != null ? I.z(target, exercise.weightMode === "perSide") : I.re(exercise)
+        h("div", { className: "hg-exercise-target", title: "Target Recommendation" },
+          recommendation?.recommendedWeight != null
+            ? recommendation.formattedWeight
+            : (exercise.startLabel || "Bodyweight")
         )
       ),
       exercise.note && h("div", { className: "hg-callout" }, exercise.note),
@@ -1317,7 +1321,7 @@
       ),
       h("div", { className: "hg-fields" },
         h(Field, { label: `Weight (${exercise.unit}${exercise.weightMode === "perSide" ? " each" : ""})` },
-          h("input", { className: "hg-input", type: "text", inputMode: "decimal", value: weight, onChange: event => setWeight(event.target.value), placeholder: I.re(exercise) })
+          h("input", { className: "hg-input", type: "text", inputMode: "decimal", value: weight, onChange: event => setWeight(event.target.value), placeholder: recommendation?.formattedWeight || "Weight" })
         ),
         h(Field, { label: "Sets completed" },
           h("input", { className: "hg-input", type: "number", min: 0, value: sets, onChange: event => setSets(event.target.value) })
@@ -2541,36 +2545,66 @@
     );
   }
 
+  function getInitialActiveProfile() {
+    const candidateKeys = [
+      "hg_active_profile",
+      "activeProfile",
+      "currentProfile",
+      "hg_selected_person"
+    ];
+    try {
+      for (const k of candidateKeys) {
+        const val = localStorage.getItem(k);
+        if (val && I.J && I.J.includes(val)) {
+          return val;
+        }
+      }
+      // Default to 'elliott' if null or missing
+      localStorage.setItem("hg_active_profile", "elliott");
+      localStorage.setItem("activeProfile", "elliott");
+      localStorage.setItem("currentProfile", "elliott");
+      localStorage.setItem("hg_selected_person", "elliott");
+    } catch (e) {}
+    return "elliott";
+  }
+
   function App() {
-    const [personId, setPersonIdState] = useState(() => {
-      try {
-        const saved = localStorage.getItem("hg_selected_person");
-        return I.J.includes(saved) ? saved : "elliott";
-      } catch { return "elliott"; }
-    });
-    const [store, setStore] = useState({ elliott: null, chloe: null });
-    const [loading, setLoading] = useState(true);
+    const [personId, setPersonIdState] = useState(getInitialActiveProfile);
+    const [store, setStore] = useState(() => ({
+      elliott: loadDecoupledProfile("elliott"),
+      chloe: loadDecoupledProfile("chloe")
+    }));
     const [view, setView] = useState("today");
     const [settingsOpen, setSettingsOpen] = useState(false);
     const [toast, setToast] = useState("");
     const [pin, setPin] = useState(I.qe());
     const [syncStatus, setSyncStatus] = useState(pin ? "connecting" : "local-only");
     const [authEpoch, setAuthEpoch] = useState(0);
-    const [active, setActiveState] = useState(() => loadActive(personId));
+    const [active, setActiveState] = useState(() => loadActive(getInitialActiveProfile()));
     const dbRef = useRef(null);
     const toastTimer = useRef(null);
 
+    // Asynchronous background migration routine:
+    // Runs safely after initial UI render without blocking boot or awaiting cloud promises
     useEffect(() => {
-      async function initializeData() {
-        await runLegacyDataRecoveryAndMigration();
-        const [elliott, chloe] = await Promise.all([
-          loadDecoupledProfile("elliott"),
-          loadDecoupledProfile("chloe")
-        ]);
-        setStore({ elliott, chloe });
-        setLoading(false);
-      }
-      initializeData();
+      const timer = setTimeout(() => {
+        runLegacyDataRecoveryAndMigration().then(recovered => {
+          if (recovered && (recovered.elliott?.length || recovered.chloe?.length)) {
+            setStore(current => {
+              const nextElliott = recovered.elliott?.length
+                ? { ...current.elliott, logs: mergeDeduplicatedLogs(current.elliott?.logs || [], recovered.elliott) }
+                : current.elliott;
+              const nextChloe = recovered.chloe?.length
+                ? { ...current.chloe, logs: mergeDeduplicatedLogs(current.chloe?.logs || [], recovered.chloe) }
+                : current.chloe;
+              return { elliott: nextElliott, chloe: nextChloe };
+            });
+          }
+        }).catch(err => {
+          console.warn("[v2.3.1] Background migration notice:", err?.message);
+        });
+      }, 150);
+      return () => clearTimeout(timer);
     }, []);
 
     // Direct profile-based cloud sync with sub-collections gym_users/{profileId}
@@ -2667,7 +2701,12 @@
 
     function setPersonId(id) {
       if (!I.J.includes(id)) return;
-      try { localStorage.setItem("hg_selected_person", id); } catch {}
+      try {
+        localStorage.setItem("hg_active_profile", id);
+        localStorage.setItem("activeProfile", id);
+        localStorage.setItem("currentProfile", id);
+        localStorage.setItem("hg_selected_person", id);
+      } catch {}
       setPersonIdState(id);
       setView("today");
     }
@@ -2711,13 +2750,8 @@
       showToast("Settings saved & sub-collections synced");
     }
 
-    if (loading || !store[personId]) {
-      return h("div", { className: "hg-app", style: { display: "grid", placeItems: "center", minHeight: "100dvh" } },
-        h("div", { className: "hg-card" }, "Loading Home Gym…")
-      );
-    }
-
-    const data = store[personId];
+    const data = store[personId] || loadDecoupledProfile(personId) || I.K[personId];
+    if (!data) return null;
     const meta = I.ie[personId];
     const weekInfo = I.HGgetDeload(personId) === I.j(I.W())
       ? { ...I.Re(data.startDate), isDeload: true }
