@@ -9,7 +9,7 @@
 
   const h = React.createElement;
   const { useState, useEffect, useCallback, useRef } = React;
-  const APP_VERSION = "v2.3.1";
+  const APP_VERSION = "v2.3.2";
   const FEELINGS = [
     ["very_easy", "Very easy"],
     ["good", "Good"],
@@ -608,17 +608,39 @@
   }
 
   function loadDecoupledProfile(profileId) {
-    const base = I.fe(profileId);
+    const k = (I.K && I.K[profileId]) ? I.K[profileId] : { goals: "", resumeNote: "", sessions: [] };
+    const defaultData = {
+      startDate: (I.j && I.W) ? I.j(I.W()) : "2026-09-07",
+      goals: k.goals || "",
+      resumeNote: k.resumeNote || "",
+      sessions: Array.isArray(k.sessions) ? k.sessions : [],
+      weekOverrides: {},
+      logs: [],
+      updatedAt: 0,
+    };
+
     try {
       const raw = localStorage.getItem(`data:${profileId}`);
       if (raw) {
         const parsed = JSON.parse(raw);
-        if (parsed?.logs && Array.isArray(parsed.logs)) {
-          base.logs = mergeDeduplicatedLogs(base.logs || [], parsed.logs);
+        if (parsed && typeof parsed === "object") {
+          const logs = Array.isArray(parsed.logs) ? parsed.logs.map(i => ({ ...i, exerciseId: i.exerciseId || i.liftId })) : [];
+          return {
+            startDate: parsed.startDate || defaultData.startDate,
+            goals: parsed.goals || defaultData.goals,
+            resumeNote: parsed.resumeNote || defaultData.resumeNote,
+            sessions: Array.isArray(parsed.sessions) && parsed.sessions.length ? parsed.sessions : defaultData.sessions,
+            weekOverrides: parsed.weekOverrides && typeof parsed.weekOverrides === "object" ? parsed.weekOverrides : {},
+            logs: logs,
+            equipment: parsed.equipment || null,
+            updatedAt: typeof parsed.updatedAt === "number" ? parsed.updatedAt : 0,
+          };
         }
       }
-    } catch (e) {}
-    return base;
+    } catch (e) {
+      console.warn("loadDecoupledProfile parse error:", e);
+    }
+    return defaultData;
   }
 
   // --- Equipment & Progressive Overload Helpers ---
@@ -932,6 +954,7 @@
   }
 
   function todaySessions(data) {
+    if (!data || !Array.isArray(data.sessions)) return [];
     const today = I.W();
     const monday = I.j(today);
     const day = I.De(today);
@@ -939,6 +962,7 @@
   }
 
   function nextScheduled(data) {
+    if (!data || !Array.isArray(data.sessions)) return null;
     const today = I.W();
     for (let offset = 1; offset <= 7; offset += 1) {
       const date = I.ae(today, offset);
@@ -1061,7 +1085,8 @@
   function ReadinessInline({ personId, showToast }) {
     const key = `hg_readiness_${personId}`;
     const today = I.W();
-    const records = storageGet(key, []);
+    const rawRecords = storageGet(key, []);
+    const records = Array.isArray(rawRecords) ? rawRecords : [];
     const current = records.find(item => item.date === today);
     const [open, setOpen] = useState(!current);
 
@@ -1207,11 +1232,12 @@
 
   function ExerciseStep({ personId, data, session, item, weekInfo, date, active, setActive, updateData, showToast, onBack, onSkip, onSaved }) {
     const exercise = item.exercise;
-    const sameDay = data.logs.find(log =>
+    const logsList = Array.isArray(data?.logs) ? data.logs : [];
+    const sameDay = logsList.find(log =>
       log.type === "exercise" && log.sessionId === session.id &&
       log.exerciseId === exercise.id && log.date === date
     );
-    const previous = [...data.logs].filter(log =>
+    const previous = [...logsList].filter(log =>
       log.type === "exercise" && log.exerciseId === exercise.id && log.id !== sameDay?.id
     ).sort((a, b) => b.date.localeCompare(a.date))[0];
     const prescribed = parsePrescription(exercise.setsReps);
@@ -1490,8 +1516,9 @@
     }
 
     const progress = steps.length <= 1 ? 100 : Math.round((stepIndex / (steps.length - 1)) * 100);
-    const sessionLogs = data.logs.filter(log => log.sessionId === session.id && log.date === active.date);
-    const prCount = sessionLogs.filter(log => log.type === "exercise" && I.ye(data.logs, log.exerciseId, log)).length;
+    const logsList = Array.isArray(data?.logs) ? data.logs : [];
+    const sessionLogs = logsList.filter(log => log.sessionId === session.id && log.date === active.date);
+    const prCount = sessionLogs.filter(log => log.type === "exercise" && I.ye(logsList, log.exerciseId, log)).length;
 
     return h("div", { className: "hg-workout", style: { "--person-accent": meta.accent } },
       h("div", { className: "hg-workout-top" },
@@ -1579,7 +1606,8 @@
     const [sessionToMove, setSessionToMove] = useState(null);
     const [bringToTodayOpen, setBringToTodayOpen] = useState(false);
     const [rearrangeWeekOpen, setRearrangeWeekOpen] = useState(false);
-    const otherSessions = data.sessions.filter(session =>
+    const sessionsList = Array.isArray(data?.sessions) ? data.sessions : [];
+    const otherSessions = sessionsList.filter(session =>
       I.ue(data, session, monday) !== todayDay
     );
 
@@ -1688,7 +1716,7 @@
           ),
           h("div", { className: "hg-swap-options" },
             WEEK_DAYS.filter(day => day !== I.ue(data, sessionToMove, monday)).map(day => {
-              const workoutsThere = data.sessions.filter(option =>
+              const workoutsThere = sessionsList.filter(option =>
                 option.id !== sessionToMove.id && I.ue(data, option, monday) === day
               );
               return h("button", {
@@ -1858,7 +1886,8 @@
         const parsed = parsePrescription(selected.exercise.setsReps);
         setSets(parsed.sets);
         setReps(parsed.reps);
-        const previous = [...data.logs].filter(log => log.exerciseId === selected.exercise.id).sort((a,b) => b.date.localeCompare(a.date))[0];
+        const logsList = Array.isArray(data?.logs) ? data.logs : [];
+        const previous = [...logsList].filter(log => log.exerciseId === selected.exercise.id).sort((a,b) => b.date.localeCompare(a.date))[0];
         setWeight(previous?.weight != null ? String(previous.weight) : "");
       }
       if (!initialLog && selected?.type === "run") setDistance(String(selected.session.targetKm || ""));
@@ -1945,12 +1974,13 @@
 
   function HistoryView({ personId, data, updateData, showToast }) {
     const [editor, setEditor] = useState(null);
-    const sorted = [...data.logs].sort((a, b) => b.date.localeCompare(a.date) || String(b.id).localeCompare(String(a.id))).slice(0, 50);
+    const logsList = Array.isArray(data?.logs) ? data.logs : [];
+    const sorted = [...logsList].sort((a, b) => b.date.localeCompare(a.date) || String(b.id).localeCompare(String(a.id))).slice(0, 50);
 
     function remove(log) {
       if (!window.confirm("Delete this history entry? This cannot be undone.")) return;
       GymCloudEngine.deleteExerciseLog(personId, log.id);
-      updateData(personId, current => ({ ...current, logs: current.logs.filter(item => item.id !== log.id) }));
+      updateData(personId, current => ({ ...current, logs: (current?.logs || []).filter(item => item.id !== log.id) }));
       showToast("Entry deleted");
     }
 
@@ -1968,7 +1998,7 @@
       ) : h("div", { className: "hg-card" },
         sorted.map(log => {
           const found = log.type === "exercise" ? findExercise(data, log.sessionId, log.exerciseId) : null;
-          const session = data.sessions.find(item => item.id === log.sessionId);
+          const session = (data?.sessions || []).find(item => item.id === log.sessionId);
           return h("div", { className: "hg-history-row", key: log.id },
             h("div", null,
               h("div", { className: "hg-history-result" }, log.type === "run" ? (session?.name || log.exerciseName || "Run") : (found?.exercise?.name || log.exerciseName || log.exerciseId)),
@@ -2142,12 +2172,20 @@
     const weightKey = `hg_metrics_${personId}`;
     const readinessKey = `hg_readiness_${personId}`;
 
-    const [weights, setWeights] = useState(() => storageGet(weightKey, []));
-    const [readiness, setReadiness] = useState(() => storageGet(readinessKey, []));
+    const [weights, setWeights] = useState(() => {
+      const w = storageGet(weightKey, []);
+      return Array.isArray(w) ? w : [];
+    });
+    const [readiness, setReadiness] = useState(() => {
+      const r = storageGet(readinessKey, []);
+      return Array.isArray(r) ? r : [];
+    });
 
     useEffect(() => {
-      setWeights(storageGet(weightKey, []));
-      setReadiness(storageGet(readinessKey, []));
+      const w = storageGet(weightKey, []);
+      const r = storageGet(readinessKey, []);
+      setWeights(Array.isArray(w) ? w : []);
+      setReadiness(Array.isArray(r) ? r : []);
     }, [personId]);
 
     const [weightDate, setWeightDate] = useState(I.W());
@@ -2166,7 +2204,8 @@
         timestamp: Date.now()
       };
       GymCloudEngine.saveBodyweightLog(personId, entry);
-      const next = [...weights.filter(w => w.date !== weightDate), entry].sort((a, b) => a.date.localeCompare(b.date));
+      const curWeights = Array.isArray(weights) ? weights : [];
+      const next = [...curWeights.filter(w => w.date !== weightDate), entry].sort((a, b) => a.date.localeCompare(b.date));
       setWeights(next);
       storageSet(weightKey, next);
       showToast("Body weight logged");
@@ -2176,7 +2215,7 @@
 
     function deleteWeight(id) {
       GymCloudEngine.deleteBodyweightLog(personId, id);
-      const next = weights.filter(w => w.id !== id);
+      const next = (Array.isArray(weights) ? weights : []).filter(w => w.id !== id);
       setWeights(next);
       storageSet(weightKey, next);
       showToast("Weight entry deleted");
@@ -2184,13 +2223,13 @@
 
     function deleteReadiness(id) {
       GymCloudEngine.deleteReadinessLog(personId, id);
-      const next = readiness.filter(r => r.id !== id);
+      const next = (Array.isArray(readiness) ? readiness : []).filter(r => r.id !== id);
       setReadiness(next);
       storageSet(readinessKey, next);
       showToast("Readiness entry deleted");
     }
 
-    const sortedWeights = [...weights].sort((a, b) => a.date.localeCompare(b.date));
+    const sortedWeights = [...(Array.isArray(weights) ? weights : [])].sort((a, b) => a.date.localeCompare(b.date));
     const latestW = sortedWeights.length ? sortedWeights[sortedWeights.length - 1] : null;
     const earliestW = sortedWeights.length ? sortedWeights[0] : null;
     const diffW = latestW && earliestW && latestW !== earliestW ? Math.round((latestW.weight - earliestW.weight) * 10) / 10 : 0;
@@ -2329,8 +2368,9 @@
   }
 
   function ProgressView({ personId, data, meta, weekInfo, showToast }) {
-    const streak = I.HGcurrentStreak(data);
-    const completed = data.logs.filter(log => log.date.slice(0, 7) === I.W().slice(0, 7)).length;
+    const streak = I.HGcurrentStreak ? I.HGcurrentStreak(data) : 0;
+    const logsList = Array.isArray(data?.logs) ? data.logs : [];
+    const completed = logsList.filter(log => log.date.slice(0, 7) === I.W().slice(0, 7)).length;
     return h(React.Fragment, null,
       h("div", { className: "hg-view-header" },
         h("h1", null, "Progress"),
@@ -2407,8 +2447,8 @@
   function SettingsModal({ personId, store, pin, syncStatus, updateData, onSaveKey, onClose, showToast }) {
     const [theme, setTheme] = useState(getTheme());
     const [key, setKey] = useState(pin || "");
-    const [elliottStart, setElliottStart] = useState(store.elliott.startDate);
-    const [chloeStart, setChloeStart] = useState(store.chloe.startDate);
+    const [elliottStart, setElliottStart] = useState(store?.elliott?.startDate || "2026-09-07");
+    const [chloeStart, setChloeStart] = useState(store?.chloe?.startDate || "2026-09-07");
     const [reminderHour, setReminderHour] = useState(() => storageGet(`hg_reminderhour_${personId}`, 9));
     const [enabling, setEnabling] = useState(false);
 
@@ -2721,10 +2761,12 @@
       if (existing?.sessionId === session.id && existing.date === I.W()) {
         setActive(existing);
       } else {
-        const status = I.Fe(store[personId], session, I.W(), I.W());
+        const profile = (store && store[personId]) || loadDecoupledProfile(personId);
+        const status = I.Fe ? I.Fe(profile, session, I.W(), I.W()) : "not_started";
+        const currentLogs = Array.isArray(profile?.logs) ? profile.logs : [];
         const firstIncomplete = session.type === "strength"
           ? flattenExercises(session).findIndex(({ exercise }) =>
-              !store[personId].logs.some(log => log.sessionId === session.id && log.exerciseId === exercise.id && log.date === I.W())
+              !currentLogs.some(log => log.sessionId === session.id && log.exerciseId === exercise.id && log.date === I.W())
             )
           : -1;
         setActive({
@@ -2750,12 +2792,13 @@
       showToast("Settings saved & sub-collections synced");
     }
 
-    const data = store[personId] || loadDecoupledProfile(personId) || I.K[personId];
+    const rawData = (store && store[personId]) ? store[personId] : loadDecoupledProfile(personId);
+    const data = (rawData && Array.isArray(rawData.sessions)) ? rawData : loadDecoupledProfile(personId);
     if (!data) return null;
-    const meta = I.ie[personId];
-    const weekInfo = I.HGgetDeload(personId) === I.j(I.W())
-      ? { ...I.Re(data.startDate), isDeload: true }
-      : I.Re(data.startDate);
+    const meta = (I.ie && I.ie[personId]) ? I.ie[personId] : { name: personId, accent: "#2563EB" };
+    const weekInfo = (I.HGgetDeload && I.HGgetDeload(personId) === I.j(I.W()))
+      ? { ...(I.Re ? I.Re(data.startDate) : {}), isDeload: true }
+      : (I.Re ? I.Re(data.startDate) : {});
 
     if (active) {
       return h("div", { className: "hg-app", style: { "--person-accent": meta.accent } },
