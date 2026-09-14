@@ -1,6 +1,6 @@
 // Home Gym — offline shell and explicit update lifecycle.
 // Increment this value for every release.
-const CACHE_NAME = "home-gym-log-v2.5";
+const CACHE_NAME = "homegym-shell-v2.4.0";
 
 const REQUIRED_SHELL = [
   "./",
@@ -31,7 +31,12 @@ self.addEventListener("install", event => {
   event.waitUntil(
     caches.keys()
       .then(keys => Promise.all(
-        keys.filter(key => key !== CACHE_NAME && (key.startsWith("home-gym-log") || key.includes("home-gym"))).map(key => caches.delete(key))
+        keys.filter(key => key !== CACHE_NAME && (
+          key.startsWith("homegym-shell") ||
+          key.startsWith("plateplan") ||
+          key.startsWith("home-gym") ||
+          key.includes("home-gym")
+        )).map(key => caches.delete(key))
       ))
       .then(() => caches.open(CACHE_NAME))
       .then(async cache => {
@@ -45,7 +50,12 @@ self.addEventListener("activate", event => {
   event.waitUntil(
     caches.keys()
       .then(keys => Promise.all(
-        keys.filter(key => key !== CACHE_NAME && (key.startsWith("home-gym-log") || key.includes("home-gym"))).map(key => caches.delete(key))
+        keys.filter(key => key !== CACHE_NAME && (
+          key.startsWith("homegym-shell") ||
+          key.startsWith("plateplan") ||
+          key.startsWith("home-gym") ||
+          key.includes("home-gym")
+        )).map(key => caches.delete(key))
       ))
       .then(() => self.clients.claim())
   );
