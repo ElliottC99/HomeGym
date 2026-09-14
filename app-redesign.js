@@ -3618,6 +3618,35 @@ const EXERCISE_SUGGESTIONS = [
           }, "Re-link History & Sync Sub-Collections")
         )
       ),
+      h("div", { className: "hg-card", style: { marginBottom: 18 } },
+        h("div", { className: "hg-card-title" }, "Data Recovery & Storage Inspector"),
+        h("div", { className: "hg-card-copy" },
+          "Audits window.localStorage, IndexedDB object stores, and Firestore legacy collections. Prints matching keys, byte sizes, and raw JSON previews to DevTools console."
+        ),
+        h("div", { className: "hg-actions", style: { display: "flex", gap: 8, flexWrap: "wrap" } },
+          h(Button, {
+            onClick: async () => {
+              if (typeof window.runDataRecoveryInspection === "function") {
+                showToast("Running storage inspection... Check DevTools console!");
+                await window.runDataRecoveryInspection();
+              } else {
+                showToast("Inspection utility loading...");
+              }
+            }
+          }, "Run Console Inspection"),
+          h(Button, {
+            variant: "primary",
+            onClick: async () => {
+              if (typeof window.exportRecoveredData === "function") {
+                showToast("Exporting all recovered payloads to JSON...");
+                await window.exportRecoveredData();
+              } else {
+                showToast("Export utility loading...");
+              }
+            }
+          }, "Export Recovered Data (.JSON)")
+        )
+      ),
       h(EquipmentSection, { personId, data, updateData, showToast }),
       h("div", { className: "hg-card", style: { marginBottom: 18 } },
         h("div", { className: "hg-card-title" }, "Recovery controls"),
