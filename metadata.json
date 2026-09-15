@@ -1,6 +1,6 @@
 {
   "name": "Home Gym Log",
-  "description": "Strength training tracker and PlatePlan v2.5.0 with Apple HIG Plan page redesign, health tracking backup & restore, and fluid layout",
+  "description": "Strength training tracker and PlatePlan v2.5.1 with real-time Firestore health metrics syncing, offline queue deadlock protection, and Apple HIG layout",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

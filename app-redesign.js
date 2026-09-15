@@ -9,7 +9,7 @@
 
   const h = React.createElement;
   const { useState, useEffect, useCallback, useRef, useMemo } = React;
-  const APP_VERSION = "v2.5.0";
+  const APP_VERSION = "v2.5.1";
 
   class ErrorBoundary extends React.Component {
     constructor(props) {
@@ -98,6 +98,48 @@
   ];
   const WEEK_DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
+  function purgeOrphanStorageKeys() {
+    try {
+      const bloatedKeys = [
+        "plateplan_v1_recovery",
+        "plateplan_v1_recovery_backup",
+        "homegym_recovered_data",
+        "hg_recovery_dump",
+        "hg_diagnostic_logs"
+      ];
+      bloatedKeys.forEach(k => {
+        try { localStorage.removeItem(k); } catch (_) {}
+      });
+      for (let i = localStorage.length - 1; i >= 0; i--) {
+        try {
+          const k = localStorage.key(i);
+          if (k && (k.startsWith("plateplan_recovery") || k.includes("recovery_") || k.includes("diagnostic_dump"))) {
+            localStorage.removeItem(k);
+          }
+        } catch (_) {}
+      }
+    } catch (_) {}
+  }
+
+  function safeStorageSet(key, value) {
+    try {
+      const valStr = typeof value === "string" ? value : JSON.stringify(value);
+      localStorage.setItem(key, valStr);
+      return true;
+    } catch (err) {
+      console.warn(`[Storage] Storage write failed or QuotaExceeded for "${key}". Purging orphan caches...`);
+      purgeOrphanStorageKeys();
+      try {
+        const valStr = typeof value === "string" ? value : JSON.stringify(value);
+        localStorage.setItem(key, valStr);
+        return true;
+      } catch (retryErr) {
+        console.error(`[Storage] Failed writing "${key}":`, retryErr?.message);
+        return false;
+      }
+    }
+  }
+
   function storageGet(key, fallback) {
     try {
       const value = localStorage.getItem(key);
@@ -108,9 +150,7 @@
   }
 
   function storageSet(key, value) {
-    try {
-      localStorage.setItem(key, JSON.stringify(value));
-    } catch {}
+    safeStorageSet(key, value);
   }
 
   function activeKey(personId) {
@@ -231,7 +271,7 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
     try {
       let existing = getPlatePlanV1Local();
       if (!existing || typeof existing !== "object") {
-        existing = { version: "2.5.0", updatedAt: Date.now(), users: {} };
+        existing = { version: "2.5.1", updatedAt: Date.now(), users: {} };
       }
       if (!existing.users || typeof existing.users !== "object") {
         existing.users = {};
@@ -243,8 +283,8 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
         updatedAt: data.updatedAt || Date.now()
       };
       existing.updatedAt = Date.now();
-      localStorage.setItem(PLATEPLAN_V1_KEY, JSON.stringify(existing));
-      localStorage.setItem(`${PLATEPLAN_V1_KEY}_${userId}`, JSON.stringify(existing.users[userId]));
+      safeStorageSet(PLATEPLAN_V1_KEY, existing);
+      safeStorageSet(`${PLATEPLAN_V1_KEY}_${userId}`, existing.users[userId]);
     } catch (e) {
       console.warn("savePlatePlanV1Local error:", e?.message);
     }
@@ -260,9 +300,7 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
   }
 
   function saveOfflineQueue(queue) {
-    try {
-      localStorage.setItem(QUEUE_STORAGE_KEY, JSON.stringify(queue || []));
-    } catch (e) {}
+    safeStorageSet(QUEUE_STORAGE_KEY, queue || []);
   }
 
   function getDeadLetterQueue() {
@@ -275,9 +313,7 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
   }
 
   function saveDeadLetterQueue(queue) {
-    try {
-      localStorage.setItem(DEAD_LETTER_QUEUE_KEY, JSON.stringify(queue || []));
-    } catch (e) {}
+    safeStorageSet(DEAD_LETTER_QUEUE_KEY, queue || []);
   }
 
   function moveToDeadLetterQueue(item, reason) {
@@ -398,33 +434,30 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
             await fs.collection("gym_users").doc(userId).collection("active_program").doc("current").set(clean, { merge: true });
             await fs.collection("gym_users").doc(userId).collection("plateplan").doc("current").set(clean, { merge: true }).catch(() => {});
             processed++;
+          } else if (type === "save_metric") {
+            const { metricType, ...clean } = payload;
+            await this.saveMetricEntry(userId, metricType, clean, { skipQueue: true });
+            processed++;
+          } else if (type === "delete_metric") {
+            await this.deleteMetricEntry(userId, payload.metricType, payload.id, { skipQueue: true });
+            processed++;
           } else if (type === "save_readiness") {
-            const clean = { ...payload, updatedAt: payload.updatedAt || Date.now() };
-            // Primary path: gym_users/{userId}/readiness
-            await fs.collection("gym_users").doc(userId).collection("readiness").doc(String(clean.id)).set(clean, { merge: true });
-            await fs.collection("gym_users").doc(userId).collection("readiness_logs").doc(String(clean.id)).set(clean, { merge: true }).catch(() => {});
+            await this.saveMetricEntry(userId, "readiness", payload, { skipQueue: true });
             processed++;
           } else if (type === "delete_readiness") {
-            await fs.collection("gym_users").doc(userId).collection("readiness").doc(String(payload.id)).delete();
-            await fs.collection("gym_users").doc(userId).collection("readiness_logs").doc(String(payload.id)).delete().catch(() => {});
+            await this.deleteMetricEntry(userId, "readiness", payload.id, { skipQueue: true });
             processed++;
-          } else if (type === "save_bodyweight") {
-            const clean = { ...payload, updatedAt: payload.updatedAt || Date.now() };
-            // Primary path: gym_users/{userId}/bodyweight
-            await fs.collection("gym_users").doc(userId).collection("bodyweight").doc(String(clean.id)).set(clean, { merge: true });
-            await fs.collection("gym_users").doc(userId).collection("bodyweight_logs").doc(String(clean.id)).set(clean, { merge: true }).catch(() => {});
+          } else if (type === "save_bodyweight" || type === "save_weight") {
+            await this.saveMetricEntry(userId, "weight", payload, { skipQueue: true });
             processed++;
-          } else if (type === "delete_bodyweight") {
-            await fs.collection("gym_users").doc(userId).collection("bodyweight").doc(String(payload.id)).delete();
-            await fs.collection("gym_users").doc(userId).collection("bodyweight_logs").doc(String(payload.id)).delete().catch(() => {});
+          } else if (type === "delete_bodyweight" || type === "delete_weight") {
+            await this.deleteMetricEntry(userId, "weight", payload.id, { skipQueue: true });
             processed++;
           } else if (type === "save_sleep") {
-            const clean = { ...payload, updatedAt: payload.updatedAt || Date.now() };
-            // Primary path: gym_users/{userId}/sleep
-            await fs.collection("gym_users").doc(userId).collection("sleep").doc(String(clean.id)).set(clean, { merge: true });
+            await this.saveMetricEntry(userId, "sleep", payload, { skipQueue: true });
             processed++;
           } else if (type === "delete_sleep") {
-            await fs.collection("gym_users").doc(userId).collection("sleep").doc(String(payload.id)).delete();
+            await this.deleteMetricEntry(userId, "sleep", payload.id, { skipQueue: true });
             processed++;
           } else {
             moveToDeadLetterQueue(item, `Unrecognized mutation type: ${type}`);
@@ -573,202 +606,195 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
       }
     },
 
-    async saveReadinessLog(profileId, log, options = {}) {
-      if (!profileId || !log || !log.id) return;
-      const clean = {
-        id: String(log.id),
-        date: log.date || I.W(),
-        sleep: log.sleep != null ? Number(log.sleep) : 7.5,
-        sleepHours: log.sleepHours != null ? Number(log.sleepHours) : 7,
-        sleepMins: log.sleepMins != null ? Number(log.sleepMins) : 30,
-        soreness: log.soreness != null ? Number(log.soreness) : 3,
-        motivation: log.motivation != null ? Number(log.motivation) : 3,
-        notes: log.notes || "",
-        timestamp: log.timestamp || Date.now(),
-        updatedAt: Date.now()
-      };
+    async saveMetricEntry(profileId, metricType, entry, options = {}) {
+      if (!profileId || !metricType || !entry) return null;
+      const type = (String(metricType).toLowerCase() === "bodyweight" || String(metricType).toLowerCase() === "weights") ? "weight" : String(metricType).toLowerCase();
+      const serverTs = (window.firebase?.firestore?.FieldValue?.serverTimestamp
+        ? window.firebase.firestore.FieldValue.serverTimestamp()
+        : new Date().toISOString());
+
+      let clean;
+      if (type === "weight") {
+        clean = {
+          id: String(entry.id || `w_${Date.now()}`),
+          date: entry.date || (I.W ? I.W() : new Date().toISOString().slice(0, 10)),
+          weight: Number(entry.weight),
+          note: entry.note || "",
+          timestamp: entry.timestamp || Date.now(),
+          updatedAt: Date.now(),
+          serverTimestamp: serverTs
+        };
+      } else if (type === "sleep") {
+        const hours = entry.hours != null ? Number(entry.hours) : (entry.sleepHours != null ? Number(entry.sleepHours) : (entry.totalHours != null ? Math.floor(Number(entry.totalHours)) : 7));
+        const mins = entry.mins != null ? Number(entry.mins) : (entry.sleepMins != null ? Number(entry.sleepMins) : (entry.totalHours != null ? Math.round((Number(entry.totalHours) % 1) * 60) : 30));
+        const totalHours = entry.totalHours != null ? Number(entry.totalHours) : (entry.sleep != null ? Number(entry.sleep) : Math.round((hours + mins / 60) * 100) / 100);
+        clean = {
+          id: String(entry.id || `slp_${entry.date || Date.now()}`),
+          date: entry.date || (I.W ? I.W() : new Date().toISOString().slice(0, 10)),
+          hours,
+          mins,
+          totalHours,
+          sleep: totalHours,
+          notes: entry.notes || entry.note || "",
+          timestamp: entry.timestamp || Date.now(),
+          updatedAt: Date.now(),
+          serverTimestamp: serverTs
+        };
+      } else if (type === "readiness") {
+        const sleepVal = entry.sleep != null ? Number(entry.sleep) : 7.5;
+        clean = {
+          id: String(entry.id || `read_${entry.date || Date.now()}`),
+          date: entry.date || (I.W ? I.W() : new Date().toISOString().slice(0, 10)),
+          sleep: sleepVal,
+          sleepHours: entry.sleepHours != null ? Number(entry.sleepHours) : Math.floor(sleepVal),
+          sleepMins: entry.sleepMins != null ? Number(entry.sleepMins) : Math.round((sleepVal % 1) * 60),
+          soreness: entry.soreness != null ? Number(entry.soreness) : 3,
+          motivation: entry.motivation != null ? Number(entry.motivation) : 3,
+          notes: entry.notes || entry.note || "",
+          timestamp: entry.timestamp || Date.now(),
+          updatedAt: Date.now(),
+          serverTimestamp: serverTs
+        };
+      } else {
+        clean = { ...entry, id: String(entry.id || `m_${Date.now()}`), updatedAt: Date.now(), serverTimestamp: serverTs };
+      }
 
       if (!navigator.onLine) {
-        if (!options.skipQueue) enqueueOfflineMutation(profileId, "save_readiness", clean);
+        if (!options.skipQueue) {
+          enqueueOfflineMutation(profileId, "save_metric", { metricType: type, ...clean });
+        }
         return clean;
       }
 
       const fs = this.getFirestore();
       if (fs) {
         try {
-          // Primary subcollection path: gym_users/{profileId}/readiness
-          await fs.collection("gym_users").doc(profileId).collection("readiness").doc(String(clean.id)).set(clean, { merge: true });
-          await fs.collection("gym_users").doc(profileId).collection("readiness_logs").doc(String(clean.id)).set(clean, { merge: true }).catch(() => {});
+          // 1. Dedicated Firestore collection path: gym_users/{profileId}/metrics/{metricType}/entries/{id}
+          await fs.collection("gym_users").doc(profileId)
+            .collection("metrics").doc(type)
+            .collection("entries").doc(String(clean.id))
+            .set(clean, { merge: true });
+
+          // 2. Dedicated Firestore document: gym_users/{profileId}/metrics/{metricType}
+          await fs.collection("gym_users").doc(profileId)
+            .collection("metrics").doc(type)
+            .set({ latest: clean, lastUpdated: serverTs, updatedAt: Date.now() }, { merge: true })
+            .catch(() => {});
+
+          // 3. Consolidated health_metrics document: gym_users/{profileId}/health_metrics
+          await fs.collection("gym_users").doc(profileId)
+            .collection("health_metrics").doc("current")
+            .set({ [type]: clean, lastUpdated: serverTs, updatedAt: Date.now() }, { merge: true })
+            .catch(() => {});
+
+          // 4. Primary subcollections for backwards compatibility
+          const colName = type === "weight" ? "bodyweight" : type;
+          await fs.collection("gym_users").doc(profileId).collection(colName).doc(String(clean.id)).set(clean, { merge: true }).catch(() => {});
+          if (type === "weight") {
+            await fs.collection("gym_users").doc(profileId).collection("weight").doc(String(clean.id)).set(clean, { merge: true }).catch(() => {});
+          }
+
+          // If logging readiness with sleep, also persist sleep entry
+          if (type === "readiness" && (clean.sleep != null || clean.sleepHours != null)) {
+            const sleepDoc = {
+              id: `slp_${clean.date}`,
+              date: clean.date,
+              hours: clean.sleepHours,
+              mins: clean.sleepMins,
+              totalHours: clean.sleep,
+              notes: clean.notes,
+              timestamp: clean.timestamp
+            };
+            this.saveMetricEntry(profileId, "sleep", sleepDoc, { skipQueue: true }).catch(() => {});
+          }
         } catch (e) {
-          if (!options.skipQueue) enqueueOfflineMutation(profileId, "save_readiness", clean);
+          console.warn(`Firestore saveMetricEntry error (${type}), enqueuing offline:`, e?.message);
+          if (!options.skipQueue) {
+            enqueueOfflineMutation(profileId, "save_metric", { metricType: type, ...clean });
+          }
+        }
+      } else {
+        if (!options.skipQueue) {
+          enqueueOfflineMutation(profileId, "save_metric", { metricType: type, ...clean });
         }
       }
 
       const rtdb = this.getRTDB();
       if (rtdb) {
         try {
-          await rtdb.ref(`gym_users/${profileId}/readiness/${clean.id}`).set(clean).catch(() => {});
-          await rtdb.ref(`gym_users/${profileId}/readiness_logs/${clean.id}`).set(clean).catch(() => {});
+          const colName = type === "weight" ? "bodyweight" : type;
+          await rtdb.ref(`gym_users/${profileId}/metrics/${type}/${clean.id}`).set(clean).catch(() => {});
+          await rtdb.ref(`gym_users/${profileId}/${colName}/${clean.id}`).set(clean).catch(() => {});
         } catch (e) {}
       }
 
-      // Automatically mirror to sleep collection if hours/totalHours provided
-      if (clean.sleep != null || clean.sleepHours != null) {
-        const sleepDoc = {
-          id: `slp_${clean.date}`,
-          date: clean.date,
-          hours: clean.sleepHours != null ? clean.sleepHours : Math.floor(clean.sleep),
-          mins: clean.sleepMins != null ? clean.sleepMins : Math.round((clean.sleep % 1) * 60),
-          totalHours: clean.sleep,
-          notes: clean.notes || "",
-          timestamp: clean.timestamp,
-          updatedAt: clean.updatedAt
-        };
-        this.saveSleepLog(profileId, sleepDoc, { skipQueue: options.skipQueue }).catch(() => {});
+      return clean;
+    },
+
+    async deleteMetricEntry(profileId, metricType, entryId, options = {}) {
+      if (!profileId || !metricType || !entryId) return;
+      const type = (String(metricType).toLowerCase() === "bodyweight" || String(metricType).toLowerCase() === "weights") ? "weight" : String(metricType).toLowerCase();
+      const strId = String(entryId);
+
+      if (!navigator.onLine) {
+        if (!options.skipQueue) {
+          enqueueOfflineMutation(profileId, "delete_metric", { metricType: type, id: strId });
+        }
+        return;
       }
 
-      return clean;
+      const fs = this.getFirestore();
+      if (fs) {
+        try {
+          await fs.collection("gym_users").doc(profileId)
+            .collection("metrics").doc(type)
+            .collection("entries").doc(strId)
+            .delete().catch(() => {});
+
+          const colName = type === "weight" ? "bodyweight" : type;
+          await fs.collection("gym_users").doc(profileId).collection(colName).doc(strId).delete().catch(() => {});
+          if (type === "weight") {
+            await fs.collection("gym_users").doc(profileId).collection("weight").doc(strId).delete().catch(() => {});
+          }
+        } catch (e) {
+          if (!options.skipQueue) {
+            enqueueOfflineMutation(profileId, "delete_metric", { metricType: type, id: strId });
+          }
+        }
+      }
+
+      const rtdb = this.getRTDB();
+      if (rtdb) {
+        try {
+          const colName = type === "weight" ? "bodyweight" : type;
+          await rtdb.ref(`gym_users/${profileId}/metrics/${type}/${strId}`).remove().catch(() => {});
+          await rtdb.ref(`gym_users/${profileId}/${colName}/${strId}`).remove().catch(() => {});
+        } catch (e) {}
+      }
+    },
+
+    async saveReadinessLog(profileId, log, options = {}) {
+      return this.saveMetricEntry(profileId, "readiness", log, options);
     },
 
     async deleteReadinessLog(profileId, logId, options = {}) {
-      if (!profileId || !logId) return;
-      if (!navigator.onLine) {
-        if (!options.skipQueue) enqueueOfflineMutation(profileId, "delete_readiness", { id: logId });
-        return;
-      }
-      const fs = this.getFirestore();
-      if (fs) {
-        try {
-          await fs.collection("gym_users").doc(profileId).collection("readiness").doc(String(logId)).delete();
-          await fs.collection("gym_users").doc(profileId).collection("readiness_logs").doc(String(logId)).delete().catch(() => {});
-        } catch (e) {
-          if (!options.skipQueue) enqueueOfflineMutation(profileId, "delete_readiness", { id: logId });
-        }
-      }
-      const rtdb = this.getRTDB();
-      if (rtdb) {
-        try {
-          await rtdb.ref(`gym_users/${profileId}/readiness/${logId}`).remove().catch(() => {});
-          await rtdb.ref(`gym_users/${profileId}/readiness_logs/${logId}`).remove().catch(() => {});
-        } catch (e) {}
-      }
+      return this.deleteMetricEntry(profileId, "readiness", logId, options);
     },
 
     async saveBodyweightLog(profileId, log, options = {}) {
-      if (!profileId || !log || !log.id) return;
-      const clean = {
-        id: String(log.id),
-        date: log.date || I.W(),
-        weight: Number(log.weight),
-        note: log.note || "",
-        timestamp: log.timestamp || Date.now(),
-        updatedAt: Date.now()
-      };
-
-      if (!navigator.onLine) {
-        if (!options.skipQueue) enqueueOfflineMutation(profileId, "save_bodyweight", clean);
-        return clean;
-      }
-
-      const fs = this.getFirestore();
-      if (fs) {
-        try {
-          // Primary subcollection path: gym_users/{profileId}/bodyweight
-          await fs.collection("gym_users").doc(profileId).collection("bodyweight").doc(String(clean.id)).set(clean, { merge: true });
-          await fs.collection("gym_users").doc(profileId).collection("bodyweight_logs").doc(String(clean.id)).set(clean, { merge: true }).catch(() => {});
-        } catch (e) {
-          if (!options.skipQueue) enqueueOfflineMutation(profileId, "save_bodyweight", clean);
-        }
-      }
-      const rtdb = this.getRTDB();
-      if (rtdb) {
-        try {
-          await rtdb.ref(`gym_users/${profileId}/bodyweight/${clean.id}`).set(clean).catch(() => {});
-          await rtdb.ref(`gym_users/${profileId}/bodyweight_logs/${clean.id}`).set(clean).catch(() => {});
-        } catch (e) {}
-      }
-      return clean;
+      return this.saveMetricEntry(profileId, "weight", log, options);
     },
 
     async deleteBodyweightLog(profileId, logId, options = {}) {
-      if (!profileId || !logId) return;
-      if (!navigator.onLine) {
-        if (!options.skipQueue) enqueueOfflineMutation(profileId, "delete_bodyweight", { id: logId });
-        return;
-      }
-      const fs = this.getFirestore();
-      if (fs) {
-        try {
-          await fs.collection("gym_users").doc(profileId).collection("bodyweight").doc(String(logId)).delete();
-          await fs.collection("gym_users").doc(profileId).collection("bodyweight_logs").doc(String(logId)).delete().catch(() => {});
-        } catch (e) {
-          if (!options.skipQueue) enqueueOfflineMutation(profileId, "delete_bodyweight", { id: logId });
-        }
-      }
-      const rtdb = this.getRTDB();
-      if (rtdb) {
-        try {
-          await rtdb.ref(`gym_users/${profileId}/bodyweight/${logId}`).remove().catch(() => {});
-          await rtdb.ref(`gym_users/${profileId}/bodyweight_logs/${logId}`).remove().catch(() => {});
-        } catch (e) {}
-      }
+      return this.deleteMetricEntry(profileId, "weight", logId, options);
     },
 
     async saveSleepLog(profileId, log, options = {}) {
-      if (!profileId || !log || !log.id) return;
-      const hours = log.hours != null ? Number(log.hours) : (log.totalHours != null ? Math.floor(Number(log.totalHours)) : 7);
-      const mins = log.mins != null ? Number(log.mins) : (log.totalHours != null ? Math.round((Number(log.totalHours) % 1) * 60) : 30);
-      const totalHours = log.totalHours != null ? Number(log.totalHours) : Math.round((hours + mins / 60) * 100) / 100;
-      const clean = {
-        id: String(log.id),
-        date: log.date || I.W(),
-        hours,
-        mins,
-        totalHours,
-        notes: log.notes || log.note || "",
-        timestamp: log.timestamp || Date.now(),
-        updatedAt: Date.now()
-      };
-
-      if (!navigator.onLine) {
-        if (!options.skipQueue) enqueueOfflineMutation(profileId, "save_sleep", clean);
-        return clean;
-      }
-
-      const fs = this.getFirestore();
-      if (fs) {
-        try {
-          // Primary subcollection path: gym_users/{profileId}/sleep
-          await fs.collection("gym_users").doc(profileId).collection("sleep").doc(String(clean.id)).set(clean, { merge: true });
-        } catch (e) {
-          if (!options.skipQueue) enqueueOfflineMutation(profileId, "save_sleep", clean);
-        }
-      }
-      const rtdb = this.getRTDB();
-      if (rtdb) {
-        try { await rtdb.ref(`gym_users/${profileId}/sleep/${clean.id}`).set(clean); } catch (e) {}
-      }
-      return clean;
+      return this.saveMetricEntry(profileId, "sleep", log, options);
     },
 
     async deleteSleepLog(profileId, logId, options = {}) {
-      if (!profileId || !logId) return;
-      if (!navigator.onLine) {
-        if (!options.skipQueue) enqueueOfflineMutation(profileId, "delete_sleep", { id: logId });
-        return;
-      }
-      const fs = this.getFirestore();
-      if (fs) {
-        try {
-          await fs.collection("gym_users").doc(profileId).collection("sleep").doc(String(logId)).delete();
-        } catch (e) {
-          if (!options.skipQueue) enqueueOfflineMutation(profileId, "delete_sleep", { id: logId });
-        }
-      }
-      const rtdb = this.getRTDB();
-      if (rtdb) {
-        try { await rtdb.ref(`gym_users/${profileId}/sleep/${logId}`).remove(); } catch (e) {}
-      }
+      return this.deleteMetricEntry(profileId, "sleep", logId, options);
     },
 
     async saveActiveProgram(profileId, programData, options = {}) {
@@ -1337,6 +1363,58 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
             }, () => {});
           unsubscribers.push(unsubSleep);
 
+          // 7b. Dedicated metrics/weight subcollection listener
+          const unsubMetricsWeight = fs.collection("gym_users").doc(profileId)
+            .collection("metrics").doc("weight").collection("entries")
+            .onSnapshot(snap => {
+              const items = [];
+              snap.forEach(doc => items.push({ id: doc.id, ...doc.data() }));
+              if (items.length > 0) {
+                if (navigator.onLine) onStatusChange?.("synced");
+                onRemoteUpdate?.("weight", items);
+              }
+            }, () => {});
+          unsubscribers.push(unsubMetricsWeight);
+
+          // 7c. Dedicated metrics/sleep subcollection listener
+          const unsubMetricsSleep = fs.collection("gym_users").doc(profileId)
+            .collection("metrics").doc("sleep").collection("entries")
+            .onSnapshot(snap => {
+              const items = [];
+              snap.forEach(doc => items.push({ id: doc.id, ...doc.data() }));
+              if (items.length > 0) {
+                if (navigator.onLine) onStatusChange?.("synced");
+                onRemoteUpdate?.("sleep", items);
+              }
+            }, () => {});
+          unsubscribers.push(unsubMetricsSleep);
+
+          // 7d. Dedicated metrics/readiness subcollection listener
+          const unsubMetricsReadiness = fs.collection("gym_users").doc(profileId)
+            .collection("metrics").doc("readiness").collection("entries")
+            .onSnapshot(snap => {
+              const items = [];
+              snap.forEach(doc => items.push({ id: doc.id, ...doc.data() }));
+              if (items.length > 0) {
+                if (navigator.onLine) onStatusChange?.("synced");
+                onRemoteUpdate?.("readiness", items);
+              }
+            }, () => {});
+          unsubscribers.push(unsubMetricsReadiness);
+
+          // 7e. Consolidated health_metrics document listener
+          const unsubHealthDoc = fs.collection("gym_users").doc(profileId)
+            .collection("health_metrics").doc("current")
+            .onSnapshot(doc => {
+              if (doc.exists) {
+                const data = doc.data();
+                if (data?.weight) onRemoteUpdate?.("weight", [data.weight]);
+                if (data?.sleep) onRemoteUpdate?.("sleep", [data.sleep]);
+                if (data?.readiness) onRemoteUpdate?.("readiness", [data.readiness]);
+              }
+            }, () => {});
+          unsubscribers.push(unsubHealthDoc);
+
           // 8. Active program listener (gym_users/{profileId}/active_program/current)
           const unsubProg = fs.collection("gym_users").doc(profileId).collection("active_program").doc("current")
             .onSnapshot(doc => {
@@ -1402,6 +1480,9 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
   const GymCloudEngine = PlatePlanSyncEngine;
 
   async function runLegacyDataRecoveryAndMigration() {
+    // Purge any orphan/recovery keys to reclaim browser storage quota
+    purgeOrphanStorageKeys();
+
     const profiles = ["elliott", "chloe"];
     const results = { elliott: [], chloe: [] };
     for (const profileId of profiles) {
@@ -1489,6 +1570,7 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
           } catch (e) {}
         }
 
+        // Recover Readiness
         const recoveredReadiness = [];
         const readSeen = new Set();
         function addReadinessCandidate(r) {
@@ -1515,7 +1597,11 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
         if (legacyData?.readiness && Array.isArray(legacyData.readiness)) {
           legacyData.readiness.forEach(addReadinessCandidate);
         }
+        if (legacyData?.readinessLogs && Array.isArray(legacyData.readinessLogs)) {
+          legacyData.readinessLogs.forEach(addReadinessCandidate);
+        }
 
+        // Recover Weights
         const recoveredWeights = [];
         const weightSeen = new Set();
         function addWeightCandidate(w) {
@@ -1535,13 +1621,69 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
           const localW = JSON.parse(localStorage.getItem(`hg_metrics_${profileId}`) || "[]");
           if (Array.isArray(localW)) localW.forEach(addWeightCandidate);
         } catch (e) {}
+        try {
+          const localBw = JSON.parse(localStorage.getItem(`hg_weight_${profileId}`) || "[]");
+          if (Array.isArray(localBw)) localBw.forEach(addWeightCandidate);
+        } catch (e) {}
         if (legacyData?.bodyweight && Array.isArray(legacyData.bodyweight)) {
           legacyData.bodyweight.forEach(addWeightCandidate);
         }
+        if (legacyData?.bodyWeightLogs && Array.isArray(legacyData.bodyWeightLogs)) {
+          legacyData.bodyWeightLogs.forEach(addWeightCandidate);
+        }
 
-        const logSaves = recoveredLogs.map(log => GymCloudEngine.saveExerciseLog(profileId, log));
-        const readSaves = recoveredReadiness.map(r => GymCloudEngine.saveReadinessLog(profileId, r));
-        const bwSaves = recoveredWeights.map(w => GymCloudEngine.saveBodyweightLog(profileId, w));
+        // Recover Sleep
+        const recoveredSleep = [];
+        const sleepSeen = new Set();
+        function addSleepCandidate(s) {
+          if (!s || !s.date) return;
+          const id = String(s.id || `slp_${s.date}`);
+          if (sleepSeen.has(id)) return;
+          sleepSeen.add(id);
+          const hours = s.hours != null ? Number(s.hours) : (s.sleepHours != null ? Number(s.sleepHours) : (s.totalHours != null ? Math.floor(Number(s.totalHours)) : 7));
+          const mins = s.mins != null ? Number(s.mins) : (s.sleepMins != null ? Number(s.sleepMins) : (s.totalHours != null ? Math.round((Number(s.totalHours) % 1) * 60) : 30));
+          const totalHours = s.totalHours != null ? Number(s.totalHours) : (s.sleep != null ? Number(s.sleep) : Math.round((hours + mins / 60) * 100) / 100);
+          recoveredSleep.push({
+            id,
+            date: s.date,
+            hours,
+            mins,
+            totalHours,
+            sleep: totalHours,
+            notes: s.notes || s.note || "",
+            timestamp: s.timestamp || new Date(`${s.date}T12:00:00`).getTime(),
+          });
+        }
+        try {
+          const localS = JSON.parse(localStorage.getItem(`hg_sleep_${profileId}`) || "[]");
+          if (Array.isArray(localS)) localS.forEach(addSleepCandidate);
+        } catch (e) {}
+        if (legacyData?.sleepLogs && Array.isArray(legacyData.sleepLogs)) {
+          legacyData.sleepLogs.forEach(addSleepCandidate);
+        }
+        if (legacyData?.sleep && Array.isArray(legacyData.sleep)) {
+          legacyData.sleep.forEach(addSleepCandidate);
+        }
+        // Also derive sleep records from readiness if not present
+        recoveredReadiness.forEach(r => {
+          if (r.date && (r.sleep != null || r.sleepHours != null)) {
+            addSleepCandidate({
+              id: `slp_${r.date}`,
+              date: r.date,
+              hours: r.sleepHours != null ? r.sleepHours : Math.floor(r.sleep),
+              mins: r.sleepMins != null ? r.sleepMins : Math.round((r.sleep % 1) * 60),
+              totalHours: r.sleep,
+              notes: r.notes || "",
+              timestamp: r.timestamp
+            });
+          }
+        });
+
+        // Push to cloud Firestore subcollections
+        const logSaves = recoveredLogs.map(log => GymCloudEngine.saveExerciseLog(profileId, log, { skipQueue: true }));
+        const readSaves = recoveredReadiness.map(r => GymCloudEngine.saveMetricEntry(profileId, "readiness", r, { skipQueue: true }));
+        const bwSaves = recoveredWeights.map(w => GymCloudEngine.saveMetricEntry(profileId, "weight", w, { skipQueue: true }));
+        const sleepSaves = recoveredSleep.map(s => GymCloudEngine.saveMetricEntry(profileId, "sleep", s, { skipQueue: true }));
 
         if (legacyData) {
           await GymCloudEngine.saveActiveProgram(profileId, {
@@ -1551,15 +1693,43 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
             sessions: legacyData.sessions,
             weekOverrides: legacyData.weekOverrides,
             equipment: legacyData.equipment,
-          });
+          }, { skipQueue: true });
         }
 
-        await Promise.allSettled([...logSaves, ...readSaves, ...bwSaves]);
-        results[profileId] = recoveredLogs;
-        localStorage.setItem(`hg_v23_migration_confirmed_${profileId}`, "true");
-        console.info(`[v2.3.1] Legacy recovery & migration confirmed for ${profileId} (${recoveredLogs.length} logs synced)`);
+        await Promise.allSettled([...logSaves, ...readSaves, ...bwSaves, ...sleepSaves]);
+        results[profileId] = {
+          logs: recoveredLogs,
+          weights: recoveredWeights,
+          sleep: recoveredSleep,
+          readiness: recoveredReadiness
+        };
+
+        // Auto-clean legacy local data to prevent stale reads and free up browser quota
+        try {
+          localStorage.removeItem(`hg_sleep_${profileId}`);
+          localStorage.removeItem(`hg_readiness_${profileId}`);
+          localStorage.removeItem(`hg_weight_${profileId}`);
+          localStorage.removeItem(`hg_metrics_${profileId}`);
+
+          const rawData = localStorage.getItem(`data:${profileId}`);
+          if (rawData) {
+            const parsed = JSON.parse(rawData);
+            delete parsed.bodyweight;
+            delete parsed.readiness;
+            delete parsed.sleep;
+            delete parsed.bodyWeightLogs;
+            delete parsed.readinessLogs;
+            delete parsed.sleepLogs;
+            safeStorageSet(`data:${profileId}`, JSON.stringify(parsed));
+          }
+        } catch (cleanErr) {
+          console.warn(`[v2.5.1] LocalStorage cleanup notice for ${profileId}:`, cleanErr);
+        }
+
+        safeStorageSet(`hg_v251_metrics_migrated_${profileId}`, "true");
+        console.info(`[v2.5.1] Metrics migration confirmed for ${profileId}: ${recoveredWeights.length} weight, ${recoveredSleep.length} sleep, ${recoveredReadiness.length} readiness synced to Firestore & legacy keys cleaned.`);
       } catch (err) {
-        console.error(`[v2.3.1] Recovery notice for ${profileId}:`, err);
+        console.error(`[v2.5.1] Recovery notice for ${profileId}:`, err);
       }
     }
     return results;
@@ -1568,17 +1738,7 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
   function syncLegacyStorage(profileId, payload) {
     if (!profileId || !payload || typeof payload !== "object") return;
     try {
-      if (Array.isArray(payload.bodyWeightLogs)) {
-        storageSet(`hg_metrics_${profileId}`, payload.bodyWeightLogs);
-      }
-      if (Array.isArray(payload.readinessLogs)) {
-        storageSet(`hg_readiness_${profileId}`, payload.readinessLogs);
-      }
-      if (Array.isArray(payload.sleepLogs)) {
-        storageSet(`hg_sleep_${profileId}`, payload.sleepLogs);
-      }
-
-      // Sync data:${profileId}
+      // Sync data:${profileId} safely
       const rawData = localStorage.getItem(`data:${profileId}`);
       let currentData = {};
       try { if (rawData) currentData = JSON.parse(rawData); } catch (_) {}
@@ -1591,20 +1751,15 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
         sessions: Array.isArray(payload.sessions) ? payload.sessions : currentData.sessions,
         weekOverrides: payload.weekOverrides || currentData.weekOverrides,
         logs: Array.isArray(payload.logs) ? payload.logs : currentData.logs,
-        bodyweight: Array.isArray(payload.bodyWeightLogs) ? payload.bodyWeightLogs : (currentData.bodyweight || []),
-        bodyWeightLogs: Array.isArray(payload.bodyWeightLogs) ? payload.bodyWeightLogs : (currentData.bodyWeightLogs || []),
-        readiness: Array.isArray(payload.readinessLogs) ? payload.readinessLogs : (currentData.readiness || []),
-        readinessLogs: Array.isArray(payload.readinessLogs) ? payload.readinessLogs : (currentData.readinessLogs || []),
-        sleepLogs: Array.isArray(payload.sleepLogs) ? payload.sleepLogs : (currentData.sleepLogs || []),
         updatedAt: payload.updatedAt || Date.now()
       };
-      localStorage.setItem(`data:${profileId}`, JSON.stringify(nextData));
+      safeStorageSet(`data:${profileId}`, JSON.stringify(nextData));
 
       // Mirror plateplan_v1_${profileId}
       const rawPP = localStorage.getItem(`${PLATEPLAN_V1_KEY}_${profileId}`);
       let currentPP = {};
       try { if (rawPP) currentPP = JSON.parse(rawPP); } catch (_) {}
-      localStorage.setItem(`${PLATEPLAN_V1_KEY}_${profileId}`, JSON.stringify({
+      safeStorageSet(`${PLATEPLAN_V1_KEY}_${profileId}`, JSON.stringify({
         ...currentPP,
         startDate: payload.startDate || currentPP.startDate,
         goals: payload.goals || currentPP.goals,
@@ -3347,44 +3502,147 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
     );
   }
 
+  function SleepTrendChart({ records, accent }) {
+    if (!records || records.length === 0) return null;
+    const sorted = [...records].sort((a, b) => a.date.localeCompare(b.date)).slice(-14);
+    if (sorted.length < 2) return null;
+
+    const width = 360;
+    const height = 180;
+    const padLeft = 40;
+    const padRight = 16;
+    const padTop = 18;
+    const padBottom = 32;
+    const plotW = width - padLeft - padRight;
+    const plotH = height - padTop - padBottom;
+
+    const sleepValues = sorted.map(r => Number(r.totalHours != null ? r.totalHours : r.sleep) || 7);
+    const minS = Math.max(3, Math.floor(Math.min(...sleepValues) - 0.5));
+    const maxS = Math.min(13, Math.ceil(Math.max(...sleepValues) + 0.5));
+    const rangeS = maxS - minS || 1;
+
+    const getX = index => padLeft + (index / (sorted.length - 1)) * plotW;
+    const getYSleep = val => padTop + plotH - ((val - minS) / rangeS) * plotH;
+
+    const points = sorted.map((r, i) => {
+      const val = Number(r.totalHours != null ? r.totalHours : r.sleep) || 7;
+      return `${getX(i).toFixed(1)},${getYSleep(val).toFixed(1)}`;
+    }).join(" ");
+
+    const xIndices = sorted.length === 2 ? [0, 1] : [0, Math.floor(sorted.length / 2), sorted.length - 1];
+    const yTicks = [minS, Math.round((minS + rangeS / 2) * 10) / 10, maxS];
+
+    return h("div", { className: "hg-chart-wrap" },
+      h("div", { className: "hg-chart-legend" },
+        h("span", { className: "hg-legend-item" }, h("span", { style: { background: "#38BDF8" } }), "Sleep Duration (hrs)"),
+        h("span", { className: "hg-legend-item" }, h("span", { style: { background: "var(--hg-border-strong)", borderTop: "1px dashed var(--hg-text-3)" } }), "Target (8h)")
+      ),
+      h("svg", { viewBox: `0 0 ${width} ${height}`, className: "hg-svg-chart" },
+        yTicks.map((tick, idx) => {
+          const y = getYSleep(tick);
+          return h("g", { key: idx },
+            h("line", { x1: padLeft, y1: y, x2: width - padRight, y2: y, stroke: "var(--hg-border)", strokeDasharray: "3,3", strokeWidth: 1 }),
+            h("text", { x: padLeft - 6, y: y + 4, textAnchor: "end", fontSize: 10, fill: "var(--hg-text-3)" }, `${tick}h`)
+          );
+        }),
+        // 8h target guideline if within bounds
+        (minS <= 8 && maxS >= 8) && h("line", {
+          x1: padLeft, y1: getYSleep(8), x2: width - padRight, y2: getYSleep(8),
+          stroke: "rgba(56, 189, 248, 0.4)", strokeDasharray: "4,4", strokeWidth: 1.5
+        }),
+        h("line", { x1: padLeft, y1: padTop + plotH, x2: width - padRight, y2: padTop + plotH, stroke: "var(--hg-border-strong)", strokeWidth: 1.5 }),
+        xIndices.map(idx => {
+          const item = sorted[idx];
+          return h("text", {
+            key: idx,
+            x: getX(idx),
+            y: height - 10,
+            textAnchor: idx === 0 ? "start" : idx === sorted.length - 1 ? "end" : "middle",
+            fontSize: 11,
+            fill: "var(--hg-text-3)"
+          }, item.date.slice(5));
+        }),
+        // Area under curve
+        h("polygon", {
+          points: `${padLeft},${padTop + plotH} ${points} ${getX(sorted.length - 1)},${padTop + plotH}`,
+          fill: "#38BDF8",
+          fillOpacity: 0.12
+        }),
+        h("polyline", { points, fill: "none", stroke: "#38BDF8", strokeWidth: 2.5, strokeLinecap: "round", strokeLinejoin: "round" }),
+        sorted.map((r, i) => {
+          const val = Number(r.totalHours != null ? r.totalHours : r.sleep) || 7;
+          return h("circle", {
+            key: `slp-${i}`,
+            cx: getX(i),
+            cy: getYSleep(val),
+            r: 3.5,
+            fill: "#38BDF8",
+            stroke: "var(--hg-surface)",
+            strokeWidth: 1.5
+          });
+        })
+      )
+    );
+  }
+
+  // Unified metrics data getter reading from decoupled reactive Firestore state
+  function getMetricsData(metricType, targetPersonId, profileData) {
+    const pId = targetPersonId || "elliott";
+    const profile = profileData || (window.__HG_STORE__ && window.__HG_STORE__[pId]) || loadDecoupledProfile(pId);
+    const type = String(metricType || "").toLowerCase();
+    if (type === "weight" || type === "bodyweight" || type === "weights") {
+      const arr = Array.isArray(profile?.bodyWeightLogs) ? profile.bodyWeightLogs : [];
+      return [...arr].sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+    }
+    if (type === "readiness") {
+      const arr = Array.isArray(profile?.readinessLogs) ? profile.readinessLogs : [];
+      return [...arr].sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+    }
+    if (type === "sleep") {
+      const explicit = Array.isArray(profile?.sleepLogs) ? profile.sleepLogs : [];
+      const derived = (Array.isArray(profile?.readinessLogs) ? profile.readinessLogs : [])
+        .filter(r => r && (r.sleep != null || r.sleepHours != null))
+        .map(r => ({
+          id: `slp_${r.date || r.id}`,
+          date: r.date,
+          hours: r.sleepHours != null ? Number(r.sleepHours) : Math.floor(Number(r.sleep) || 0),
+          mins: r.sleepMins != null ? Number(r.sleepMins) : Math.round(((Number(r.sleep) || 0) % 1) * 60),
+          totalHours: Number(r.sleep) || (r.sleepHours != null ? Number(r.sleepHours) + (Number(r.sleepMins) || 0) / 60 : 7),
+          notes: r.notes || r.note || "",
+          timestamp: r.timestamp || Date.now()
+        }));
+      const map = new Map();
+      explicit.forEach(s => { if (s?.date) map.set(s.date, s); });
+      derived.forEach(s => { if (s?.date && !map.has(s.date)) map.set(s.date, s); });
+      return Array.from(map.values()).sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+    }
+    return [];
+  }
+  window.getMetricsData = getMetricsData;
+
   function MetricsView({ meta, personId, data, updateData, showToast }) {
-    const [subTab, setSubTab] = useState("weight"); // "weight" | "readiness"
-    const weightKey = `hg_metrics_${personId}`;
-    const readinessKey = `hg_readiness_${personId}`;
+    const [subTab, setSubTab] = useState("weight"); // "weight" | "sleep" | "readiness"
 
-    const getInitialWeights = () => {
-      if (Array.isArray(data?.bodyWeightLogs) && data.bodyWeightLogs.length > 0) {
-        return data.bodyWeightLogs;
-      }
-      const w = storageGet(weightKey, []);
-      return Array.isArray(w) ? w : [];
-    };
+    // Read reactive metrics directly via unified getter backed by real-time Firestore state
+    const weights = getMetricsData("weight", personId, data);
+    const sleepLogs = getMetricsData("sleep", personId, data);
+    const readiness = getMetricsData("readiness", personId, data);
 
-    const getInitialReadiness = () => {
-      if (Array.isArray(data?.readinessLogs) && data.readinessLogs.length > 0) {
-        return data.readinessLogs;
-      }
-      const r = storageGet(readinessKey, []);
-      return Array.isArray(r) ? r : [];
-    };
-
-    const [weights, setWeights] = useState(getInitialWeights);
-    const [readiness, setReadiness] = useState(getInitialReadiness);
-
-    useEffect(() => {
-      const w = (Array.isArray(data?.bodyWeightLogs) && data.bodyWeightLogs.length > 0)
-        ? data.bodyWeightLogs
-        : storageGet(weightKey, []);
-      const r = (Array.isArray(data?.readinessLogs) && data.readinessLogs.length > 0)
-        ? data.readinessLogs
-        : storageGet(readinessKey, []);
-      setWeights(Array.isArray(w) ? w : []);
-      setReadiness(Array.isArray(r) ? r : []);
-    }, [personId, data?.bodyWeightLogs, data?.readinessLogs]);
-
-    const [weightDate, setWeightDate] = useState(I.W());
+    // Form states
+    const [weightDate, setWeightDate] = useState(I.W ? I.W() : new Date().toISOString().slice(0, 10));
     const [weightVal, setWeightVal] = useState("");
     const [weightNote, setWeightNote] = useState("");
+
+    const [sleepDate, setSleepDate] = useState(I.W ? I.W() : new Date().toISOString().slice(0, 10));
+    const [sleepHours, setSleepHours] = useState(7);
+    const [sleepMins, setSleepMins] = useState(30);
+    const [sleepNote, setSleepNote] = useState("");
+
+    const [readinessDate, setReadinessDate] = useState(I.W ? I.W() : new Date().toISOString().slice(0, 10));
+    const [readinessSleep, setReadinessSleep] = useState(7.5);
+    const [readinessSoreness, setReadinessSoreness] = useState(3);
+    const [readinessMotivation, setReadinessMotivation] = useState(3);
+    const [readinessNote, setReadinessNote] = useState("");
 
     function logWeight() {
       if (!weightVal) return showToast("Enter a weight value");
@@ -3397,67 +3655,112 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
         note: weightNote.trim(),
         timestamp: Date.now()
       };
-      GymCloudEngine.saveBodyweightLog(personId, entry);
-      const curWeights = (Array.isArray(data?.bodyWeightLogs) && data.bodyWeightLogs.length > 0)
-        ? data.bodyWeightLogs
-        : (Array.isArray(weights) ? weights : []);
-      const next = [...curWeights.filter(w => w.date !== weightDate), entry].sort((a, b) => a.date.localeCompare(b.date));
-      setWeights(next);
-      storageSet(weightKey, next);
-      syncLegacyStorage(personId, { bodyWeightLogs: next });
+      GymCloudEngine.saveMetricEntry(personId, "weight", entry);
+      const next = [...weights.filter(w => w.date !== weightDate), entry].sort((a, b) => a.date.localeCompare(b.date));
       if (updateData) {
         updateData(personId, cur => ({ ...cur, bodyWeightLogs: next }));
       }
-      showToast("Body weight logged");
+      showToast("Body weight logged to Firestore");
       setWeightVal("");
       setWeightNote("");
     }
 
     function deleteWeight(id) {
-      GymCloudEngine.deleteBodyweightLog(personId, id);
-      const curWeights = (Array.isArray(data?.bodyWeightLogs) && data.bodyWeightLogs.length > 0)
-        ? data.bodyWeightLogs
-        : (Array.isArray(weights) ? weights : []);
-      const next = curWeights.filter(w => w.id !== id);
-      setWeights(next);
-      storageSet(weightKey, next);
-      syncLegacyStorage(personId, { bodyWeightLogs: next });
+      GymCloudEngine.deleteMetricEntry(personId, "weight", id);
+      const next = weights.filter(w => w.id !== id);
       if (updateData) {
         updateData(personId, cur => ({ ...cur, bodyWeightLogs: next }));
       }
       showToast("Weight entry deleted");
     }
 
+    function logSleep() {
+      const h = Number(sleepHours) || 0;
+      const m = Number(sleepMins) || 0;
+      const total = Math.round((h + m / 60) * 100) / 100;
+      const entry = {
+        id: `slp_${sleepDate}`,
+        date: sleepDate,
+        hours: h,
+        mins: m,
+        totalHours: total,
+        sleep: total,
+        notes: sleepNote.trim(),
+        timestamp: Date.now()
+      };
+      GymCloudEngine.saveMetricEntry(personId, "sleep", entry);
+      const next = [...sleepLogs.filter(s => s.date !== sleepDate), entry].sort((a, b) => a.date.localeCompare(b.date));
+      if (updateData) {
+        updateData(personId, cur => ({ ...cur, sleepLogs: next }));
+      }
+      showToast("Sleep logged to Firestore");
+      setSleepNote("");
+    }
+
+    function deleteSleep(id) {
+      GymCloudEngine.deleteMetricEntry(personId, "sleep", id);
+      const next = sleepLogs.filter(s => s.id !== id);
+      if (updateData) {
+        updateData(personId, cur => ({ ...cur, sleepLogs: next }));
+      }
+      showToast("Sleep entry deleted");
+    }
+
+    function logReadiness() {
+      const entry = {
+        id: `r_${readinessDate}`,
+        date: readinessDate,
+        sleep: Number(readinessSleep) || 7.5,
+        sleepHours: Math.floor(Number(readinessSleep) || 7),
+        sleepMins: Math.round(((Number(readinessSleep) || 7.5) % 1) * 60),
+        soreness: Number(readinessSoreness) || 3,
+        motivation: Number(readinessMotivation) || 3,
+        notes: readinessNote.trim(),
+        timestamp: Date.now()
+      };
+      GymCloudEngine.saveMetricEntry(personId, "readiness", entry);
+      const next = [...readiness.filter(r => r.date !== readinessDate), entry].sort((a, b) => a.date.localeCompare(b.date));
+      if (updateData) {
+        updateData(personId, cur => ({ ...cur, readinessLogs: next }));
+      }
+      showToast("Readiness check-in logged to Firestore");
+      setReadinessNote("");
+    }
+
     function deleteReadiness(id) {
-      GymCloudEngine.deleteReadinessLog(personId, id);
-      const curReadiness = (Array.isArray(data?.readinessLogs) && data.readinessLogs.length > 0)
-        ? data.readinessLogs
-        : (Array.isArray(readiness) ? readiness : []);
-      const next = curReadiness.filter(r => r.id !== id);
-      setReadiness(next);
-      storageSet(readinessKey, next);
-      syncLegacyStorage(personId, { readinessLogs: next });
+      GymCloudEngine.deleteMetricEntry(personId, "readiness", id);
+      const next = readiness.filter(r => r.id !== id);
       if (updateData) {
         updateData(personId, cur => ({ ...cur, readinessLogs: next }));
       }
       showToast("Readiness entry deleted");
     }
 
-    const sortedWeights = [...(Array.isArray(weights) ? weights : [])].sort((a, b) => a.date.localeCompare(b.date));
+    // Weight stats
+    const sortedWeights = [...weights].sort((a, b) => a.date.localeCompare(b.date));
     const latestW = sortedWeights.length ? sortedWeights[sortedWeights.length - 1] : null;
     const earliestW = sortedWeights.length ? sortedWeights[0] : null;
     const diffW = latestW && earliestW && latestW !== earliestW ? Math.round((latestW.weight - earliestW.weight) * 10) / 10 : 0;
+    const recent7W = sortedWeights.slice(-7);
+    const avg7W = recent7W.length ? Math.round((recent7W.reduce((sum, item) => sum + Number(item.weight), 0) / recent7W.length) * 10) / 10 : null;
 
+    // Sleep stats
+    const sortedSleep = [...sleepLogs].sort((a, b) => a.date.localeCompare(b.date));
+    const latestSleep = sortedSleep.length ? sortedSleep[sortedSleep.length - 1] : null;
+    const recent7S = sortedSleep.slice(-7);
+    const avg7S = recent7S.length ? Math.round((recent7S.reduce((sum, item) => sum + (Number(item.totalHours != null ? item.totalHours : item.sleep) || 0), 0) / recent7S.length) * 10) / 10 : null;
+
+    // Readiness stats
     const sortedReadiness = [...readiness].sort((a, b) => a.date.localeCompare(b.date));
     const latestR = sortedReadiness.length ? sortedReadiness[sortedReadiness.length - 1] : null;
 
     return h(React.Fragment, null,
       h("div", { className: "hg-view-header" },
         h("h1", null, "Metrics & Trends"),
-        h("p", null, `Tracking body weight, sleep, soreness, and motivation for ${meta.label}.`)
+        h("p", null, `Cloud-synced tracking for body weight, sleep, soreness, and motivation for ${meta.label}.`)
       ),
 
-      h("div", { className: "hg-segment", style: { marginBottom: 18 }, role: "group", "aria-label": "Metrics tab" },
+      h("div", { className: "hg-segment", style: { marginBottom: 18 }, role: "group", "aria-label": "Metrics subtabs" },
         h("button", {
           type: "button",
           "aria-pressed": subTab === "weight",
@@ -3465,9 +3768,14 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
         }, "Body Weight"),
         h("button", {
           type: "button",
+          "aria-pressed": subTab === "sleep",
+          onClick: () => setSubTab("sleep")
+        }, "Sleep"),
+        h("button", {
+          type: "button",
           "aria-pressed": subTab === "readiness",
           onClick: () => setSubTab("readiness")
-        }, "Sleep & Readiness")
+        }, "Readiness Check-in")
       ),
 
       subTab === "weight" && h(React.Fragment, null,
@@ -3493,6 +3801,10 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
           h("div", { className: "hg-stat" },
             h("span", null, "Latest weight"),
             h("strong", null, `${latestW.weight} kg`)
+          ),
+          h("div", { className: "hg-stat" },
+            h("span", null, "7-day average"),
+            h("strong", null, avg7W ? `${avg7W} kg` : "—")
           ),
           h("div", { className: "hg-stat" },
             h("span", null, "Net change"),
@@ -3531,8 +3843,134 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
         )
       ),
 
+      subTab === "sleep" && h(React.Fragment, null,
+        h("div", { className: "hg-card" },
+          h("div", { className: "hg-card-title" }, "Log Sleep Duration"),
+          h("div", { className: "hg-fields" },
+            h(Field, { label: "Date" },
+              h("input", { className: "hg-input", type: "date", value: sleepDate, onChange: e => setSleepDate(e.target.value) })
+            ),
+            h(Field, { label: "Hours" },
+              h("input", { className: "hg-input", type: "number", min: "0", max: "24", step: "1", value: sleepHours, onChange: e => setSleepHours(Math.max(0, parseInt(e.target.value, 10) || 0)) })
+            ),
+            h(Field, { label: "Minutes" },
+              h("input", { className: "hg-input", type: "number", min: "0", max: "59", step: "5", value: sleepMins, onChange: e => setSleepMins(Math.max(0, Math.min(59, parseInt(e.target.value, 10) || 0))) })
+            ),
+            h(Field, { label: "Notes (optional)", full: true },
+              h("input", { className: "hg-input", type: "text", placeholder: "Deep sleep, interruptions, waking time...", value: sleepNote, onChange: e => setSleepNote(e.target.value) })
+            )
+          ),
+          h("div", { className: "hg-actions" },
+            h(Button, { primary: true, onClick: logSleep }, "Save sleep log")
+          )
+        ),
+
+        latestSleep && h("div", { className: "hg-stats", style: { marginTop: 14 } },
+          h("div", { className: "hg-stat" },
+            h("span", null, "Latest sleep"),
+            h("strong", null, `${latestSleep.hours != null ? latestSleep.hours : Math.floor(latestSleep.totalHours || latestSleep.sleep || 0)}h ${latestSleep.mins != null ? latestSleep.mins : Math.round(((latestSleep.totalHours || latestSleep.sleep || 0) % 1) * 60)}m`)
+          ),
+          h("div", { className: "hg-stat" },
+            h("span", null, "7-day average"),
+            h("strong", null, avg7S ? `${avg7S} hrs` : "—")
+          ),
+          h("div", { className: "hg-stat" },
+            h("span", null, "Goal comparison"),
+            h("strong", { style: { color: (avg7S || 7.5) >= 8 ? "var(--hg-success)" : "inherit" } },
+              avg7S ? `${avg7S >= 8 ? "+" : ""}${Math.round((avg7S - 8) * 10) / 10}h vs 8h target` : "8h target"
+            )
+          )
+        ),
+
+        sortedSleep.length >= 2 && h("div", { className: "hg-card", style: { marginTop: 14 } },
+          h("div", { className: "hg-card-title" }, "Sleep Trends (Last 14 days)"),
+          h("div", { className: "hg-card-copy" }, "Daily sleep duration plotted with 8-hour target reference line."),
+          h(SleepTrendChart, { records: sortedSleep, accent: meta.accent })
+        ),
+
+        h("div", { className: "hg-card", style: { marginTop: 14 } },
+          h("div", { className: "hg-card-title" }, "Sleep History"),
+          sortedSleep.length === 0 ? h("p", { className: "hg-card-copy" }, "No sleep logs recorded yet.") :
+          h("div", null,
+            [...sortedSleep].reverse().map(s =>
+              h("div", { key: s.id, className: "hg-history-row" },
+                h("div", null,
+                  h("div", { className: "hg-history-result" },
+                    `${s.hours != null ? s.hours : Math.floor(s.totalHours || s.sleep || 0)}h ${s.mins != null ? s.mins : Math.round(((s.totalHours || s.sleep || 0) % 1) * 60)}m (${Number(s.totalHours || s.sleep || 0).toFixed(1)} hrs)`
+                  ),
+                  h("div", { className: "hg-history-meta" }, s.date),
+                  s.notes && h("div", { className: "hg-history-meta", style: { fontStyle: "italic" } }, s.notes)
+                ),
+                h("button", {
+                  type: "button",
+                  className: "hg-link-button",
+                  style: { color: "var(--hg-danger)" },
+                  onClick: () => deleteSleep(s.id)
+                }, "Delete")
+              )
+            )
+          )
+        )
+      ),
+
       subTab === "readiness" && h(React.Fragment, null,
-        latestR && h("div", { className: "hg-stats", style: { marginBottom: 14 } },
+        h("div", { className: "hg-card" },
+          h("div", { className: "hg-card-title" }, "Daily Readiness Check-in"),
+          h("div", { className: "hg-fields" },
+            h(Field, { label: "Date" },
+              h("input", { className: "hg-input", type: "date", value: readinessDate, onChange: e => setReadinessDate(e.target.value) })
+            ),
+            h(Field, { label: "Sleep (Hours)" },
+              h("input", { className: "hg-input", type: "number", step: "0.5", min: "3", max: "14", value: readinessSleep, onChange: e => setReadinessSleep(parseFloat(e.target.value) || 7) })
+            ),
+            h(Field, { label: "Soreness (1 = Fresh, 5 = Exhausted)" },
+              h("div", { style: { display: "flex", gap: 6, marginTop: 4 } },
+                [1, 2, 3, 4, 5].map(score =>
+                  h("button", {
+                    key: score,
+                    type: "button",
+                    className: "hg-button",
+                    style: {
+                      flex: 1,
+                      padding: "6px 0",
+                      background: readinessSoreness === score ? "var(--hg-accent)" : "var(--hg-surface-2)",
+                      color: readinessSoreness === score ? "#fff" : "inherit",
+                      borderColor: readinessSoreness === score ? "var(--hg-accent)" : "var(--hg-border)"
+                    },
+                    onClick: () => setReadinessSoreness(score)
+                  }, `${score}`)
+                )
+              )
+            ),
+            h(Field, { label: "Motivation (1 = Low, 5 = Fired Up)" },
+              h("div", { style: { display: "flex", gap: 6, marginTop: 4 } },
+                [1, 2, 3, 4, 5].map(score =>
+                  h("button", {
+                    key: score,
+                    type: "button",
+                    className: "hg-button",
+                    style: {
+                      flex: 1,
+                      padding: "6px 0",
+                      background: readinessMotivation === score ? "var(--hg-accent)" : "var(--hg-surface-2)",
+                      color: readinessMotivation === score ? "#fff" : "inherit",
+                      borderColor: readinessMotivation === score ? "var(--hg-accent)" : "var(--hg-border)"
+                    },
+                    onClick: () => setReadinessMotivation(score)
+                  }, `${score}`)
+                )
+              )
+            ),
+            h(Field, { label: "Notes (optional)", full: true },
+              h("input", { className: "hg-input", type: "text", placeholder: "Joint stiffness, energy levels, stress...", value: readinessNote, onChange: e => setReadinessNote(e.target.value) })
+            )
+          ),
+          h("div", { className: "hg-actions" },
+            h(Button, { primary: true, onClick: logReadiness }, "Save check-in")
+          )
+        ),
+
+        latestR && h("div", { className: "hg-stats", style: { marginTop: 14 } },
           h("div", { className: "hg-stat" },
             h("span", null, "Latest sleep"),
             h("strong", null, `${latestR.sleepHours ?? Math.floor(latestR.sleep)}h ${latestR.sleepMins ?? Math.round((latestR.sleep % 1) * 60)}m`)
@@ -3547,7 +3985,7 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
           )
         ),
 
-        sortedReadiness.length >= 2 && h("div", { className: "hg-card" },
+        sortedReadiness.length >= 2 && h("div", { className: "hg-card", style: { marginTop: 14 } },
           h("div", { className: "hg-card-title" }, "Readiness Trends (Last 14 days)"),
           h("div", { className: "hg-card-copy" }, "Comparison of sleep duration against soreness and motivation scores."),
           h(ReadinessTrendsChart, { records: sortedReadiness, accent: meta.accent })
@@ -3565,7 +4003,8 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
                   ),
                   h("div", { className: "hg-history-meta" },
                     `${r.date} · Soreness: ${r.soreness}/5 (${SORENESS_MAP[r.soreness] || ""}) · Motivation: ${r.motivation}/5 (${MOTIVATION_MAP[r.motivation] || ""})`
-                  )
+                  ),
+                  r.notes && h("div", { className: "hg-history-meta", style: { fontStyle: "italic" } }, r.notes)
                 ),
                 h("button", {
                   type: "button",
@@ -6176,23 +6615,57 @@ const EXERCISE_SUGGESTIONS = [
       };
     }, [personId, showToast]);
 
-    // Asynchronous legacy data recovery
+    // Asynchronous legacy data recovery & migration to Firestore
     useEffect(() => {
       const timer = setTimeout(() => {
         runLegacyDataRecoveryAndMigration().then(recovered => {
-          if (recovered && (recovered.elliott?.length || recovered.chloe?.length)) {
+          if (recovered) {
             setStore(current => {
-              const nextElliott = recovered.elliott?.length
-                ? { ...current.elliott, logs: mergeDeduplicatedLogs(current.elliott?.logs || [], recovered.elliott) }
-                : current.elliott;
-              const nextChloe = recovered.chloe?.length
-                ? { ...current.chloe, logs: mergeDeduplicatedLogs(current.chloe?.logs || [], recovered.chloe) }
-                : current.chloe;
-              return { elliott: nextElliott, chloe: nextChloe };
+              let updated = false;
+              const nextState = { ...current };
+              for (const pid of ["elliott", "chloe"]) {
+                const rec = recovered[pid];
+                if (!rec) continue;
+                const profile = current[pid] || {};
+                const logsList = Array.isArray(rec) ? rec : (rec.logs || []);
+                const weightsList = Array.isArray(rec.weights) ? rec.weights : [];
+                const sleepList = Array.isArray(rec.sleep) ? rec.sleep : [];
+                const readinessList = Array.isArray(rec.readiness) ? rec.readiness : [];
+
+                const mergedLogs = logsList.length ? mergeDeduplicatedLogs(profile.logs || [], logsList) : profile.logs;
+
+                // Merge weights
+                const wMap = new Map();
+                (profile.bodyWeightLogs || []).forEach(w => { if (w) wMap.set(String(w.id || `bw_${w.date}`), w); });
+                weightsList.forEach(w => { if (w) wMap.set(String(w.id || `bw_${w.date}`), w); });
+                const mergedWeights = Array.from(wMap.values()).sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+
+                // Merge sleep
+                const sMap = new Map();
+                (profile.sleepLogs || []).forEach(s => { if (s) sMap.set(String(s.id || `slp_${s.date}`), s); });
+                sleepList.forEach(s => { if (s) sMap.set(String(s.id || `slp_${s.date}`), s); });
+                const mergedSleep = Array.from(sMap.values()).sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+
+                // Merge readiness
+                const rMap = new Map();
+                (profile.readinessLogs || []).forEach(r => { if (r) rMap.set(String(r.id || `r_${r.date}`), r); });
+                readinessList.forEach(r => { if (r) rMap.set(String(r.id || `r_${r.date}`), r); });
+                const mergedReadiness = Array.from(rMap.values()).sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+
+                nextState[pid] = {
+                  ...profile,
+                  logs: mergedLogs,
+                  bodyWeightLogs: mergedWeights,
+                  sleepLogs: mergedSleep,
+                  readinessLogs: mergedReadiness
+                };
+                updated = true;
+              }
+              return updated ? nextState : current;
             });
           }
         }).catch(err => {
-          console.warn("[v2.4.1] Recovery notice:", err?.message);
+          console.warn("[v2.5.1] Recovery notice:", err?.message);
         });
       }, 300);
       return () => clearTimeout(timer);
@@ -6211,6 +6684,51 @@ const EXERCISE_SUGGESTIONS = [
             const next = { ...currentProfile, logs: mergedLogs, updatedAt: Date.now() };
             savePlatePlanV1Local(id, next);
             I.Ee(id, next);
+            return { ...current, [id]: next };
+          }
+          if (subCollection === "weight" || subCollection === "bodyweight") {
+            const items = Array.isArray(remoteData) ? remoteData : [remoteData];
+            const map = new Map();
+            (currentProfile.bodyWeightLogs || []).forEach(b => { if (b) map.set(String(b.id || `bw_${b.date}`), b); });
+            items.forEach(b => {
+              if (b) {
+                const key = String(b.id || `bw_${b.date}`);
+                map.set(key, { ...(map.get(key) || {}), ...b });
+              }
+            });
+            const merged = Array.from(map.values()).sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+            const next = { ...currentProfile, bodyWeightLogs: merged, updatedAt: Date.now() };
+            savePlatePlanV1Local(id, next);
+            return { ...current, [id]: next };
+          }
+          if (subCollection === "readiness") {
+            const items = Array.isArray(remoteData) ? remoteData : [remoteData];
+            const map = new Map();
+            (currentProfile.readinessLogs || []).forEach(r => { if (r) map.set(String(r.id || `r_${r.date}`), r); });
+            items.forEach(r => {
+              if (r) {
+                const key = String(r.id || `r_${r.date}`);
+                map.set(key, { ...(map.get(key) || {}), ...r });
+              }
+            });
+            const merged = Array.from(map.values()).sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+            const next = { ...currentProfile, readinessLogs: merged, updatedAt: Date.now() };
+            savePlatePlanV1Local(id, next);
+            return { ...current, [id]: next };
+          }
+          if (subCollection === "sleep") {
+            const items = Array.isArray(remoteData) ? remoteData : [remoteData];
+            const map = new Map();
+            (currentProfile.sleepLogs || []).forEach(s => { if (s) map.set(String(s.id || `slp_${s.date}`), s); });
+            items.forEach(s => {
+              if (s) {
+                const key = String(s.id || `slp_${s.date}`);
+                map.set(key, { ...(map.get(key) || {}), ...s });
+              }
+            });
+            const merged = Array.from(map.values()).sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+            const next = { ...currentProfile, sleepLogs: merged, updatedAt: Date.now() };
+            savePlatePlanV1Local(id, next);
             return { ...current, [id]: next };
           }
           if (subCollection === "active_program") {
