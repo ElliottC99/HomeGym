@@ -1,6 +1,6 @@
 {
   "name": "Home Gym Log",
-  "description": "Strength training tracker and PlatePlan v2.4.2 with Cloud-First Architecture & Automated Two-Way Syncing",
+  "description": "Strength training tracker and PlatePlan v2.5.0 with Apple HIG Plan page redesign, health tracking backup & restore, and fluid layout",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

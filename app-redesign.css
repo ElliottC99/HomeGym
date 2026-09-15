@@ -19,7 +19,7 @@
   --hg-shadow: 0 16px 48px rgba(24, 24, 28, 0.13);
   --hg-radius: 16px;
   --hg-control-radius: 11px;
-  --hg-content: 980px;
+  --hg-content: 1440px;
 }
 
 html[data-theme="dark"] {
@@ -89,7 +89,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   top: 0;
   z-index: 80;
   min-height: calc(62px + env(safe-area-inset-top));
-  padding: max(8px, env(safe-area-inset-top)) 14px 8px;
+  padding: max(8px, env(safe-area-inset-top)) clamp(16px, 3vw, 44px) 8px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -138,9 +138,10 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .hg-layout { min-height: calc(100dvh - 62px); }
 .hg-sidebar { display: none; }
 .hg-main {
-  width: min(100%, var(--hg-content));
+  width: 100%;
+  max-width: var(--hg-content);
   margin: 0 auto;
-  padding: 20px 14px calc(92px + env(safe-area-inset-bottom));
+  padding: 24px clamp(16px, 3vw, 44px) calc(92px + env(safe-area-inset-bottom));
 }
 .hg-view-header { margin-bottom: 18px; }
 .hg-view-header h1 { margin: 0; font-size: 28px; line-height: 1.12; letter-spacing: -.04em; }
@@ -757,3 +758,424 @@ html[data-theme="light"] .hg-legacy-wrap [style*="color: rgb(91, 98, 112)"] { co
   padding-top: 16px;
   border-top: 1px solid var(--hg-border);
 }
+
+/* ==========================================================================
+   Apple HIG Plan Page UI & Inset Group Components
+   ========================================================================== */
+
+.hg-plan-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 22px;
+  flex-wrap: wrap;
+}
+
+.hg-plan-title-area {
+  min-width: 0;
+  flex: 1;
+}
+
+.hg-plan-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  position: relative;
+  flex-shrink: 0;
+}
+
+.hg-btn-primary-hig {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 18px;
+  min-height: 38px;
+  border-radius: 9999px;
+  background: var(--person-accent, #0969da);
+  color: #ffffff;
+  border: 0;
+  font-size: 13.5px;
+  font-weight: 650;
+  cursor: pointer;
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--person-accent, #0969da) 30%, transparent);
+  transition: transform 0.12s ease, filter 0.12s ease;
+  white-space: nowrap;
+}
+
+.hg-btn-primary-hig:hover {
+  filter: brightness(1.08);
+  transform: translateY(-1px);
+}
+
+.hg-btn-primary-hig:active {
+  transform: translateY(0);
+  filter: brightness(0.96);
+}
+
+.hg-btn-overflow-hig {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  border: 1px solid var(--hg-border);
+  background: var(--hg-surface);
+  color: var(--hg-text);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.hg-btn-overflow-hig:hover {
+  background: var(--hg-surface-2);
+  border-color: var(--hg-border-strong);
+}
+
+.hg-overflow-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 300;
+  min-width: 240px;
+  padding: 6px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--hg-surface) 96%, transparent);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  backdrop-filter: blur(24px) saturate(180%);
+  border: 1px solid var(--hg-border);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.18);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  animation: hgPopIn 0.16s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.hg-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 12px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--hg-text);
+  font-size: 13.5px;
+  font-weight: 550;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.hg-menu-item:hover {
+  background: var(--hg-surface-2);
+}
+
+.hg-menu-item.danger {
+  color: #ff3b30 !important;
+}
+
+.hg-menu-item.danger:hover {
+  background: rgba(255, 59, 48, 0.12) !important;
+}
+
+.hg-menu-divider {
+  height: 1px;
+  background: var(--hg-border);
+  margin: 4px 6px;
+}
+
+.hg-session-nav {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  background: var(--hg-surface-2);
+  border-radius: 12px;
+  overflow-x: auto;
+  margin-bottom: 16px;
+  -webkit-overflow-scrolling: touch;
+}
+
+.hg-session-tab {
+  padding: 8px 16px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--hg-text-2);
+  font-size: 13.5px;
+  font-weight: 650;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.hg-session-tab:hover {
+  color: var(--hg-text);
+}
+
+.hg-session-tab.active {
+  background: var(--hg-surface);
+  color: var(--hg-text);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
+}
+
+.hg-session-card {
+  border: 1px solid var(--hg-border);
+  border-radius: 16px;
+  background: var(--hg-surface);
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  margin-bottom: 24px;
+}
+
+.hg-session-card-header {
+  padding: 16px 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: color-mix(in srgb, var(--hg-surface-2) 40%, var(--hg-surface));
+  border-bottom: 1px solid var(--hg-border);
+  flex-wrap: wrap;
+}
+
+.hg-session-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+  color: var(--hg-text-2);
+}
+
+.hg-hig-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.hg-hig-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: 14px;
+}
+
+.hg-hig-th {
+  padding: 11px 16px;
+  font-size: 11px;
+  font-weight: 750;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--hg-text-3);
+  background: var(--hg-surface-2);
+  border-bottom: 1px solid var(--hg-border);
+  white-space: nowrap;
+}
+
+.hg-hig-td {
+  padding: 13px 16px;
+  vertical-align: middle;
+  border-bottom: 1px solid color-mix(in srgb, var(--hg-border) 65%, transparent);
+}
+
+.hg-hig-row {
+  transition: background 0.12s ease;
+  position: relative;
+}
+
+.hg-hig-row:hover {
+  background: color-mix(in srgb, var(--hg-surface-2) 45%, transparent);
+}
+
+.hg-hig-row.dragging {
+  opacity: 0.35;
+  background: var(--hg-action-soft);
+}
+
+.hg-hig-row.drag-over {
+  border-top: 2px solid var(--person-accent, var(--hg-action));
+}
+
+.hg-drag-handle {
+  color: var(--hg-text-3);
+  cursor: grab;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  user-select: none;
+  font-size: 16px;
+  transition: background 0.12s, color 0.12s;
+}
+
+.hg-drag-handle:hover {
+  color: var(--hg-text);
+  background: var(--hg-surface-2);
+}
+
+.hg-drag-handle:active {
+  cursor: grabbing;
+}
+
+.hg-metric-text {
+  font-weight: 650;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13.5px;
+  color: var(--hg-text);
+  white-space: nowrap;
+}
+
+.hg-progression-cell {
+  font-size: 13px;
+  color: var(--hg-text);
+  line-height: 1.4;
+}
+
+.hg-progression-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: var(--hg-surface-2);
+  border: 1px solid var(--hg-border);
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--hg-text-2);
+  font-weight: 600;
+  margin: 2px 4px 2px 0;
+  white-space: nowrap;
+}
+
+.hg-hig-action-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  border: 0;
+  background: transparent;
+  color: var(--hg-text-2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 17px;
+  transition: background 0.12s, color 0.12s;
+}
+
+.hg-hig-action-btn:hover {
+  background: var(--hg-surface-2);
+  color: var(--hg-text);
+}
+
+.hg-row-popover {
+  position: absolute;
+  right: 14px;
+  top: 100%;
+  z-index: 220;
+  min-width: 170px;
+  padding: 5px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--hg-surface) 96%, transparent);
+  -webkit-backdrop-filter: blur(20px);
+  backdrop-filter: blur(20px);
+  border: 1px solid var(--hg-border);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  animation: hgPopIn 0.14s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.hg-hig-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 600;
+  background: var(--hg-overlay);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  animation: hgFadeIn 0.16s ease;
+}
+
+.hg-hig-alert {
+  background: var(--hg-surface);
+  border: 1px solid var(--hg-border);
+  border-radius: 20px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.3);
+  width: min(420px, 100%);
+  padding: 24px;
+  text-align: center;
+  animation: hgAlertIn 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.hg-alert-title {
+  font-size: 18px;
+  font-weight: 700;
+  margin: 0 0 8px;
+  letter-spacing: -0.02em;
+  color: var(--hg-text);
+}
+
+.hg-alert-copy {
+  font-size: 13.5px;
+  color: var(--hg-text-2);
+  line-height: 1.5;
+  margin: 0 0 22px;
+}
+
+.hg-alert-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: stretch;
+}
+
+.hg-alert-btn {
+  flex: 1;
+  padding: 10px 14px;
+  border-radius: 11px;
+  font-size: 14px;
+  font-weight: 650;
+  cursor: pointer;
+  border: 1px solid var(--hg-border);
+  background: var(--hg-surface-2);
+  color: var(--hg-text);
+  transition: filter 0.12s ease;
+}
+
+.hg-alert-btn:hover {
+  filter: brightness(0.96);
+}
+
+.hg-alert-btn.danger {
+  background: #ff3b30;
+  color: #ffffff;
+  border-color: #ff3b30;
+  box-shadow: 0 2px 8px rgba(255, 59, 48, 0.3);
+}
+
+.hg-alert-btn.danger:hover {
+  filter: brightness(1.08);
+}
+
+@keyframes hgPopIn {
+  from { opacity: 0; transform: scale(0.95) translateY(-4px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+@keyframes hgAlertIn {
+  from { opacity: 0; transform: scale(0.92); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes hgFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+

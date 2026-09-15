@@ -1,6 +1,6 @@
 // Home Gym — offline shell and explicit update lifecycle.
 // Increment this value for every release.
-const CACHE_NAME = "homegym-shell-v2.4.2";
+const CACHE_NAME = "homegym-shell-v2.5.0";
 
 const REQUIRED_SHELL = [
   "./",

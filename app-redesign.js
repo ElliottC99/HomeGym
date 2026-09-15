@@ -3893,93 +3893,1007 @@ const EXERCISE_SUGGESTIONS = [
     );
   }
 
+  // =========================================================================
+  // Data Exporter & Backup Engine (schemaVersion: 3 with health tracking stores)
+  // =========================================================================
+
+  function exportBackupJSON(store) {
+    const people = {};
+    const profiles = ["elliott", "chloe"];
+
+    profiles.forEach(pId => {
+      const pData = store?.[pId] || {};
+      const bodyWeightLogs = storageGet(`hg_metrics_${pId}`, []) || pData.bodyWeightLogs || [];
+      const readinessLogs = storageGet(`hg_readiness_${pId}`, []) || pData.readinessLogs || [];
+      let sleepLogs = storageGet(`hg_sleep_${pId}`, []) || pData.sleepLogs || [];
+
+      if (!Array.isArray(sleepLogs) || sleepLogs.length === 0) {
+        if (Array.isArray(readinessLogs) && readinessLogs.length > 0) {
+          sleepLogs = readinessLogs.map(r => {
+            const h = r.sleepHours != null ? Number(r.sleepHours) : Math.floor(Number(r.sleep) || 0);
+            const m = r.sleepMins != null ? Number(r.sleepMins) : Math.round(((Number(r.sleep) || 0) % 1) * 60);
+            return {
+              id: r.id ? `sleep_${r.id}` : `sleep_${r.date}`,
+              date: r.date,
+              hours: h,
+              mins: m,
+              totalHours: r.sleep != null ? Number(r.sleep) : Math.round((h + m / 60) * 100) / 100,
+              notes: r.notes || "",
+              timestamp: r.timestamp || Date.now()
+            };
+          });
+        }
+      }
+
+      people[pId] = {
+        startDate: pData.startDate || "2026-09-07",
+        goals: pData.goals || "",
+        resumeNote: pData.resumeNote || "",
+        sessions: Array.isArray(pData.sessions) ? pData.sessions : [],
+        weekOverrides: pData.weekOverrides || {},
+        logs: Array.isArray(pData.logs) ? pData.logs : [],
+        bodyWeightLogs: Array.isArray(bodyWeightLogs) ? bodyWeightLogs : [],
+        sleepLogs: Array.isArray(sleepLogs) ? sleepLogs : [],
+        readinessLogs: Array.isArray(readinessLogs) ? readinessLogs : [],
+        updatedAt: pData.updatedAt || Date.now()
+      };
+    });
+
+    return {
+      schemaVersion: 3,
+      app: "home-gym-log",
+      type: "full-backup",
+      exportedAt: (I.W ? I.W() : new Date().toISOString().slice(0, 10)),
+      instructions: "Full backup of both profiles, including sessions, day overrides, logged exercise history, and health tracking stores (body weight, sleep, readiness).",
+      people
+    };
+  }
+
+  async function restoreBackupJSON(payload, updateData, showToast) {
+    if (!payload || typeof payload !== "object" || !payload.people) {
+      throw new Error("Invalid backup format: missing 'people' profile data.");
+    }
+
+    const profiles = ["elliott", "chloe"];
+    let count = 0;
+
+    for (const pId of profiles) {
+      const pBackup = payload.people[pId];
+      if (!pBackup) continue;
+
+      const sessions = Array.isArray(pBackup.sessions) && pBackup.sessions.length > 0
+        ? pBackup.sessions
+        : (I.K && I.K[pId] ? I.K[pId].sessions : []);
+      const weekOverrides = pBackup.weekOverrides || {};
+      const logs = Array.isArray(pBackup.logs) ? pBackup.logs : [];
+      const bodyWeightLogs = Array.isArray(pBackup.bodyWeightLogs)
+        ? pBackup.bodyWeightLogs
+        : (Array.isArray(pBackup.weights) ? pBackup.weights : []);
+      const readinessLogs = Array.isArray(pBackup.readinessLogs)
+        ? pBackup.readinessLogs
+        : (Array.isArray(pBackup.readiness) ? pBackup.readiness : []);
+      const sleepLogs = Array.isArray(pBackup.sleepLogs) ? pBackup.sleepLogs : [];
+
+      // 1. Write local storage caches
+      storageSet(`hg_metrics_${pId}`, bodyWeightLogs);
+      storageSet(`hg_readiness_${pId}`, readinessLogs);
+      storageSet(`hg_sleep_${pId}`, sleepLogs);
+
+      // 2. Sync to cloud Firestore collections
+      for (const bw of bodyWeightLogs) {
+        try { await GymCloudEngine.saveBodyweightLog(pId, bw, { skipQueue: true }); } catch (e) {}
+      }
+      for (const rd of readinessLogs) {
+        try { await GymCloudEngine.saveReadinessLog(pId, rd, { skipQueue: true }); } catch (e) {}
+      }
+
+      // 3. React state update
+      await updateData(pId, cur => ({
+        ...cur,
+        startDate: pBackup.startDate || cur.startDate,
+        goals: pBackup.goals || cur.goals,
+        resumeNote: pBackup.resumeNote || cur.resumeNote,
+        sessions,
+        weekOverrides,
+        logs,
+        bodyWeightLogs,
+        readinessLogs,
+        sleepLogs,
+        updatedAt: Date.now()
+      }));
+
+      try {
+        localStorage.setItem(`plateplan_v1:${pId}`, JSON.stringify({
+          sessions,
+          startDate: pBackup.startDate,
+          goals: pBackup.goals,
+          updatedAt: Date.now()
+        }));
+      } catch (e) {}
+
+      count++;
+    }
+
+    if (showToast) {
+      showToast(`Restored backup for ${count} profile(s) with all health logs`);
+    }
+    return count;
+  }
+
+  // Hook into internal exports for compatibility
+  try {
+    if (window.HG_INTERNALS) {
+      window.HG_INTERNALS.tt = exportBackupJSON;
+    }
+  } catch (e) {}
+
+  function downloadFile(data, filename, type = "application/json") {
+    const content = typeof data === "string" ? data : JSON.stringify(data, null, 2);
+    const blob = new Blob([content], { type });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }
+
+  // Format helper: Display only sets and target reps (stripping out target weight text)
+  function formatMetricOnly(setsReps) {
+    if (!setsReps) return "—";
+    return String(setsReps)
+      .replace(/@\s*[\d.]+\s*(kg|lb)?/gi, "")
+      .replace(/\([\d.]+\s*(kg|lb)?\)/gi, "")
+      .replace(/@\s*[a-zA-Z]+/gi, "")
+      .trim() || setsReps;
+  }
+
+  // Format helper: Handle all progression weight steps exclusively inside progression column
+  function formatProgressionSteps(ex) {
+    if (!ex) return "—";
+    const unit = ex.unit || "kg";
+    if (Array.isArray(ex.blocks) && ex.blocks.length > 0) {
+      return ex.blocks.map(b => `${b} ${unit}`).join(", ");
+    }
+    if (ex.startValue != null && ex.startValue !== "") {
+      const s = Number(ex.startValue);
+      if (!Number.isNaN(s) && ex.inc) {
+        const step = Number(ex.inc);
+        return [s, s + step, s + step * 2, s + step * 3].map(v => `${v} ${unit}`).join(", ");
+      }
+      return `${ex.startValue} ${unit}`;
+    }
+    if (ex.startLabel) {
+      return ex.startLabel;
+    }
+    if (ex.targetWeight != null) {
+      return `Goal: ${ex.targetWeight} ${unit}`;
+    }
+    return "Bodyweight";
+  }
+
+  function extractSessionExercises(session) {
+    if (!session) return [];
+    if (Array.isArray(session.exercises) && session.exercises.length > 0) {
+      return session.exercises.map((ex, idx) => ({
+        ...ex,
+        supersetTag: ex.supersetGroup && ex.supersetGroup !== "solo"
+          ? (ex.supersetGroup.toUpperCase() + (idx + 1))
+          : (ex.supersetTag || "SOLO")
+      }));
+    }
+    if (Array.isArray(session.groups)) {
+      const list = [];
+      session.groups.forEach((grp, gIdx) => {
+        const gLetter = (grp.label || "").replace(/^Group\s*/i, "").trim().slice(0, 1).toUpperCase();
+        (grp.exercises || []).forEach((ex, exIdx) => {
+          const tag = gLetter ? `${gLetter}${exIdx + 1}` : (ex.supersetGroup && ex.supersetGroup !== "solo" ? ex.supersetGroup.toUpperCase() : "SOLO");
+          list.push({
+            ...ex,
+            _groupIndex: gIdx,
+            _groupLabel: grp.label || `Group ${String.fromCharCode(65 + gIdx)}`,
+            supersetTag: tag
+          });
+        });
+      });
+      return list;
+    }
+    return [];
+  }
+
+  function commitExercisesToSession(session, exercisesList) {
+    if (Array.isArray(session.groups) && session.groups.length > 0) {
+      const groupMap = new Map();
+      exercisesList.forEach(ex => {
+        const gLabel = ex._groupLabel || (ex.supersetGroup && ex.supersetGroup !== "solo" ? `Group ${ex.supersetGroup.toUpperCase()}` : "Straight Sets");
+        if (!groupMap.has(gLabel)) {
+          groupMap.set(gLabel, []);
+        }
+        const { _groupIndex, _groupLabel, supersetTag, ...cleanEx } = ex;
+        groupMap.get(gLabel).push(cleanEx);
+      });
+
+      const groups = Array.from(groupMap.entries()).map(([label, exercises]) => ({
+        label,
+        exercises
+      }));
+
+      return {
+        ...session,
+        groups,
+        exercises: exercisesList.map(ex => {
+          const { _groupIndex, _groupLabel, supersetTag, ...cleanEx } = ex;
+          return cleanEx;
+        })
+      };
+    }
+
+    return {
+      ...session,
+      exercises: exercisesList.map(ex => {
+        const { _groupIndex, _groupLabel, supersetTag, ...cleanEx } = ex;
+        return cleanEx;
+      })
+    };
+  }
+
+  // Exercise Edit Modal Sheet
+  function ExerciseSheetModal({ exercise, isNew, onSave, onClose }) {
+    const [name, setName] = useState(exercise?.name || "");
+    const [setsReps, setSetsReps] = useState(exercise?.setsReps || "4 × 6");
+    const [startValue, setStartValue] = useState(exercise?.startValue != null ? String(exercise.startValue) : "");
+    const [unit, setUnit] = useState(exercise?.unit || "kg");
+    const [blocksInput, setBlocksInput] = useState(
+      Array.isArray(exercise?.blocks) ? exercise.blocks.join(", ") : ""
+    );
+    const [supersetGroup, setSupersetGroup] = useState(exercise?.supersetGroup || "solo");
+    const [equipmentType, setEquipmentType] = useState(exercise?.equipmentType || "Barbell");
+    const [restNote, setRestNote] = useState(exercise?.restNote || "90s");
+    const [note, setNote] = useState(exercise?.note || "");
+
+    const suggestionChips = [
+      "Barbell Bench Press",
+      "Barbell Squat",
+      "Deadlift",
+      "Overhead Press",
+      "Barbell Row",
+      "Romanian Deadlift",
+      "Incline Dumbbell Press",
+      "Pull-Up",
+      "Dumbbell Lateral Raise",
+      "Hanging Leg Raise"
+    ];
+
+    function handleSave(e) {
+      e.preventDefault();
+      if (!name.trim()) return;
+
+      const parsedBlocks = blocksInput
+        .split(",")
+        .map(s => Number(s.trim()))
+        .filter(n => !Number.isNaN(n) && n > 0);
+
+      onSave({
+        ...exercise,
+        name: name.trim(),
+        setsReps: setsReps.trim(),
+        startValue: startValue ? Number(startValue) : null,
+        unit,
+        blocks: parsedBlocks.length > 0 ? parsedBlocks : (exercise?.blocks || []),
+        supersetGroup,
+        equipmentType,
+        restNote: restNote.trim(),
+        note: note.trim()
+      });
+    }
+
+    return h("div", { className: "hg-hig-modal-backdrop", onClick: onClose },
+      h("div", { className: "hg-modal", style: { maxWidth: 520, width: "100%" }, onClick: e => e.stopPropagation() },
+        h("div", { className: "hg-modal-head" },
+          h("h2", null, isNew ? "New Exercise" : "Edit Exercise"),
+          h("button", { type: "button", className: "hg-icon-button", onClick: onClose, "aria-label": "Close" }, "×")
+        ),
+        h("form", { onSubmit: handleSave },
+          h("div", { style: { display: "flex", flexDirection: "column", gap: 14 } },
+            h(Field, { label: "Exercise Name" },
+              h("input", {
+                className: "hg-input",
+                type: "text",
+                required: true,
+                value: name,
+                onChange: e => setName(e.target.value),
+                placeholder: "e.g., Barbell Bench Press"
+              }),
+              h("div", { style: { display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 } },
+                suggestionChips.map(chip =>
+                  h("button", {
+                    key: chip,
+                    type: "button",
+                    className: "hg-bank-chip",
+                    onClick: () => setName(chip)
+                  }, chip)
+                )
+              )
+            ),
+
+            h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 } },
+              h(Field, { label: "Sets × Reps (Metric only)" },
+                h("input", {
+                  className: "hg-input",
+                  type: "text",
+                  value: setsReps,
+                  onChange: e => setSetsReps(e.target.value),
+                  placeholder: "e.g. 4 × 6 or 3 × 8–10"
+                })
+              ),
+              h(Field, { label: "Superset Pairing" },
+                h("select", {
+                  className: "hg-input",
+                  value: supersetGroup,
+                  onChange: e => setSupersetGroup(e.target.value)
+                },
+                  h("option", { value: "solo" }, "Straight Sets (Solo)"),
+                  h("option", { value: "a" }, "Superset Group A"),
+                  h("option", { value: "b" }, "Superset Group B"),
+                  h("option", { value: "c" }, "Superset Group C")
+                )
+              )
+            ),
+
+            h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 } },
+              h(Field, { label: "Starting Weight" },
+                h("input", {
+                  className: "hg-input",
+                  type: "number",
+                  step: "0.5",
+                  value: startValue,
+                  onChange: e => setStartValue(e.target.value),
+                  placeholder: "e.g. 46"
+                })
+              ),
+              h(Field, { label: "Unit" },
+                h("select", {
+                  className: "hg-input",
+                  value: unit,
+                  onChange: e => setUnit(e.target.value)
+                },
+                  h("option", { value: "kg" }, "Kilograms (kg)"),
+                  h("option", { value: "lb" }, "Pounds (lb)")
+                )
+              )
+            ),
+
+            h(Field, { label: "Progression Weight Steps (comma-separated)" },
+              h("input", {
+                className: "hg-input",
+                type: "text",
+                value: blocksInput,
+                onChange: e => setBlocksInput(e.target.value),
+                placeholder: "e.g. 46, 49, 51.5, 54"
+              })
+            ),
+
+            h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 } },
+              h(Field, { label: "Equipment" },
+                h("select", {
+                  className: "hg-input",
+                  value: equipmentType,
+                  onChange: e => setEquipmentType(e.target.value)
+                },
+                  h("option", { value: "Barbell" }, "Barbell"),
+                  h("option", { value: "Dumbbell" }, "Dumbbell"),
+                  h("option", { value: "Cable" }, "Cable"),
+                  h("option", { value: "Machine" }, "Machine"),
+                  h("option", { value: "Bodyweight" }, "Bodyweight")
+                )
+              ),
+              h(Field, { label: "Rest Interval" },
+                h("input", {
+                  className: "hg-input",
+                  type: "text",
+                  value: restNote,
+                  onChange: e => setRestNote(e.target.value),
+                  placeholder: "e.g. 90s after A2"
+                })
+              )
+            ),
+
+            h(Field, { label: "Form Cues & Notes" },
+              h("input", {
+                className: "hg-input",
+                type: "text",
+                value: note,
+                onChange: e => setNote(e.target.value),
+                placeholder: "e.g. Plant feet, chest up, control eccentric"
+              })
+            )
+          ),
+
+          h("div", { className: "hg-actions", style: { marginTop: 22, justifyContent: "flex-end" } },
+            h("button", {
+              type: "button",
+              className: "hg-button secondary",
+              onClick: onClose
+            }, "Cancel"),
+            h("button", {
+              type: "submit",
+              className: "hg-btn-primary-hig"
+            }, isNew ? "Add Exercise ✓" : "Save Changes ✓")
+          )
+        )
+      )
+    );
+  }
+
+  // HIG Plan View Component
   function PlanView({ personId, data, store, meta, updateData, showToast }) {
+    const [activeSessionIdx, setActiveSessionIdx] = useState(0);
+    const [overflowMenuOpen, setOverflowMenuOpen] = useState(false);
+    const [rowMenuId, setRowMenuId] = useState(null);
+    const [dragIndex, setDragIndex] = useState(null);
+    const [dragOverIndex, setDragOverIndex] = useState(null);
+
+    // Modals
+    const [editingExercise, setEditingExercise] = useState(null);
+    const [isNewExercise, setIsNewExercise] = useState(false);
+    const [deletingExercise, setDeletingExercise] = useState(null);
+    const [pendingRestoreData, setPendingRestoreData] = useState(null);
+    const [resetModalOpen, setResetModalOpen] = useState(false);
+    const [equipmentOpen, setEquipmentOpen] = useState(false);
+    const [advancedOpen, setAdvancedOpen] = useState(false);
     const [wizardState, setWizardState] = useState({ open: false, initialProgram: null, mode: "create" });
     const [savedPrograms, setSavedPrograms] = useState([]);
-    const [loadingSaved, setLoadingSaved] = useState(false);
+
+    const fileInputRef = useRef(null);
+
+    const sessions = Array.isArray(data.sessions) ? data.sessions : [];
+    const activeSession = sessions[activeSessionIdx] || sessions[0] || null;
+    const exercises = useMemo(() => extractSessionExercises(activeSession), [activeSession]);
+
+    const activeProgramName = data.programName || "Current Routine";
+    const sessionCount = sessions.length;
 
     const loadSaved = useCallback(async () => {
-      setLoadingSaved(true);
       try {
         const progs = await GymCloudEngine.loadProgramsFromSubcollection(personId);
         setSavedPrograms(progs);
-      } catch (e) {
-        console.warn("loadProgramsFromSubcollection error:", e);
-      } finally {
-        setLoadingSaved(false);
-      }
+      } catch (e) {}
     }, [personId]);
 
     useEffect(() => {
       loadSaved();
     }, [loadSaved]);
 
-    async function handleActivateProgram(prog) {
-      if (!prog || !Array.isArray(prog.sessions)) return;
-      try {
-        await GymCloudEngine.saveActiveProgram(personId, prog);
-        updateData(personId, cur => {
-          const next = {
-            ...cur,
-            startDate: prog.startDate || cur.startDate,
-            sessions: prog.sessions,
-            goals: prog.description || cur.goals,
-            programId: prog.id,
-            programName: prog.name
-          };
-          try {
-            localStorage.setItem("data:" + personId, JSON.stringify(next));
-          } catch (e) {}
-          return next;
+    // Close menus on outside click
+    useEffect(() => {
+      function handleClickOutside(e) {
+        if (!e.target.closest(".hg-plan-actions")) {
+          setOverflowMenuOpen(false);
+        }
+        if (!e.target.closest(".hg-row-popover") && !e.target.closest(".hg-hig-action-btn")) {
+          setRowMenuId(null);
+        }
+      }
+      document.addEventListener("click", handleClickOutside);
+      return () => document.removeEventListener("click", handleClickOutside);
+    }, []);
+
+    // Session updater helper
+    function updateActiveSession(updatedSession) {
+      updateData(personId, cur => {
+        const nextSessions = (cur.sessions || []).map((s, idx) => {
+          if (idx !== activeSessionIdx && s.id !== activeSession?.id) return s;
+          return updatedSession;
         });
-        showToast("Activated program: " + prog.name);
-      } catch (err) {
-        showToast("Failed to activate program: " + (err?.message || "Unknown error"));
-      }
+        const next = { ...cur, sessions: nextSessions, updatedAt: Date.now() };
+        try {
+          localStorage.setItem(`plateplan_v1:${personId}`, JSON.stringify({
+            sessions: nextSessions,
+            startDate: cur.startDate,
+            goals: cur.goals,
+            updatedAt: Date.now()
+          }));
+          localStorage.setItem(`data:${personId}`, JSON.stringify(next));
+        } catch (e) {}
+        GymCloudEngine.savePlatePlanState(personId, nextSessions, cur.startDate, cur.goals);
+        return next;
+      });
     }
 
-    async function handleDeleteProgram(progId, progName) {
-      if (!confirm("Delete program '" + progName + "' from cloud subcollection?")) return;
+    // Drag-and-drop exercise reordering
+    function handleDragStart(e, idx) {
+      setDragIndex(idx);
       try {
-        await GymCloudEngine.deleteProgramFromSubcollection(personId, progId);
-        showToast("Deleted program: " + progName);
-        loadSaved();
-      } catch (err) {
-        showToast("Failed to delete program: " + (err?.message || "Unknown error"));
+        e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setData("text/plain", String(idx));
+      } catch (err) {}
+    }
+
+    function handleDragOver(e, idx) {
+      e.preventDefault();
+      try {
+        e.dataTransfer.dropEffect = "move";
+      } catch (err) {}
+      if (dragOverIndex !== idx) {
+        setDragOverIndex(idx);
       }
     }
 
-    const activeProgramName = data.programName || "Current Active Routine";
-    const sessionCount = (data.sessions || []).length;
+    function handleDrop(e, targetIdx) {
+      e.preventDefault();
+      if (dragIndex === null || dragIndex === targetIdx) {
+        setDragIndex(null);
+        setDragOverIndex(null);
+        return;
+      }
+      const updatedList = [...exercises];
+      const [moved] = updatedList.splice(dragIndex, 1);
+      updatedList.splice(targetIdx, 0, moved);
+      const updatedSession = commitExercisesToSession(activeSession, updatedList);
+      updateActiveSession(updatedSession);
+      showToast("Reordered exercises");
+      setDragIndex(null);
+      setDragOverIndex(null);
+    }
 
-    return h(React.Fragment, null,
-      h("div", { className: "hg-view-header" },
-        h("h1", null, "Plan"),
-        h("p", null, "Schedule, program creation wizard, subcollections, progression, and recovery.")
+    // Exercise CRUD Handlers
+    function handleNewExercise() {
+      setIsNewExercise(true);
+      setEditingExercise({
+        id: "ex_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 6),
+        name: "",
+        setsReps: "4 × 6",
+        unit: "kg",
+        startValue: "",
+        blocks: [],
+        supersetGroup: "solo",
+        equipmentType: "Barbell",
+        restNote: "90s",
+        note: ""
+      });
+    }
+
+    function handleDuplicateExercise(ex, index) {
+      const newId = "ex_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 6);
+      const cloned = {
+        ...ex,
+        id: newId,
+        name: `${ex.name} (Copy)`
+      };
+      const updatedList = [...exercises];
+      updatedList.splice(index + 1, 0, cloned);
+      const updatedSession = commitExercisesToSession(activeSession, updatedList);
+      updateActiveSession(updatedSession);
+      setRowMenuId(null);
+      showToast(`Duplicated "${ex.name}"`);
+    }
+
+    function handleSaveExercise(savedEx) {
+      let updatedList;
+      if (isNewExercise) {
+        updatedList = [...exercises, savedEx];
+        showToast(`Added "${savedEx.name}"`);
+      } else {
+        updatedList = exercises.map(e => (e.id === savedEx.id ? { ...e, ...savedEx } : e));
+        showToast(`Updated "${savedEx.name}"`);
+      }
+      const updatedSession = commitExercisesToSession(activeSession, updatedList);
+      updateActiveSession(updatedSession);
+      setEditingExercise(null);
+    }
+
+    function handleConfirmDeleteExercise() {
+      if (!deletingExercise) return;
+      const updatedList = exercises.filter(e => e.id !== deletingExercise.id);
+      const updatedSession = commitExercisesToSession(activeSession, updatedList);
+      updateActiveSession(updatedSession);
+      showToast(`Removed "${deletingExercise.name}"`);
+      setDeletingExercise(null);
+    }
+
+    // Backup & Restore Handlers
+    function handleDownloadBackup() {
+      setOverflowMenuOpen(false);
+      const payload = exportBackupJSON(store);
+      const dateStr = I.W ? I.W() : new Date().toISOString().slice(0, 10);
+      downloadFile(payload, `training-full-backup-${dateStr}.json`);
+      showToast("Downloaded full backup with health logs (schemaVersion: 3)");
+    }
+
+    function handleFileSelected(e) {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = evt => {
+        try {
+          const parsed = JSON.parse(evt.target.result);
+          if (!parsed || typeof parsed !== "object" || !parsed.people) {
+            showToast("Invalid backup file: missing 'people' profile mappings");
+            return;
+          }
+          setPendingRestoreData(parsed);
+        } catch (err) {
+          showToast("Failed to parse JSON file");
+        }
+      };
+      reader.readAsText(file);
+      e.target.value = "";
+    }
+
+    async function handleConfirmRestore() {
+      if (!pendingRestoreData) return;
+      try {
+        await restoreBackupJSON(pendingRestoreData, updateData, showToast);
+      } catch (err) {
+        showToast("Restore failed: " + (err?.message || "Unknown error"));
+      } finally {
+        setPendingRestoreData(null);
+      }
+    }
+
+    function handleConfirmReset() {
+      const defaultProg = I.K?.[personId]?.sessions;
+      if (!defaultProg) {
+        showToast("No default program found for " + meta.label);
+        return;
+      }
+      updateData(personId, cur => {
+        const next = {
+          ...cur,
+          sessions: defaultProg,
+          programName: "Default 4-Day Plan",
+          updatedAt: Date.now()
+        };
+        try {
+          localStorage.setItem(`plateplan_v1:${personId}`, JSON.stringify({
+            sessions: defaultProg,
+            startDate: cur.startDate,
+            goals: cur.goals,
+            updatedAt: Date.now()
+          }));
+          localStorage.setItem(`data:${personId}`, JSON.stringify(next));
+        } catch (e) {}
+        GymCloudEngine.savePlatePlanState(personId, defaultProg, cur.startDate, cur.goals);
+        return next;
+      });
+      showToast("Reset to default program");
+      setResetModalOpen(false);
+    }
+
+    function handleExportPlanOnly() {
+      setOverflowMenuOpen(false);
+      const payload = {
+        schemaVersion: 3,
+        app: "home-gym-log",
+        type: "plan-export",
+        exportedAt: I.W ? I.W() : new Date().toISOString().slice(0, 10),
+        person: personId,
+        sessions: data.sessions
+      };
+      downloadFile(payload, `training-plan-${personId}-${payload.exportedAt}.json`);
+      showToast("Exported plan definition");
+    }
+
+    function handleDownloadReminders() {
+      setOverflowMenuOpen(false);
+      try {
+        if (I.at && I.rt) {
+          const ics = I.at(store, 9);
+          I.rt(ics, `training-reminders-${personId}.ics`);
+          showToast("Downloaded workout calendar reminders (.ics)");
+        }
+      } catch (e) {
+        showToast("Calendar generator unavailable");
+      }
+    }
+
+    return h("div", { className: "hg-plan-container" },
+      // Hidden file input for restore
+      h("input", {
+        type: "file",
+        ref: fileInputRef,
+        accept: ".json,application/json",
+        style: { display: "none" },
+        onChange: handleFileSelected
+      }),
+
+      // Apple HIG Header: Clean title + single primary CTA + top-right overflow menu
+      h("div", { className: "hg-plan-header" },
+        h("div", { className: "hg-plan-title-area" },
+          h("h1", { style: { margin: 0, fontSize: 26, fontWeight: 700, letterSpacing: "-0.025em" } }, "Plan"),
+          h("div", { style: { fontSize: 13.5, color: "var(--hg-text-2)", marginTop: 2 } },
+            `${meta.label} · ${activeProgramName} · ${sessionCount} days/week`
+          )
+        ),
+        h("div", { className: "hg-plan-actions" },
+          // Primary Call-to-Action: + New exercise
+          h("button", {
+            type: "button",
+            id: "hg-btn-new-exercise",
+            className: "hg-btn-primary-hig",
+            onClick: handleNewExercise
+          }, "+ New exercise"),
+
+          // Overflow Menu Button (•••)
+          h("button", {
+            type: "button",
+            id: "hg-btn-plan-overflow",
+            className: "hg-btn-overflow-hig",
+            "aria-label": "Program & backup options",
+            title: "More options",
+            onClick: e => {
+              e.stopPropagation();
+              setOverflowMenuOpen(!overflowMenuOpen);
+            }
+          }, "•••"),
+
+          // Overflow Menu Popover
+          overflowMenuOpen && h("div", { className: "hg-overflow-menu", onClick: e => e.stopPropagation() },
+            h("button", {
+              type: "button",
+              className: "hg-menu-item",
+              onClick: handleDownloadBackup
+            }, "📥 Download backup"),
+            h("button", {
+              type: "button",
+              className: "hg-menu-item",
+              onClick: () => {
+                setOverflowMenuOpen(false);
+                fileInputRef.current?.click();
+              }
+            }, "📤 Restore from backup…"),
+            h("button", {
+              type: "button",
+              className: "hg-menu-item danger",
+              onClick: () => {
+                setOverflowMenuOpen(false);
+                setResetModalOpen(true);
+              }
+            }, "🔄 Reset to default program…"),
+
+            h("div", { className: "hg-menu-divider" }),
+
+            h("button", {
+              type: "button",
+              className: "hg-menu-item",
+              onClick: handleExportPlanOnly
+            }, "📋 Export plan only (.json)"),
+            h("button", {
+              type: "button",
+              className: "hg-menu-item",
+              onClick: handleDownloadReminders
+            }, "🗓 Download reminders (.ics)"),
+            h("button", {
+              type: "button",
+              className: "hg-menu-item",
+              onClick: () => {
+                setOverflowMenuOpen(false);
+                setWizardState({ open: true, initialProgram: null, mode: "create" });
+              }
+            }, "🧙 Program creation wizard"),
+            h("button", {
+              type: "button",
+              className: "hg-menu-item",
+              onClick: () => {
+                setOverflowMenuOpen(false);
+                setEquipmentOpen(!equipmentOpen);
+              }
+            }, "🛠 Equipment & plates"),
+            h("button", {
+              type: "button",
+              className: "hg-menu-item",
+              onClick: () => {
+                setOverflowMenuOpen(false);
+                const monday = I.j ? I.j(I.W()) : "this_week";
+                const active = I.HGgetDeload ? I.HGgetDeload(personId) === monday : false;
+                if (I.HGsetDeload) I.HGsetDeload(personId, active ? null : monday);
+                showToast(active ? "Deload cleared" : "Deload set for this week");
+              }
+            }, "⏸ Toggle weekly deload")
+          )
+        )
       ),
 
-      // Program Wizard & Management Card
-      h("div", { className: "hg-card", style: { marginBottom: 18 } },
-        h("div", { className: "hg-section-label", style: { margin: "0 0 6px" } }, "PROGRAM MANAGEMENT · V2.4.0"),
-        h("div", { className: "hg-card-title" }, "Workout Programs & Wizard"),
-        h("div", { className: "hg-card-copy" },
-          "Create new custom routines or edit existing ones using the 3-step Program Creation Wizard with exercise and superset builders. All routines save atomically to your Firestore subcollections (users/" + personId + "/programs)."
-        ),
+      // Session Segmented Control (Apple HIG Navigation Tabs)
+      sessions.length > 1 && h("div", { className: "hg-session-nav" },
+        sessions.map((s, idx) =>
+          h("button", {
+            key: s.id || idx,
+            type: "button",
+            className: "hg-session-tab " + (activeSessionIdx === idx ? "active" : ""),
+            onClick: () => setActiveSessionIdx(idx)
+          }, `${s.day || `Day ${idx + 1}`}: ${s.name}`)
+        )
+      ),
 
-        // Active Program Card Banner
-        h("div", { className: "hg-wizard-active-banner", style: { marginTop: 14, marginBottom: 14 } },
+      // Inset-Grouped Session Card
+      activeSession && h("div", { className: "hg-session-card" },
+        h("div", { className: "hg-session-card-header" },
           h("div", null,
-            h("div", { className: "hg-chip", style: { marginBottom: 4 } }, "ACTIVE ROUTINE"),
-            h("strong", { style: { fontSize: 16 } }, activeProgramName),
-            h("div", { style: { fontSize: 13, color: "var(--text-muted)", marginTop: 2 } },
-              sessionCount + " training sessions/week · Starts " + (data.startDate || "N/A")
+            h("strong", { style: { fontSize: 16, color: "var(--hg-text)" } }, activeSession.name),
+            h("div", { className: "hg-session-meta", style: { marginTop: 4 } },
+              h("span", null, `${exercises.length} exercises`),
+              activeSession.duration && h("span", null, `· ${activeSession.duration}`),
+              activeSession.type && h("span", {
+                className: "hg-progression-pill",
+                style: { textTransform: "capitalize" }
+              }, activeSession.type)
             )
           ),
-          h("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } },
+          h("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
+            h("span", { style: { fontSize: 13, color: "var(--hg-text-2)" } }, "Day:"),
+            h("select", {
+              className: "hg-input",
+              style: { minHeight: 32, padding: "2px 8px", fontSize: 13 },
+              value: activeSession.day || "Mon",
+              onChange: e => {
+                const updated = { ...activeSession, day: e.target.value };
+                updateActiveSession(updated);
+              }
+            },
+              ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map(d =>
+                h("option", { key: d, value: d }, d)
+              )
+            )
+          )
+        ),
+
+        // Streamlined HIG Exercise Table
+        h("div", { className: "hg-hig-table-wrap" },
+          h("table", { className: "hg-hig-table" },
+            h("thead", null,
+              h("tr", null,
+                h("th", { className: "hg-hig-th", style: { width: 36, textAlign: "center" } }),
+                h("th", { className: "hg-hig-th" }, "Exercise"),
+                h("th", { className: "hg-hig-th", style: { width: 140 } }, "Metric"),
+                h("th", { className: "hg-hig-th" }, "Progression"),
+                h("th", { className: "hg-hig-th", style: { width: 44, textAlign: "center" } })
+              )
+            ),
+            h("tbody", null,
+              exercises.length === 0 && h("tr", null,
+                h("td", { colSpan: 5, className: "hg-hig-td", style: { textAlign: "center", padding: "36px 16px", color: "var(--hg-text-2)" } },
+                  "No exercises in this session. Tap '+ New exercise' above to add your first movement."
+                )
+              ),
+              exercises.map((ex, idx) => {
+                const isDragging = dragIndex === idx;
+                const isDragOver = dragOverIndex === idx;
+
+                return h("tr", {
+                  key: ex.id || idx,
+                  className: "hg-hig-row " + (isDragging ? "dragging" : "") + (isDragOver ? "drag-over" : ""),
+                  onDragOver: e => handleDragOver(e, idx),
+                  onDrop: e => handleDrop(e, idx)
+                },
+                  // Drag Handle (⋮⋮)
+                  h("td", { className: "hg-hig-td", style: { width: 36, padding: "10px 4px 10px 12px", textAlign: "center" } },
+                    h("span", {
+                      className: "hg-drag-handle",
+                      draggable: true,
+                      title: "Drag to reorder",
+                      onDragStart: e => handleDragStart(e, idx),
+                      onDragEnd: () => {
+                        setDragIndex(null);
+                        setDragOverIndex(null);
+                      }
+                    }, "⋮⋮")
+                  ),
+
+                  // Exercise Column
+                  h("td", { className: "hg-hig-td" },
+                    h("div", { style: { display: "flex", alignItems: "baseline", gap: 8 } },
+                      ex.supersetTag && h("span", {
+                        className: "hg-progression-pill",
+                        style: {
+                          color: "var(--person-accent, #0969da)",
+                          borderColor: "color-mix(in srgb, var(--person-accent, #0969da) 30%, transparent)",
+                          fontSize: 11,
+                          fontWeight: 700
+                        }
+                      }, ex.supersetTag),
+                      h("strong", { style: { fontSize: 14.5, color: "var(--hg-text)" } }, ex.name)
+                    ),
+                    (ex.equipmentType || ex.note || ex.restNote) && h("div", {
+                      style: { fontSize: 12.5, color: "var(--hg-text-2)", marginTop: 3 }
+                    },
+                      [ex.equipmentType, ex.restNote ? `Rest: ${ex.restNote}` : null, ex.note]
+                        .filter(Boolean)
+                        .join(" · ")
+                    )
+                  ),
+
+                  // Metric Column: Sets × Reps ONLY (Target weight stripped out)
+                  h("td", { className: "hg-hig-td" },
+                    h("span", { className: "hg-metric-text" },
+                      formatMetricOnly(ex.setsReps)
+                    )
+                  ),
+
+                  // Progression Column: Weight steps exclusively
+                  h("td", { className: "hg-hig-td" },
+                    h("div", { className: "hg-progression-cell" },
+                      formatProgressionSteps(ex)
+                    )
+                  ),
+
+                  // Context Action Menu (⋮)
+                  h("td", { className: "hg-hig-td", style: { width: 44, textAlign: "center", position: "relative" } },
+                    h("button", {
+                      type: "button",
+                      className: "hg-hig-action-btn",
+                      title: "Exercise actions",
+                      onClick: e => {
+                        e.stopPropagation();
+                        setRowMenuId(rowMenuId === ex.id ? null : ex.id);
+                      }
+                    }, "⋮"),
+
+                    rowMenuId === ex.id && h("div", {
+                      className: "hg-row-popover",
+                      onClick: e => e.stopPropagation()
+                    },
+                      h("button", {
+                        type: "button",
+                        className: "hg-menu-item",
+                        onClick: () => {
+                          setRowMenuId(null);
+                          setIsNewExercise(false);
+                          setEditingExercise(ex);
+                        }
+                      }, "✎ Edit exercise"),
+                      h("button", {
+                        type: "button",
+                        className: "hg-menu-item",
+                        onClick: () => handleDuplicateExercise(ex, idx)
+                      }, "⎘ Duplicate"),
+                      h("div", { className: "hg-menu-divider" }),
+                      h("button", {
+                        type: "button",
+                        className: "hg-menu-item danger",
+                        onClick: () => {
+                          setRowMenuId(null);
+                          setDeletingExercise(ex);
+                        }
+                      }, "🗑 Delete")
+                    )
+                  )
+                );
+              })
+            )
+          )
+        )
+      ),
+
+      // Collapsible Equipment Section
+      equipmentOpen && h("div", { style: { marginBottom: 20 } },
+        h(EquipmentSection, { personId, data, updateData, showToast })
+      ),
+
+      // Collapsible Advanced Cloud & Recovery Card
+      h("div", { className: "hg-card", style: { marginTop: 24 } },
+        h("div", {
+          style: { display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" },
+          onClick: () => setAdvancedOpen(!advancedOpen)
+        },
+          h("div", null,
+            h("div", { className: "hg-card-title", style: { margin: 0, fontSize: 15 } }, "Advanced Program Management & Continuity"),
+            h("div", { className: "hg-card-copy", style: { margin: 0, fontSize: 12.5 } },
+              "Decoupled exercise logs, cloud subcollections, and program wizard"
+            )
+          ),
+          h("button", { type: "button", className: "hg-button secondary", style: { minHeight: 30, padding: "2px 10px" } },
+            advancedOpen ? "Hide" : "Show"
+          )
+        ),
+        advancedOpen && h("div", { style: { marginTop: 16, paddingTop: 14, borderTop: "1px solid var(--hg-border)" } },
+          h("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 } },
             h(Button, {
               primary: true,
               onClick: () => setWizardState({ open: true, initialProgram: null, mode: "create" })
-            }, "+ Create New Program"),
+            }, "+ Create New Program in Wizard"),
             h(Button, {
               onClick: () => setWizardState({
                 open: true,
@@ -3994,44 +4908,37 @@ const EXERCISE_SUGGESTIONS = [
                 mode: "edit"
               })
             }, "✎ Edit in Wizard")
-          )
-        ),
-
-        // Saved Programs in Subcollection
-        savedPrograms.length > 0 && h("div", { style: { marginTop: 16, paddingTop: 14, borderTop: "1px solid var(--border)" } },
-          h("div", { className: "hg-section-label", style: { marginBottom: 8 } }, "SAVED CLOUD SUBCOLLECTIONS (users/" + personId + "/programs)"),
-          h("div", { className: "hg-saved-programs-grid" },
+          ),
+          savedPrograms.length > 0 && h("div", { className: "hg-saved-programs-grid", style: { marginTop: 10 } },
             savedPrograms.map(prog => {
               const isActive = (data.programId && data.programId === prog.id) || (data.programName && data.programName === prog.name);
               return h("div", { key: prog.id, className: "hg-saved-program-card " + (isActive ? "active-border" : "") },
-                h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start" } },
-                  h("div", null,
-                    h("strong", { style: { fontSize: 15 } }, prog.name),
-                    isActive && h("span", { className: "hg-chip", style: { marginLeft: 6, fontSize: 10 } }, "Active"),
-                    h("div", { style: { fontSize: 12, color: "var(--text-muted)", marginTop: 2 } },
-                      (prog.frequency || ((prog.sessions || []).length + " days/week")) + " · " + ((prog.sessions || []).length) + " sessions"
-                    )
-                  )
+                h("strong", { style: { fontSize: 14 } }, prog.name),
+                isActive && h("span", { className: "hg-chip", style: { marginLeft: 6, fontSize: 10 } }, "Active"),
+                h("div", { style: { fontSize: 12, color: "var(--hg-text-2)", marginTop: 2 } },
+                  (prog.frequency || `${(prog.sessions || []).length} days/week`) + ` · ${(prog.sessions || []).length} sessions`
                 ),
-                prog.description && h("div", { style: { fontSize: 12, color: "var(--text-muted)", marginTop: 4 } }, prog.description),
-                h("div", { className: "hg-actions", style: { marginTop: 10 } },
+                h("div", { className: "hg-actions", style: { marginTop: 8 } },
                   !isActive && h("button", {
                     type: "button",
                     className: "hg-button secondary",
-                    style: { minHeight: 32, padding: "4px 10px", fontSize: 12 },
-                    onClick: () => handleActivateProgram(prog)
+                    style: { minHeight: 28, padding: "2px 8px", fontSize: 11.5 },
+                    onClick: async () => {
+                      await GymCloudEngine.saveActiveProgram(personId, prog);
+                      updateData(personId, c => ({ ...c, sessions: prog.sessions, programName: prog.name, programId: prog.id }));
+                      showToast("Activated program: " + prog.name);
+                    }
                   }, "Activate"),
                   h("button", {
                     type: "button",
-                    className: "hg-button secondary",
-                    style: { minHeight: 32, padding: "4px 10px", fontSize: 12 },
-                    onClick: () => setWizardState({ open: true, initialProgram: prog, mode: "edit" })
-                  }, "Edit in Wizard"),
-                  h("button", {
-                    type: "button",
                     className: "hg-button secondary danger",
-                    style: { minHeight: 32, padding: "4px 10px", fontSize: 12 },
-                    onClick: () => handleDeleteProgram(prog.id, prog.name)
+                    style: { minHeight: 28, padding: "2px 8px", fontSize: 11.5 },
+                    onClick: async () => {
+                      if (!confirm(`Delete ${prog.name}?`)) return;
+                      await GymCloudEngine.deleteProgramFromSubcollection(personId, prog.id);
+                      showToast("Deleted " + prog.name);
+                      loadSaved();
+                    }
                   }, "Delete")
                 )
               );
@@ -4040,108 +4947,81 @@ const EXERCISE_SUGGESTIONS = [
         )
       ),
 
-      h("div", { className: "hg-card", style: { marginBottom: 18 } },
-        h("div", { className: "hg-card-title", style: { display: "flex", alignItems: "center", justifyContent: "space-between" } },
-          h("span", null, "Cloud-First Architecture & Automated Sync"),
-          h("span", { className: "hg-badge", style: { fontSize: 11, background: "rgba(16,185,129,0.15)", color: "#10b981", border: "1px solid rgba(16,185,129,0.3)" } }, "v2.4.1 Cloud-First")
-        ),
-        h("div", { className: "hg-card-copy" },
-          "PlatePlan automatically synchronizes exercise history (gym_users/{userId}/logs) and program state (gym_users/{userId}/plateplan) across devices in real time. Local timestamps (plateplan_v1) are compared with Firestore to auto-merge changes. If you go offline, workouts queue locally and auto-sync when you reconnect."
-        ),
-        h("div", { className: "hg-actions", style: { display: "flex", gap: 8, flexWrap: "wrap" } },
-          h(Button, {
-            variant: "primary",
-            onClick: async () => {
-              showToast("Executing automated two-way cloud sync…");
-              const res = await PlatePlanSyncEngine.syncPlatePlanWithFirestore(personId, showToast);
-              if (res) {
-                updateData(personId, () => res);
-                showToast("Automated sync complete: state fully reconciled with cloud");
-              }
-            }
-          }, "Automated Two-Way Sync (plateplan_v1 ↔ Firestore)")
+      // HIG Modals & Alerts
+      editingExercise && h(ExerciseSheetModal, {
+        exercise: editingExercise,
+        isNew: isNewExercise,
+        onSave: handleSaveExercise,
+        onClose: () => setEditingExercise(null)
+      }),
+
+      // Destructive Confirmation: Restore Backup Alert
+      pendingRestoreData && h("div", { className: "hg-hig-modal-backdrop" },
+        h("div", { className: "hg-hig-alert" },
+          h("h3", { className: "hg-alert-title" }, "Restore Full Backup?"),
+          h("p", { className: "hg-alert-copy" },
+            "Restoring this backup will replace all workout routines, logged exercise history, and health logs (body weight, sleep, readiness) for both Elliott and Chloe. This action cannot be undone."
+          ),
+          h("div", { className: "hg-alert-actions" },
+            h("button", {
+              type: "button",
+              className: "hg-alert-btn",
+              onClick: () => setPendingRestoreData(null)
+            }, "Cancel"),
+            h("button", {
+              type: "button",
+              className: "hg-alert-btn danger",
+              onClick: handleConfirmRestore
+            }, "Restore Backup")
+          )
         )
       ),
 
-      h("div", { className: "hg-card", style: { marginBottom: 18 } },
-        h("div", { className: "hg-card-title" }, "Sub-Collection Cloud Engine & Continuity"),
-        h("div", { className: "hg-card-copy" },
-          "Exercise logs, 1RM progression, readiness, and weight logs are strictly decoupled from your workout plan. Updating or swapping your routine updates your active program without purging or resetting your history."
-        ),
-        h("div", { className: "hg-actions" },
-          h(Button, {
-            onClick: async () => {
-              showToast("Syncing & linking history to current routine…");
-              await runLegacyDataRecoveryAndMigration();
-              const exMap = new Map();
-              data.sessions.forEach(s => s.groups?.forEach(g => g.exercises?.forEach(ex => {
-                if (ex) exMap.set(normalizeExerciseName(ex.name), ex);
-              })));
-              let linked = 0;
-              const reLinked = (data.logs || []).map(l => {
-                const norm = normalizeExerciseName(l.exerciseName || l.exerciseId);
-                const matched = exMap.get(norm);
-                if (matched) {
-                  linked++;
-                  return { ...l, exerciseId: matched.id, exerciseName: matched.name, normalizedName: norm };
-                }
-                return l;
-              });
-              updateData(personId, c => ({ ...c, logs: reLinked }));
-              reLinked.forEach(l => GymCloudEngine.saveExerciseLog(personId, l));
-              showToast("History linked & synced: " + linked + " matching logs connected to current routine");
-            }
-          }, "Re-link History & Sync Sub-Collections")
+      // Destructive Confirmation: Reset to Default Program Alert
+      resetModalOpen && h("div", { className: "hg-hig-modal-backdrop" },
+        h("div", { className: "hg-hig-alert" },
+          h("h3", { className: "hg-alert-title" }, "Reset to Default Program?"),
+          h("p", { className: "hg-alert-copy" },
+            `Reset ${meta.label}'s workout routine to the default 4-day training plan? Logged session history and health records are strictly preserved and will not be lost.`
+          ),
+          h("div", { className: "hg-alert-actions" },
+            h("button", {
+              type: "button",
+              className: "hg-alert-btn",
+              onClick: () => setResetModalOpen(false)
+            }, "Cancel"),
+            h("button", {
+              type: "button",
+              className: "hg-alert-btn danger",
+              onClick: handleConfirmReset
+            }, "Reset Program")
+          )
         )
-      ),
-      h("div", { className: "hg-card", style: { marginBottom: 18 } },
-        h("div", { className: "hg-card-title" }, "Data Recovery & Storage Inspector"),
-        h("div", { className: "hg-card-copy" },
-          "Audits window.localStorage, IndexedDB object stores, and Firestore legacy collections. Prints matching keys, byte sizes, and raw JSON previews to DevTools console."
-        ),
-        h("div", { className: "hg-actions", style: { display: "flex", gap: 8, flexWrap: "wrap" } },
-          h(Button, {
-            onClick: async () => {
-              if (typeof window.runDataRecoveryInspection === "function") {
-                showToast("Running storage inspection... Check DevTools console!");
-                await window.runDataRecoveryInspection();
-              } else {
-                showToast("Inspection utility loading...");
-              }
-            }
-          }, "Run Console Inspection"),
-          h(Button, {
-            variant: "primary",
-            onClick: async () => {
-              if (typeof window.exportRecoveredData === "function") {
-                showToast("Exporting all recovered payloads to JSON...");
-                await window.exportRecoveredData();
-              } else {
-                showToast("Export utility loading...");
-              }
-            }
-          }, "Export Recovered Data (.JSON)")
-        )
-      ),
-      h(EquipmentSection, { personId, data, updateData, showToast }),
-      h("div", { className: "hg-card", style: { marginBottom: 18 } },
-        h("div", { className: "hg-card-title" }, "Recovery controls"),
-        h("div", { className: "hg-card-copy" }, "Use a manual deload when fatigue is unusually high."),
-        h("div", { className: "hg-actions" },
-          h(Button, {
-            onClick: () => {
-              const monday = I.j(I.W());
-              const active = I.HGgetDeload(personId) === monday;
-              I.HGsetDeload(personId, active ? null : monday);
-              showToast(active ? "Deload override cleared" : "Deload set for this week");
-            },
-          }, I.HGgetDeload(personId) === I.j(I.W()) ? "Clear this week's deload" : "Deload this week")
-        )
-      ),
-      h("div", { className: "hg-legacy-wrap" },
-        h(I.Et, { meta, personId, store, data, updateData, showToast })
       ),
 
+      // Destructive Confirmation: Delete Exercise Alert
+      deletingExercise && h("div", { className: "hg-hig-modal-backdrop" },
+        h("div", { className: "hg-hig-alert" },
+          h("h3", { className: "hg-alert-title" }, "Delete Exercise?"),
+          h("p", { className: "hg-alert-copy" },
+            `Remove "${deletingExercise.name}" from ${activeSession?.name || "this session"}? All past logged sets in Progress are safely kept.`
+          ),
+          h("div", { className: "hg-alert-actions" },
+            h("button", {
+              type: "button",
+              className: "hg-alert-btn",
+              onClick: () => setDeletingExercise(null)
+            }, "Cancel"),
+            h("button", {
+              type: "button",
+              className: "hg-alert-btn danger",
+              onClick: handleConfirmDeleteExercise
+            }, "Delete")
+          )
+        )
+      ),
+
+      // Program Wizard Modal
       wizardState.open && h(ProgramWizardModal, {
         personId,
         data,
