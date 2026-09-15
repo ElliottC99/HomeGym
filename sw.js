@@ -1,6 +1,6 @@
 // Home Gym — offline shell and explicit update lifecycle.
 // Increment this value for every release.
-const CACHE_NAME = "homegym-shell-v2.4.1";
+const CACHE_NAME = "homegym-shell-v2.4.2";
 
 const REQUIRED_SHELL = [
   "./",
@@ -109,12 +109,14 @@ self.addEventListener("fetch", event => {
   if (event.request.method !== "GET") return;
   const url = new URL(event.request.url);
 
-  // The HTML and configuration should check the network first so a new
-  // release can discover its waiting service worker immediately.
+  // Network-first for all same-origin scripts, styles, html, and json so releases
+  // update immediately, while falling back gracefully to cache when offline.
   if (url.origin === self.location.origin &&
       (url.pathname.endsWith("/") ||
        url.pathname.endsWith(".html") ||
-       url.pathname.endsWith("firebase-config.js"))) {
+       url.pathname.endsWith(".js") ||
+       url.pathname.endsWith(".css") ||
+       url.pathname.endsWith(".json"))) {
     event.respondWith(
       fetch(event.request)
         .then(response => {

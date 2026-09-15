@@ -9,7 +9,7 @@
 
   const h = React.createElement;
   const { useState, useEffect, useCallback, useRef } = React;
-  const APP_VERSION = "v2.4.0";
+  const APP_VERSION = "v2.4.1";
   const FEELINGS = [
     ["very_easy", "Very easy"],
     ["good", "Good"],
@@ -169,7 +169,74 @@
     return Array.from(map.values()).sort((a, b) => (b.date || "").localeCompare(a.date || ""));
   }
 
-  const GymCloudEngine = {
+const PLATEPLAN_V1_KEY = "plateplan_v1";
+  const QUEUE_STORAGE_KEY = "plateplan_offline_queue";
+
+  function getPlatePlanV1Local() {
+    try {
+      const raw = localStorage.getItem(PLATEPLAN_V1_KEY);
+      if (!raw) return null;
+      return JSON.parse(raw);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function savePlatePlanV1Local(userId, data) {
+    if (!userId || !data) return;
+    try {
+      let existing = getPlatePlanV1Local();
+      if (!existing || typeof existing !== "object") {
+        existing = { version: "2.4.1", updatedAt: Date.now(), users: {} };
+      }
+      if (!existing.users || typeof existing.users !== "object") {
+        existing.users = {};
+      }
+      const prevUser = existing.users[userId] || {};
+      existing.users[userId] = {
+        ...prevUser,
+        ...data,
+        updatedAt: data.updatedAt || Date.now()
+      };
+      existing.updatedAt = Date.now();
+      localStorage.setItem(PLATEPLAN_V1_KEY, JSON.stringify(existing));
+      localStorage.setItem(`${PLATEPLAN_V1_KEY}_${userId}`, JSON.stringify(existing.users[userId]));
+    } catch (e) {
+      console.warn("savePlatePlanV1Local error:", e?.message);
+    }
+  }
+
+  function getOfflineQueue() {
+    try {
+      const raw = localStorage.getItem(QUEUE_STORAGE_KEY);
+      return raw ? JSON.parse(raw) : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function saveOfflineQueue(queue) {
+    try {
+      localStorage.setItem(QUEUE_STORAGE_KEY, JSON.stringify(queue || []));
+    } catch (e) {}
+  }
+
+  function enqueueOfflineMutation(userId, type, payload) {
+    const queue = getOfflineQueue();
+    const mutation = {
+      id: "mut_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7),
+      userId,
+      type,
+      payload,
+      timestamp: Date.now()
+    };
+    queue.push(mutation);
+    saveOfflineQueue(queue);
+    console.log(`[PlatePlan Offline Queue] Enqueued ${type} for ${userId} (${queue.length} pending mutations)`);
+    return mutation;
+  }
+
+  const PlatePlanSyncEngine = {
     getFirestore() {
       try {
         if (window.firebase && window.firebase.firestore) {
@@ -198,7 +265,71 @@
       return null;
     },
 
-    async saveExerciseLog(profileId, log) {
+    getOfflineQueue,
+    saveOfflineQueue,
+    enqueueOfflineMutation,
+
+    async processOfflineQueue(onProgress) {
+      if (!navigator.onLine) {
+        return { processed: 0, remaining: getOfflineQueue().length };
+      }
+      const fs = this.getFirestore();
+      if (!fs) return { processed: 0, remaining: getOfflineQueue().length };
+
+      const queue = getOfflineQueue();
+      if (!queue.length) return { processed: 0, remaining: 0 };
+
+      console.log(`[PlatePlan Offline Queue] Draining ${queue.length} offline mutations...`);
+      const failed = [];
+      let processed = 0;
+
+      for (const item of queue) {
+        try {
+          const { userId, type, payload } = item;
+          if (!userId || !payload) continue;
+
+          if (type === "save_log") {
+            const clean = { ...payload, updatedAt: payload.updatedAt || Date.now() };
+            await fs.collection("gym_users").doc(userId).collection("logs").doc(String(clean.id)).set(clean, { merge: true });
+            await fs.collection("gym_users").doc(userId).collection("exercise_logs").doc(String(clean.id)).set(clean, { merge: true }).catch(() => {});
+            processed++;
+          } else if (type === "delete_log") {
+            await fs.collection("gym_users").doc(userId).collection("logs").doc(String(payload.id)).delete();
+            await fs.collection("gym_users").doc(userId).collection("exercise_logs").doc(String(payload.id)).delete().catch(() => {});
+            processed++;
+          } else if (type === "save_program" || type === "save_plateplan") {
+            const clean = { ...payload, updatedAt: payload.updatedAt || Date.now() };
+            await fs.collection("gym_users").doc(userId).collection("active_program").doc("current").set(clean, { merge: true });
+            await fs.collection("gym_users").doc(userId).collection("plateplan").doc("current").set(clean, { merge: true }).catch(() => {});
+            processed++;
+          } else if (type === "save_readiness") {
+            await fs.collection("gym_users").doc(userId).collection("readiness_logs").doc(String(payload.id)).set(payload, { merge: true });
+            processed++;
+          } else if (type === "delete_readiness") {
+            await fs.collection("gym_users").doc(userId).collection("readiness_logs").doc(String(payload.id)).delete().catch(() => {});
+            processed++;
+          } else if (type === "save_bodyweight") {
+            await fs.collection("gym_users").doc(userId).collection("bodyweight_logs").doc(String(payload.id)).set(payload, { merge: true });
+            processed++;
+          } else if (type === "delete_bodyweight") {
+            await fs.collection("gym_users").doc(userId).collection("bodyweight_logs").doc(String(payload.id)).delete().catch(() => {});
+            processed++;
+          }
+        } catch (err) {
+          console.warn("[PlatePlan Offline Queue] Mutation sync error, keeping in queue:", err?.message);
+          failed.push(item);
+        }
+      }
+
+      saveOfflineQueue(failed);
+      if (processed > 0) {
+        console.info(`[PlatePlan Offline Queue] Successfully synced ${processed} mutation(s) to Firestore. Remaining: ${failed.length}`);
+        onProgress?.({ processed, remaining: failed.length });
+      }
+      return { processed, remaining: failed.length };
+    },
+
+    async saveExerciseLog(profileId, log, options = {}) {
       if (!profileId || !log || !log.id) return;
       const clean = {
         id: String(log.id),
@@ -223,38 +354,100 @@
       };
       Object.keys(clean).forEach(k => clean[k] === undefined && delete clean[k]);
 
+      // 1. Immediately update local offline cache: plateplan_v1 & data:${profileId}
+      try {
+        const currentProfile = loadDecoupledProfile(profileId);
+        const existingLogs = Array.isArray(currentProfile.logs) ? currentProfile.logs : [];
+        const updatedLogs = existingLogs.some(l => l.id === clean.id)
+          ? existingLogs.map(l => l.id === clean.id ? clean : l)
+          : [...existingLogs, clean];
+        const updatedProfile = { ...currentProfile, logs: updatedLogs, updatedAt: Date.now() };
+        savePlatePlanV1Local(profileId, updatedProfile);
+        I.Ee(profileId, updatedProfile);
+      } catch (e) {
+        console.warn("Local cache write:", e);
+      }
+
+      // 2. Offline check
+      if (!navigator.onLine) {
+        if (!options.skipQueue) {
+          enqueueOfflineMutation(profileId, "save_log", clean);
+        }
+        return clean;
+      }
+
+      // 3. Online: write to Firestore gym_users/{userId}/logs and exercise_logs
       const fs = this.getFirestore();
       if (fs) {
         try {
-          await fs.collection("gym_users").doc(profileId).collection("exercise_logs").doc(String(clean.id)).set(clean, { merge: true });
+          await fs.collection("gym_users").doc(profileId).collection("logs").doc(String(clean.id)).set(clean, { merge: true });
+          await fs.collection("gym_users").doc(profileId).collection("exercise_logs").doc(String(clean.id)).set(clean, { merge: true }).catch(() => {});
         } catch (e) {
-          console.warn("Firestore saveExerciseLog:", e?.message);
+          console.warn("Firestore saveExerciseLog error, enqueuing offline mutation:", e?.message);
+          if (!options.skipQueue) {
+            enqueueOfflineMutation(profileId, "save_log", clean);
+          }
+        }
+      } else {
+        if (!options.skipQueue) {
+          enqueueOfflineMutation(profileId, "save_log", clean);
         }
       }
 
       const rtdb = this.getRTDB();
       if (rtdb) {
         try {
-          await rtdb.ref(`gym_users/${profileId}/exercise_logs/${clean.id}`).set(clean);
-        } catch (e) {
-          console.warn("RTDB saveExerciseLog:", e?.message);
-        }
+          await rtdb.ref(`gym_users/${profileId}/logs/${clean.id}`).set(clean);
+          await rtdb.ref(`gym_users/${profileId}/exercise_logs/${clean.id}`).set(clean).catch(() => {});
+        } catch (e) {}
       }
+
+      return clean;
     },
 
-    async deleteExerciseLog(profileId, logId) {
+    async deleteExerciseLog(profileId, logId, options = {}) {
       if (!profileId || !logId) return;
+
+      // 1. Immediately update local offline cache
+      try {
+        const currentProfile = loadDecoupledProfile(profileId);
+        const existingLogs = Array.isArray(currentProfile.logs) ? currentProfile.logs : [];
+        const updatedLogs = existingLogs.filter(l => l.id !== logId);
+        const updatedProfile = { ...currentProfile, logs: updatedLogs, updatedAt: Date.now() };
+        savePlatePlanV1Local(profileId, updatedProfile);
+        I.Ee(profileId, updatedProfile);
+      } catch (e) {}
+
+      // 2. Offline check
+      if (!navigator.onLine) {
+        if (!options.skipQueue) {
+          enqueueOfflineMutation(profileId, "delete_log", { id: logId });
+        }
+        return;
+      }
+
       const fs = this.getFirestore();
       if (fs) {
-        try { await fs.collection("gym_users").doc(profileId).collection("exercise_logs").doc(String(logId)).delete(); } catch (e) {}
+        try {
+          await fs.collection("gym_users").doc(profileId).collection("logs").doc(String(logId)).delete();
+          await fs.collection("gym_users").doc(profileId).collection("exercise_logs").doc(String(logId)).delete().catch(() => {});
+        } catch (e) {
+          if (!options.skipQueue) {
+            enqueueOfflineMutation(profileId, "delete_log", { id: logId });
+          }
+        }
       }
+
       const rtdb = this.getRTDB();
       if (rtdb) {
-        try { await rtdb.ref(`gym_users/${profileId}/exercise_logs/${logId}`).remove(); } catch (e) {}
+        try {
+          await rtdb.ref(`gym_users/${profileId}/logs/${logId}`).remove();
+          await rtdb.ref(`gym_users/${profileId}/exercise_logs/${logId}`).remove().catch(() => {});
+        } catch (e) {}
       }
     },
 
-    async saveReadinessLog(profileId, log) {
+    async saveReadinessLog(profileId, log, options = {}) {
       if (!profileId || !log || !log.id) return;
       const clean = {
         id: String(log.id),
@@ -268,21 +461,39 @@
         timestamp: log.timestamp || Date.now(),
         updatedAt: Date.now()
       };
+
+      if (!navigator.onLine) {
+        if (!options.skipQueue) enqueueOfflineMutation(profileId, "save_readiness", clean);
+        return clean;
+      }
+
       const fs = this.getFirestore();
       if (fs) {
-        try { await fs.collection("gym_users").doc(profileId).collection("readiness_logs").doc(String(clean.id)).set(clean, { merge: true }); } catch (e) {}
+        try {
+          await fs.collection("gym_users").doc(profileId).collection("readiness_logs").doc(String(clean.id)).set(clean, { merge: true });
+        } catch (e) {
+          if (!options.skipQueue) enqueueOfflineMutation(profileId, "save_readiness", clean);
+        }
       }
+
       const rtdb = this.getRTDB();
       if (rtdb) {
         try { await rtdb.ref(`gym_users/${profileId}/readiness_logs/${clean.id}`).set(clean); } catch (e) {}
       }
+      return clean;
     },
 
-    async deleteReadinessLog(profileId, logId) {
+    async deleteReadinessLog(profileId, logId, options = {}) {
       if (!profileId || !logId) return;
+      if (!navigator.onLine) {
+        if (!options.skipQueue) enqueueOfflineMutation(profileId, "delete_readiness", { id: logId });
+        return;
+      }
       const fs = this.getFirestore();
       if (fs) {
-        try { await fs.collection("gym_users").doc(profileId).collection("readiness_logs").doc(String(logId)).delete(); } catch (e) {}
+        try { await fs.collection("gym_users").doc(profileId).collection("readiness_logs").doc(String(logId)).delete(); } catch (e) {
+          if (!options.skipQueue) enqueueOfflineMutation(profileId, "delete_readiness", { id: logId });
+        }
       }
       const rtdb = this.getRTDB();
       if (rtdb) {
@@ -290,7 +501,7 @@
       }
     },
 
-    async saveBodyweightLog(profileId, log) {
+    async saveBodyweightLog(profileId, log, options = {}) {
       if (!profileId || !log || !log.id) return;
       const clean = {
         id: String(log.id),
@@ -300,21 +511,38 @@
         timestamp: log.timestamp || Date.now(),
         updatedAt: Date.now()
       };
+
+      if (!navigator.onLine) {
+        if (!options.skipQueue) enqueueOfflineMutation(profileId, "save_bodyweight", clean);
+        return clean;
+      }
+
       const fs = this.getFirestore();
       if (fs) {
-        try { await fs.collection("gym_users").doc(profileId).collection("bodyweight_logs").doc(String(clean.id)).set(clean, { merge: true }); } catch (e) {}
+        try {
+          await fs.collection("gym_users").doc(profileId).collection("bodyweight_logs").doc(String(clean.id)).set(clean, { merge: true });
+        } catch (e) {
+          if (!options.skipQueue) enqueueOfflineMutation(profileId, "save_bodyweight", clean);
+        }
       }
       const rtdb = this.getRTDB();
       if (rtdb) {
         try { await rtdb.ref(`gym_users/${profileId}/bodyweight_logs/${clean.id}`).set(clean); } catch (e) {}
       }
+      return clean;
     },
 
-    async deleteBodyweightLog(profileId, logId) {
+    async deleteBodyweightLog(profileId, logId, options = {}) {
       if (!profileId || !logId) return;
+      if (!navigator.onLine) {
+        if (!options.skipQueue) enqueueOfflineMutation(profileId, "delete_bodyweight", { id: logId });
+        return;
+      }
       const fs = this.getFirestore();
       if (fs) {
-        try { await fs.collection("gym_users").doc(profileId).collection("bodyweight_logs").doc(String(logId)).delete(); } catch (e) {}
+        try { await fs.collection("gym_users").doc(profileId).collection("bodyweight_logs").doc(String(logId)).delete(); } catch (e) {
+          if (!options.skipQueue) enqueueOfflineMutation(profileId, "delete_bodyweight", { id: logId });
+        }
       }
       const rtdb = this.getRTDB();
       if (rtdb) {
@@ -322,7 +550,7 @@
       }
     },
 
-    async saveActiveProgram(profileId, programData) {
+    async saveActiveProgram(profileId, programData, options = {}) {
       if (!profileId || !programData) return;
       const payload = {
         programId: programData.programId || "current",
@@ -335,22 +563,50 @@
         equipment: programData.equipment || null,
         updatedAt: Date.now()
       };
+
+      // 1. Immediately cache locally
+      try {
+        const currentProfile = loadDecoupledProfile(profileId);
+        const next = { ...currentProfile, ...payload, updatedAt: Date.now() };
+        savePlatePlanV1Local(profileId, next);
+        I.Ee(profileId, next);
+      } catch (e) {}
+
+      // 2. Offline check
+      if (!navigator.onLine) {
+        if (!options.skipQueue) {
+          enqueueOfflineMutation(profileId, "save_program", payload);
+        }
+        return payload;
+      }
+
+      // 3. Online: write to active_program and plateplan
       const fs = this.getFirestore();
       if (fs) {
         try {
           await fs.collection("gym_users").doc(profileId).collection("active_program").doc("current").set(payload, { merge: true });
+          await fs.collection("gym_users").doc(profileId).collection("plateplan").doc("current").set(payload, { merge: true }).catch(() => {});
         } catch (e) {
-          console.warn("Firestore saveActiveProgram:", e?.message);
+          console.warn("Firestore saveActiveProgram error, enqueuing:", e?.message);
+          if (!options.skipQueue) {
+            enqueueOfflineMutation(profileId, "save_program", payload);
+          }
+        }
+      } else {
+        if (!options.skipQueue) {
+          enqueueOfflineMutation(profileId, "save_program", payload);
         }
       }
+
       const rtdb = this.getRTDB();
       if (rtdb) {
         try {
           await rtdb.ref(`gym_users/${profileId}/active_program/current`).set(payload);
-        } catch (e) {
-          console.warn("RTDB saveActiveProgram:", e?.message);
-        }
+          await rtdb.ref(`gym_users/${profileId}/plateplan/current`).set(payload).catch(() => {});
+        } catch (e) {}
       }
+
+      return payload;
     },
 
     async saveProgramToSubcollection(userId, program) {
@@ -373,9 +629,7 @@
       const fs = this.getFirestore();
       if (fs) {
         try {
-          // Atomically write to Firestore subcollection: users/{userId}/programs/{programId}
           await fs.collection("users").doc(userId).collection("programs").doc(programId).set(payload, { merge: true });
-          // Mirror to gym_users for continuity
           await fs.collection("gym_users").doc(userId).collection("programs").doc(programId).set(payload, { merge: true }).catch(() => {});
         } catch (e) {
           console.warn("Firestore saveProgramToSubcollection error:", e?.message);
@@ -456,53 +710,235 @@
       } catch (e) {}
     },
 
+    /**
+     * Automated Two-Way Sync Strategy:
+     * - Queries Firestore collection gym_users/{userId}/logs and gym_users/{userId}/plateplan
+     * - Compares local localStorage timestamps (plateplan_v1) against Firestore document timestamps
+     * - If localStorage contains newer/missing entries, pushes them to Firestore
+     * - If Firestore contains newer entries, hydrates localStorage
+     */
+    async syncPlatePlanWithFirestore(userId, showToast) {
+      if (!userId) return null;
+      if (!navigator.onLine) {
+        console.log(`[PlatePlan Sync] Device offline; using offline cache for ${userId}.`);
+        return loadDecoupledProfile(userId);
+      }
+
+      const fs = this.getFirestore();
+      if (!fs) return null;
+
+      try {
+        // 1. Process any pending offline mutations first
+        await this.processOfflineQueue();
+
+        // 2. Fetch remote documents
+        const [logsSnap, legacyLogsSnap, plateplanDoc, activeProgDoc] = await Promise.allSettled([
+          fs.collection("gym_users").doc(userId).collection("logs").get(),
+          fs.collection("gym_users").doc(userId).collection("exercise_logs").get(),
+          fs.collection("gym_users").doc(userId).collection("plateplan").doc("current").get(),
+          fs.collection("gym_users").doc(userId).collection("active_program").doc("current").get()
+        ]);
+
+        const remoteLogsMap = new Map();
+        if (logsSnap.status === "fulfilled" && logsSnap.value) {
+          logsSnap.value.forEach(doc => {
+            const d = doc.data();
+            const id = String(d.id || doc.id);
+            remoteLogsMap.set(id, { ...d, id });
+          });
+        }
+        if (legacyLogsSnap.status === "fulfilled" && legacyLogsSnap.value) {
+          legacyLogsSnap.value.forEach(doc => {
+            const d = doc.data();
+            const id = String(d.id || doc.id);
+            if (!remoteLogsMap.has(id)) {
+              remoteLogsMap.set(id, { ...d, id });
+            }
+          });
+        }
+
+        const remotePlateplan = (plateplanDoc.status === "fulfilled" && plateplanDoc.value?.exists)
+          ? plateplanDoc.value.data()
+          : null;
+
+        const remoteActiveProg = (activeProgDoc.status === "fulfilled" && activeProgDoc.value?.exists)
+          ? activeProgDoc.value.data()
+          : null;
+
+        // 3. Read local state from plateplan_v1 & data:${userId}
+        const localProfile = loadDecoupledProfile(userId);
+        const localLogs = Array.isArray(localProfile.logs) ? localProfile.logs : [];
+        const localLogsMap = new Map();
+        localLogs.forEach(l => {
+          if (!l) return;
+          const key = String(l.id || `${l.date}_${l.exerciseId || l.name}_${l.weight}_${l.sets}_${l.reps}`);
+          localLogsMap.set(key, l);
+        });
+
+        let pushedToRemote = 0;
+        let hydratedToLocal = 0;
+        const toPush = [];
+
+        // Check if local contains newer or missing entries -> push to Firestore
+        for (const [key, localLog] of localLogsMap.entries()) {
+          const remoteLog = remoteLogsMap.get(key) || remoteLogsMap.get(String(localLog.id));
+          const localTime = Number(localLog.updatedAt || localLog.timestamp || 0);
+          const remoteTime = Number(remoteLog?.updatedAt || remoteLog?.timestamp || 0);
+
+          if (!remoteLog || localTime > remoteTime) {
+            toPush.push(localLog);
+            pushedToRemote++;
+          }
+        }
+
+        if (toPush.length > 0) {
+          console.info(`[PlatePlan Sync] Pushing ${toPush.length} newer/missing local logs to Firestore for ${userId}...`);
+          await Promise.allSettled(toPush.map(log => this.saveExerciseLog(userId, log, { skipQueue: true })));
+        }
+
+        // Check if remote contains newer entries -> hydrate local
+        const mergedLogsMap = new Map(localLogsMap);
+        for (const [remoteKey, remoteLog] of remoteLogsMap.entries()) {
+          const localLog = localLogsMap.get(remoteKey) || localLogsMap.get(String(remoteLog.id));
+          const localTime = Number(localLog?.updatedAt || localLog?.timestamp || 0);
+          const remoteTime = Number(remoteLog.updatedAt || remoteLog.timestamp || 0);
+
+          if (!localLog || remoteTime > localTime) {
+            mergedLogsMap.set(String(remoteLog.id || remoteKey), remoteLog);
+            hydratedToLocal++;
+          }
+        }
+
+        // Reconcile Active Program / PlatePlan
+        let finalProgram = localProfile;
+        const remoteProgObj = remotePlateplan || remoteActiveProg;
+        if (remoteProgObj) {
+          const remoteProgTime = Number(remoteProgObj.updatedAt || 0);
+          const localProgTime = Number(localProfile.updatedAt || 0);
+          if (remoteProgTime > localProgTime) {
+            finalProgram = {
+              ...localProfile,
+              startDate: remoteProgObj.startDate || localProfile.startDate,
+              goals: remoteProgObj.goals || localProfile.goals,
+              resumeNote: remoteProgObj.resumeNote || localProfile.resumeNote,
+              sessions: Array.isArray(remoteProgObj.sessions) && remoteProgObj.sessions.length ? remoteProgObj.sessions : localProfile.sessions,
+              weekOverrides: remoteProgObj.weekOverrides || localProfile.weekOverrides,
+              equipment: remoteProgObj.equipment || localProfile.equipment,
+              updatedAt: remoteProgTime
+            };
+            hydratedToLocal++;
+          } else if (localProgTime > remoteProgTime && localProfile.sessions?.length) {
+            this.saveActiveProgram(userId, localProfile, { skipQueue: true });
+            pushedToRemote++;
+          }
+        }
+
+        const mergedLogsArray = Array.from(mergedLogsMap.values()).sort((a, b) =>
+          (b.date || "").localeCompare(a.date || "") || ((b.timestamp || 0) - (a.timestamp || 0))
+        );
+
+        const reconciledProfile = {
+          ...finalProgram,
+          logs: mergedLogsArray,
+          updatedAt: Math.max(Number(finalProgram.updatedAt || 0), Date.now())
+        };
+
+        // Hydrate localStorage cache
+        savePlatePlanV1Local(userId, reconciledProfile);
+        I.Ee(userId, reconciledProfile);
+
+        console.info(`[PlatePlan Sync] Completed sync for ${userId}: pushed ${pushedToRemote}, hydrated ${hydratedToLocal}`);
+        if (pushedToRemote > 0 || hydratedToLocal > 0) {
+          showToast?.(`Cloud synced: ${pushedToRemote} uploaded, ${hydratedToLocal} downloaded`);
+        }
+
+        return reconciledProfile;
+      } catch (err) {
+        console.warn("[PlatePlan Sync] Two-way sync error:", err);
+        return null;
+      }
+    },
+
+    /**
+     * Real-Time Cloud Listeners:
+     * - onSnapshot for active program (gym_users/{profileId}/active_program/current)
+     * - onSnapshot for plateplan (gym_users/{profileId}/plateplan/current)
+     * - onSnapshot for history logs (gym_users/{profileId}/logs and exercise_logs)
+     * - Ensures changes on mobile immediately update desktop/laptop state!
+     */
     subscribe(profileId, onRemoteUpdate, onStatusChange) {
       const unsubscribers = [];
 
       const fs = this.getFirestore();
       if (fs) {
         try {
-          const unsubLogs = fs.collection("gym_users").doc(profileId).collection("exercise_logs")
+          // 1. Logs listener (primary path: gym_users/{profileId}/logs)
+          const unsubLogs = fs.collection("gym_users").doc(profileId).collection("logs")
             .onSnapshot(snap => {
               const logs = [];
               snap.forEach(doc => logs.push({ id: doc.id, ...doc.data() }));
               if (logs.length > 0) {
-                onStatusChange?.("synced");
+                if (navigator.onLine) onStatusChange?.("synced");
                 onRemoteUpdate?.("exercise_logs", logs);
               }
-            }, err => console.warn("Firestore logs error:", err?.message));
+            }, err => console.warn("Firestore logs listener error:", err?.message));
           unsubscribers.push(unsubLogs);
 
+          // 2. Legacy exercise_logs listener
+          const unsubExerciseLogs = fs.collection("gym_users").doc(profileId).collection("exercise_logs")
+            .onSnapshot(snap => {
+              const logs = [];
+              snap.forEach(doc => logs.push({ id: doc.id, ...doc.data() }));
+              if (logs.length > 0) {
+                if (navigator.onLine) onStatusChange?.("synced");
+                onRemoteUpdate?.("exercise_logs", logs);
+              }
+            }, () => {});
+          unsubscribers.push(unsubExerciseLogs);
+
+          // 3. Readiness logs listener
           const unsubRead = fs.collection("gym_users").doc(profileId).collection("readiness_logs")
             .onSnapshot(snap => {
               const items = [];
               snap.forEach(doc => items.push({ id: doc.id, ...doc.data() }));
               if (items.length > 0) {
-                onStatusChange?.("synced");
+                if (navigator.onLine) onStatusChange?.("synced");
                 onRemoteUpdate?.("readiness_logs", items);
               }
             }, () => {});
           unsubscribers.push(unsubRead);
 
+          // 4. Bodyweight logs listener
           const unsubBw = fs.collection("gym_users").doc(profileId).collection("bodyweight_logs")
             .onSnapshot(snap => {
               const items = [];
               snap.forEach(doc => items.push({ id: doc.id, ...doc.data() }));
               if (items.length > 0) {
-                onStatusChange?.("synced");
+                if (navigator.onLine) onStatusChange?.("synced");
                 onRemoteUpdate?.("bodyweight_logs", items);
               }
             }, () => {});
           unsubscribers.push(unsubBw);
 
+          // 5. Active program listener (gym_users/{profileId}/active_program/current)
           const unsubProg = fs.collection("gym_users").doc(profileId).collection("active_program").doc("current")
             .onSnapshot(doc => {
               if (doc.exists) {
-                onStatusChange?.("synced");
+                if (navigator.onLine) onStatusChange?.("synced");
                 onRemoteUpdate?.("active_program", doc.data());
               }
             }, () => {});
           unsubscribers.push(unsubProg);
+
+          // 6. Plateplan current listener (gym_users/{profileId}/plateplan/current)
+          const unsubPlateplan = fs.collection("gym_users").doc(profileId).collection("plateplan").doc("current")
+            .onSnapshot(doc => {
+              if (doc.exists) {
+                if (navigator.onLine) onStatusChange?.("synced");
+                onRemoteUpdate?.("active_program", doc.data());
+              }
+            }, () => {});
+          unsubscribers.push(unsubPlateplan);
         } catch (e) {
           console.warn("Firestore subscribe exception:", e?.message);
         }
@@ -511,11 +947,11 @@
       const rtdb = this.getRTDB();
       if (rtdb) {
         try {
-          const logsRef = rtdb.ref(`gym_users/${profileId}/exercise_logs`);
+          const logsRef = rtdb.ref(`gym_users/${profileId}/logs`);
           const onLogs = snap => {
             const val = snap.val();
             if (val) {
-              onStatusChange?.("synced");
+              if (navigator.onLine) onStatusChange?.("synced");
               const logs = Object.keys(val).map(k => ({ id: k, ...val[k] }));
               onRemoteUpdate?.("exercise_logs", logs);
             }
@@ -527,7 +963,7 @@
           const onProg = snap => {
             const val = snap.val();
             if (val) {
-              onStatusChange?.("synced");
+              if (navigator.onLine) onStatusChange?.("synced");
               onRemoteUpdate?.("active_program", val);
             }
           };
@@ -545,6 +981,8 @@
       };
     }
   };
+
+  const GymCloudEngine = PlatePlanSyncEngine;
 
   async function runLegacyDataRecoveryAndMigration() {
     const profiles = ["elliott", "chloe"];
@@ -723,22 +1161,37 @@
     };
 
     try {
-      const raw = localStorage.getItem(`data:${profileId}`);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (parsed && typeof parsed === "object") {
-          const logs = Array.isArray(parsed.logs) ? parsed.logs.map(i => ({ ...i, exerciseId: i.exerciseId || i.liftId })) : [];
-          return {
-            startDate: parsed.startDate || defaultData.startDate,
-            goals: parsed.goals || defaultData.goals,
-            resumeNote: parsed.resumeNote || defaultData.resumeNote,
-            sessions: Array.isArray(parsed.sessions) && parsed.sessions.length ? parsed.sessions : defaultData.sessions,
-            weekOverrides: parsed.weekOverrides && typeof parsed.weekOverrides === "object" ? parsed.weekOverrides : {},
-            logs: logs,
-            equipment: parsed.equipment || null,
-            updatedAt: typeof parsed.updatedAt === "number" ? parsed.updatedAt : 0,
-          };
-        }
+      // 1. Check plateplan_v1 (cloud-first primary local cache)
+      const ppv1 = getPlatePlanV1Local();
+      const userPpv1 = ppv1?.users?.[profileId] || ppv1?.[profileId] || (ppv1?.userId === profileId ? ppv1 : null);
+
+      // 2. Check per-user key plateplan_v1_${profileId}
+      let perUserPpv1 = null;
+      try {
+        const rawPer = localStorage.getItem(`${PLATEPLAN_V1_KEY}_${profileId}`);
+        if (rawPer) perUserPpv1 = JSON.parse(rawPer);
+      } catch (e) {}
+
+      // 3. Check legacy data:${profileId}
+      let parsedData = null;
+      try {
+        const raw = localStorage.getItem(`data:${profileId}`);
+        if (raw) parsedData = JSON.parse(raw);
+      } catch (e) {}
+
+      const source = userPpv1 || perUserPpv1 || parsedData;
+      if (source && typeof source === "object") {
+        const logs = Array.isArray(source.logs) ? source.logs.map(i => ({ ...i, exerciseId: i.exerciseId || i.liftId })) : [];
+        return {
+          startDate: source.startDate || defaultData.startDate,
+          goals: source.goals || defaultData.goals,
+          resumeNote: source.resumeNote || defaultData.resumeNote,
+          sessions: Array.isArray(source.sessions) && source.sessions.length ? source.sessions : defaultData.sessions,
+          weekOverrides: source.weekOverrides && typeof source.weekOverrides === "object" ? source.weekOverrides : {},
+          logs: logs,
+          equipment: source.equipment || null,
+          updatedAt: typeof source.updatedAt === "number" ? source.updatedAt : 0,
+        };
       }
     } catch (e) {
       console.warn("loadDecoupledProfile parse error:", e);
@@ -3588,6 +4041,29 @@ const EXERCISE_SUGGESTIONS = [
       ),
 
       h("div", { className: "hg-card", style: { marginBottom: 18 } },
+        h("div", { className: "hg-card-title", style: { display: "flex", alignItems: "center", justifyContent: "space-between" } },
+          h("span", null, "Cloud-First Architecture & Automated Sync"),
+          h("span", { className: "hg-badge", style: { fontSize: 11, background: "rgba(16,185,129,0.15)", color: "#10b981", border: "1px solid rgba(16,185,129,0.3)" } }, "v2.4.1 Cloud-First")
+        ),
+        h("div", { className: "hg-card-copy" },
+          "PlatePlan automatically synchronizes exercise history (gym_users/{userId}/logs) and program state (gym_users/{userId}/plateplan) across devices in real time. Local timestamps (plateplan_v1) are compared with Firestore to auto-merge changes. If you go offline, workouts queue locally and auto-sync when you reconnect."
+        ),
+        h("div", { className: "hg-actions", style: { display: "flex", gap: 8, flexWrap: "wrap" } },
+          h(Button, {
+            variant: "primary",
+            onClick: async () => {
+              showToast("Executing automated two-way cloud sync…");
+              const res = await PlatePlanSyncEngine.syncPlatePlanWithFirestore(personId, showToast);
+              if (res) {
+                updateData(personId, () => res);
+                showToast("Automated sync complete: state fully reconciled with cloud");
+              }
+            }
+          }, "Automated Two-Way Sync (plateplan_v1 ↔ Firestore)")
+        )
+      ),
+
+      h("div", { className: "hg-card", style: { marginBottom: 18 } },
         h("div", { className: "hg-card-title" }, "Sub-Collection Cloud Engine & Continuity"),
         h("div", { className: "hg-card-copy" },
           "Exercise logs, 1RM progression, readiness, and weight logs are strictly decoupled from your workout plan. Updating or swapping your routine updates your active program without purging or resetting your history."
@@ -3681,7 +4157,7 @@ const EXERCISE_SUGGESTIONS = [
     );
   }
 
-  function SettingsModal({ personId, store, pin, syncStatus, updateData, onSaveKey, onClose, showToast }) {
+  function SettingsModal({ personId, store, pin, syncStatus, queueCount = 0, updateData, onSaveKey, onClose, showToast }) {
     const [theme, setTheme] = useState(getTheme());
     const [key, setKey] = useState(pin || "");
     const [elliottStart, setElliottStart] = useState(store?.elliott?.startDate || "2026-09-07");
@@ -3728,6 +4204,30 @@ const EXERCISE_SUGGESTIONS = [
           )
         ),
         h("div", { className: "hg-setting-section" },
+          h("h3", null, "Cloud-First Architecture & Automated Sync"),
+          h("p", null,
+            `${syncStatus === "synced" ? "Cloud Synced." : syncStatus === "connecting" ? "Connecting to Firestore…" : syncStatus === "offline" ? "Offline mode active." : "Local cache."} PlatePlan v2.4.1 two-way cloud sync engine automatically replicates exercise history (gym_users/{userId}/logs) and program routines.`
+          ),
+          h("div", { style: { marginTop: 10, padding: "12px 14px", background: "rgba(255,255,255,0.03)", border: "1px solid var(--border)", borderRadius: 8, fontSize: 13 } },
+            h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 } },
+              h("span", null, "Offline Mutation Queue:"),
+              h("strong", { style: { color: queueCount > 0 ? "#f59e0b" : "#10b981" } }, queueCount > 0 ? `${queueCount} pending offline write(s)` : "Clean (0 pending)")
+            ),
+            h(Button, {
+              style: { width: "100%" },
+              onClick: async () => {
+                showToast("Executing Two-Way Cloud Sync with Firestore…");
+                await PlatePlanSyncEngine.processOfflineQueue();
+                const res = await PlatePlanSyncEngine.syncPlatePlanWithFirestore(personId, showToast);
+                if (res) {
+                  updateData(personId, () => res);
+                  showToast("Two-way cloud sync complete!");
+                }
+              }
+            }, "Sync Now with Firestore")
+          )
+        ),
+        h("div", { className: "hg-setting-section" },
           h("h3", null, "Household sync key"),
           h("p", null,
             `${syncStatus === "synced" ? "Synced." : syncStatus === "connecting" ? "Connecting…" : "Local only."} Use the same private key on both phones. It is no longer published with the app.`
@@ -3771,12 +4271,41 @@ const EXERCISE_SUGGESTIONS = [
     );
   }
 
-  function Header({ personId, setPersonId, syncStatus, onSettings }) {
+  function Header({ personId, setPersonId, syncStatus, queueCount = 0, onSettings }) {
+    const isOnline = typeof navigator !== "undefined" ? navigator.onLine : true;
+    const statusText = !isOnline
+      ? (queueCount > 0 ? `Offline (${queueCount} queued)` : "Offline")
+      : (syncStatus === "synced"
+          ? (queueCount > 0 ? `Syncing (${queueCount})…` : "Cloud Synced")
+          : syncStatus === "syncing"
+            ? "Syncing…"
+            : syncStatus === "connecting"
+              ? "Connecting…"
+              : "Local cache");
+
+    const statusDotColor = !isOnline
+      ? "#f59e0b"
+      : syncStatus === "synced" && queueCount === 0
+        ? "#10b981"
+        : "#3b82f6";
+
     return h("header", { className: "hg-header" },
       h("div", { className: "hg-brand" },
-        h("div", { className: "hg-eyebrow" }, syncStatus === "synced" ? "Synced" : syncStatus === "connecting" ? "Connecting" : "Home training"),
+        h("div", { className: "hg-eyebrow", style: { display: "flex", alignItems: "center", gap: 6 } },
+          h("span", {
+            style: {
+              width: 7,
+              height: 7,
+              borderRadius: "50%",
+              background: statusDotColor,
+              display: "inline-block",
+              boxShadow: syncStatus === "synced" ? "0 0 6px rgba(16,185,129,0.5)" : "none"
+            }
+          }),
+          statusText
+        ),
         h("div", { className: "hg-brand-name" },
-          "Home Gym",
+          "PlatePlan",
           h("span", { className: "hg-version-tag" }, APP_VERSION)
         )
       ),
@@ -3844,11 +4373,77 @@ const EXERCISE_SUGGESTIONS = [
     const [syncStatus, setSyncStatus] = useState(pin ? "connecting" : "local-only");
     const [authEpoch, setAuthEpoch] = useState(0);
     const [active, setActiveState] = useState(() => loadActive(getInitialActiveProfile()));
+    const [queueCount, setQueueCount] = useState(() => PlatePlanSyncEngine.getOfflineQueue().length);
     const dbRef = useRef(null);
     const toastTimer = useRef(null);
 
-    // Asynchronous background migration routine:
-    // Runs safely after initial UI render without blocking boot or awaiting cloud promises
+    const showToast = useCallback(message => {
+      setToast(message);
+      clearTimeout(toastTimer.current);
+      toastTimer.current = setTimeout(() => setToast(""), 2800);
+    }, []);
+
+    // Automated Two-Way Sync on boot & person switch
+    useEffect(() => {
+      let active = true;
+      PlatePlanSyncEngine.syncPlatePlanWithFirestore(personId, showToast).then(reconciled => {
+        if (!active) return;
+        if (reconciled) {
+          setStore(current => ({
+            ...current,
+            [personId]: reconciled
+          }));
+        }
+        setQueueCount(PlatePlanSyncEngine.getOfflineQueue().length);
+      }).catch(err => {
+        console.warn("[PlatePlan Sync] Initial sync error:", err);
+      });
+      return () => { active = false; };
+    }, [personId, showToast]);
+
+    // Offline Fallback, Mutation Queue Processor & Connectivity Watcher
+    useEffect(() => {
+      const handleOnline = async () => {
+        setSyncStatus("syncing");
+        const res = await PlatePlanSyncEngine.processOfflineQueue();
+        setQueueCount(res.remaining);
+        if (res.processed > 0) {
+          showToast(`Auto-synced ${res.processed} offline workout(s) to cloud`);
+        }
+        const reconciled = await PlatePlanSyncEngine.syncPlatePlanWithFirestore(personId);
+        if (reconciled) {
+          setStore(current => ({ ...current, [personId]: reconciled }));
+        }
+        setSyncStatus("synced");
+      };
+
+      const handleOffline = () => {
+        setSyncStatus("offline");
+        setQueueCount(PlatePlanSyncEngine.getOfflineQueue().length);
+      };
+
+      window.addEventListener("online", handleOnline);
+      window.addEventListener("offline", handleOffline);
+
+      // Periodic offline queue check every 15s when online
+      const interval = setInterval(async () => {
+        if (navigator.onLine && PlatePlanSyncEngine.getOfflineQueue().length > 0) {
+          const res = await PlatePlanSyncEngine.processOfflineQueue();
+          setQueueCount(res.remaining);
+          if (res.processed > 0) {
+            showToast(`Auto-synced ${res.processed} offline workout(s) to cloud`);
+          }
+        }
+      }, 15000);
+
+      return () => {
+        window.removeEventListener("online", handleOnline);
+        window.removeEventListener("offline", handleOffline);
+        clearInterval(interval);
+      };
+    }, [personId, showToast]);
+
+    // Asynchronous legacy data recovery
     useEffect(() => {
       const timer = setTimeout(() => {
         runLegacyDataRecoveryAndMigration().then(recovered => {
@@ -3864,14 +4459,15 @@ const EXERCISE_SUGGESTIONS = [
             });
           }
         }).catch(err => {
-          console.warn("[v2.3.1] Background migration notice:", err?.message);
+          console.warn("[v2.4.1] Recovery notice:", err?.message);
         });
-      }, 150);
+      }, 300);
       return () => clearTimeout(timer);
     }, []);
 
-    // Direct profile-based cloud sync with sub-collections gym_users/{profileId}
-    // No failing anonymous auth calls!
+    // Real-Time Cloud Listeners:
+    // onSnapshot for active program (gym_users/{id}/active_program/current) and history logs
+    // Ensures changes made on mobile immediately update desktop/laptop state!
     useEffect(() => {
       const handleRemoteUpdate = (id, subCollection, remoteData) => {
         setStore(current => {
@@ -3880,6 +4476,7 @@ const EXERCISE_SUGGESTIONS = [
           if (subCollection === "exercise_logs") {
             const mergedLogs = mergeDeduplicatedLogs(currentProfile.logs || [], remoteData);
             const next = { ...currentProfile, logs: mergedLogs, updatedAt: Date.now() };
+            savePlatePlanV1Local(id, next);
             I.Ee(id, next);
             return { ...current, [id]: next };
           }
@@ -3890,11 +4487,12 @@ const EXERCISE_SUGGESTIONS = [
               startDate: remoteData.startDate || currentProfile.startDate,
               goals: remoteData.goals || currentProfile.goals,
               resumeNote: remoteData.resumeNote || currentProfile.resumeNote,
-              sessions: remoteData.sessions || currentProfile.sessions,
+              sessions: Array.isArray(remoteData.sessions) && remoteData.sessions.length ? remoteData.sessions : currentProfile.sessions,
               weekOverrides: remoteData.weekOverrides || currentProfile.weekOverrides,
               equipment: remoteData.equipment || currentProfile.equipment,
               updatedAt: Date.now()
             };
+            savePlatePlanV1Local(id, next);
             I.Ee(id, next);
             return { ...current, [id]: next };
           }
@@ -3902,20 +4500,20 @@ const EXERCISE_SUGGESTIONS = [
         });
       };
 
-      const unsubElliott = GymCloudEngine.subscribe(
+      const unsubElliott = PlatePlanSyncEngine.subscribe(
         "elliott",
         (subCol, data) => handleRemoteUpdate("elliott", subCol, data),
         status => setSyncStatus(status)
       );
 
-      const unsubChloe = GymCloudEngine.subscribe(
+      const unsubChloe = PlatePlanSyncEngine.subscribe(
         "chloe",
         (subCol, data) => handleRemoteUpdate("chloe", subCol, data),
         status => setSyncStatus(status)
       );
 
       const timeout = setTimeout(() => {
-        setSyncStatus(prev => (prev === "connecting" ? "local-only" : prev));
+        setSyncStatus(prev => (prev === "connecting" ? (navigator.onLine ? "synced" : "offline") : prev));
       }, 5000);
 
       return () => {
@@ -3928,12 +4526,6 @@ const EXERCISE_SUGGESTIONS = [
     useEffect(() => {
       setActiveState(loadActive(personId));
     }, [personId]);
-
-    const showToast = useCallback(message => {
-      setToast(message);
-      clearTimeout(toastTimer.current);
-      toastTimer.current = setTimeout(() => setToast(""), 2800);
-    }, []);
 
     const updateData = useCallback((id, updater) => {
       setStore(current => {
@@ -4043,7 +4635,7 @@ const EXERCISE_SUGGESTIONS = [
 
     return h("div", { className: "hg-app", style: { "--person-accent": meta.accent } },
       h("div", { className: "hg-app-shell" },
-        h(Header, { personId, setPersonId, syncStatus, onSettings: () => setSettingsOpen(true) }),
+        h(Header, { personId, setPersonId, syncStatus, queueCount, onSettings: () => setSettingsOpen(true) }),
         h("div", { className: "hg-layout" },
           h(Navigation, { view, setView, mobile: false }),
           h("main", { className: "hg-main" }, content)
@@ -4051,7 +4643,7 @@ const EXERCISE_SUGGESTIONS = [
         h(Navigation, { view, setView, mobile: true })
       ),
       settingsOpen && h(SettingsModal, {
-        personId, store, pin, syncStatus, updateData,
+        personId, store, pin, syncStatus, queueCount, updateData,
         onSaveKey: saveHouseholdKey,
         onClose: () => setSettingsOpen(false),
         showToast,
