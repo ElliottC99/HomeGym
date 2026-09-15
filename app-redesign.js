@@ -8,8 +8,49 @@
   }
 
   const h = React.createElement;
-  const { useState, useEffect, useCallback, useRef } = React;
-  const APP_VERSION = "v2.4.1";
+  const { useState, useEffect, useCallback, useRef, useMemo } = React;
+  const APP_VERSION = "v2.4.3";
+
+  class ErrorBoundary extends React.Component {
+    constructor(props) {
+      super(props);
+      this.state = { hasError: false, error: null };
+    }
+    static getDerivedStateFromError(error) {
+      return { hasError: true, error };
+    }
+    componentDidCatch(error, errorInfo) {
+      console.error("[HIG ErrorBoundary]", this.props.title || "Component", error, errorInfo);
+    }
+    render() {
+      if (this.state.hasError) {
+        if (this.props.fallback) return this.props.fallback;
+        return h("div", { className: "hg-hig-error-card" },
+          h("div", { className: "hg-hig-error-icon" }, "!"),
+          h("h2", { className: "hg-alert-title" }, this.props.title || "Display Error"),
+          h("p", { className: "hg-alert-copy" },
+            this.state.error?.message || "An unexpected issue occurred while rendering this section."
+          ),
+          h("div", { className: "hg-alert-actions" },
+            h("button", {
+              type: "button",
+              className: "hg-alert-btn",
+              onClick: () => {
+                this.setState({ hasError: false, error: null });
+                if (this.props.onReset) this.props.onReset();
+              }
+            }, "Try Again"),
+            h("button", {
+              type: "button",
+              className: "hg-alert-btn danger",
+              onClick: () => window.location.reload()
+            }, "Reload App")
+          )
+        );
+      }
+      return this.props.children;
+    }
+  }
   const FEELINGS = [
     ["very_easy", "Very easy"],
     ["good", "Good"],
@@ -1148,6 +1189,194 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
     return results;
   }
 
+  function syncLegacyStorage(profileId, payload) {
+    if (!profileId || !payload || typeof payload !== "object") return;
+    try {
+      if (Array.isArray(payload.bodyWeightLogs)) {
+        storageSet(`hg_metrics_${profileId}`, payload.bodyWeightLogs);
+      }
+      if (Array.isArray(payload.readinessLogs)) {
+        storageSet(`hg_readiness_${profileId}`, payload.readinessLogs);
+      }
+      if (Array.isArray(payload.sleepLogs)) {
+        storageSet(`hg_sleep_${profileId}`, payload.sleepLogs);
+      }
+
+      // Sync data:${profileId}
+      const rawData = localStorage.getItem(`data:${profileId}`);
+      let currentData = {};
+      try { if (rawData) currentData = JSON.parse(rawData); } catch (_) {}
+
+      const nextData = {
+        ...currentData,
+        startDate: payload.startDate || currentData.startDate,
+        goals: payload.goals || currentData.goals,
+        resumeNote: payload.resumeNote || currentData.resumeNote,
+        sessions: Array.isArray(payload.sessions) ? payload.sessions : currentData.sessions,
+        weekOverrides: payload.weekOverrides || currentData.weekOverrides,
+        logs: Array.isArray(payload.logs) ? payload.logs : currentData.logs,
+        bodyweight: Array.isArray(payload.bodyWeightLogs) ? payload.bodyWeightLogs : (currentData.bodyweight || []),
+        bodyWeightLogs: Array.isArray(payload.bodyWeightLogs) ? payload.bodyWeightLogs : (currentData.bodyWeightLogs || []),
+        readiness: Array.isArray(payload.readinessLogs) ? payload.readinessLogs : (currentData.readiness || []),
+        readinessLogs: Array.isArray(payload.readinessLogs) ? payload.readinessLogs : (currentData.readinessLogs || []),
+        sleepLogs: Array.isArray(payload.sleepLogs) ? payload.sleepLogs : (currentData.sleepLogs || []),
+        updatedAt: payload.updatedAt || Date.now()
+      };
+      localStorage.setItem(`data:${profileId}`, JSON.stringify(nextData));
+
+      // Mirror plateplan_v1_${profileId}
+      const rawPP = localStorage.getItem(`${PLATEPLAN_V1_KEY}_${profileId}`);
+      let currentPP = {};
+      try { if (rawPP) currentPP = JSON.parse(rawPP); } catch (_) {}
+      localStorage.setItem(`${PLATEPLAN_V1_KEY}_${profileId}`, JSON.stringify({
+        ...currentPP,
+        startDate: payload.startDate || currentPP.startDate,
+        goals: payload.goals || currentPP.goals,
+        sessions: Array.isArray(payload.sessions) ? payload.sessions : currentPP.sessions,
+        logs: Array.isArray(payload.logs) ? payload.logs : currentPP.logs,
+        bodyWeightLogs: Array.isArray(payload.bodyWeightLogs) ? payload.bodyWeightLogs : currentPP.bodyWeightLogs,
+        readinessLogs: Array.isArray(payload.readinessLogs) ? payload.readinessLogs : currentPP.readinessLogs,
+        sleepLogs: Array.isArray(payload.sleepLogs) ? payload.sleepLogs : currentPP.sleepLogs,
+        updatedAt: payload.updatedAt || Date.now()
+      }));
+    } catch (e) {
+      console.warn("[syncLegacyStorage] warning:", e);
+    }
+  }
+
+  function hydrateHealthAndLogsForProfile(profileId, source) {
+    // 1. Recover and deduplicate Body Weight Logs
+    const weightCandidates = [];
+    const weightSeen = new Set();
+    function addWeightCandidate(w) {
+      if (!w || !w.date || w.weight == null) return;
+      const num = Number(w.weight);
+      if (Number.isNaN(num)) return;
+      const id = String(w.id || `bw_${w.date}`);
+      if (weightSeen.has(id)) return;
+      weightSeen.add(id);
+      weightCandidates.push({
+        id,
+        date: String(w.date),
+        weight: Math.round(num * 10) / 10,
+        note: String(w.note || "").trim(),
+        timestamp: w.timestamp || (w.date ? new Date(`${w.date}T12:00:00`).getTime() : Date.now())
+      });
+    }
+
+    if (Array.isArray(source?.bodyWeightLogs)) source.bodyWeightLogs.forEach(addWeightCandidate);
+    if (Array.isArray(source?.weightLogs)) source.weightLogs.forEach(addWeightCandidate);
+    if (Array.isArray(source?.bodyweight)) source.bodyweight.forEach(addWeightCandidate);
+    if (Array.isArray(source?.metrics)) source.metrics.forEach(addWeightCandidate);
+
+    const localWeights = storageGet(`hg_metrics_${profileId}`, []);
+    if (Array.isArray(localWeights)) localWeights.forEach(addWeightCandidate);
+    const localBw = storageGet(`hg_bodyweight_${profileId}`, []);
+    if (Array.isArray(localBw)) localBw.forEach(addWeightCandidate);
+
+    try {
+      const rawLegacy = localStorage.getItem(`data:${profileId}`);
+      if (rawLegacy) {
+        const parsed = JSON.parse(rawLegacy);
+        if (Array.isArray(parsed.bodyweight)) parsed.bodyweight.forEach(addWeightCandidate);
+        if (Array.isArray(parsed.bodyWeightLogs)) parsed.bodyWeightLogs.forEach(addWeightCandidate);
+        if (Array.isArray(parsed.metrics)) parsed.metrics.forEach(addWeightCandidate);
+      }
+    } catch (_) {}
+
+    const bodyWeightLogs = weightCandidates.sort((a, b) => a.date.localeCompare(b.date));
+
+    // 2. Recover and deduplicate Readiness Logs
+    const readinessCandidates = [];
+    const readinessSeen = new Set();
+    function addReadinessCandidate(r) {
+      if (!r || !r.date) return;
+      const id = String(r.id || `r_${r.date}`);
+      if (readinessSeen.has(id)) return;
+      readinessSeen.add(id);
+      const h = r.sleepHours != null ? Number(r.sleepHours) : (r.sleep != null ? Math.floor(Number(r.sleep)) : 7);
+      const m = r.sleepMins != null ? Number(r.sleepMins) : (r.sleep != null ? Math.round((Number(r.sleep) % 1) * 60) : 30);
+      const decSleep = r.sleep != null ? Number(r.sleep) : Math.round((h + m / 60) * 100) / 100;
+      readinessCandidates.push({
+        id,
+        date: String(r.date),
+        sleep: decSleep,
+        sleepHours: h,
+        sleepMins: m,
+        soreness: r.soreness != null ? Number(r.soreness) : 3,
+        motivation: r.motivation != null ? Number(r.motivation) : 3,
+        notes: String(r.notes || r.note || "").trim(),
+        timestamp: r.timestamp || (r.date ? new Date(`${r.date}T12:00:00`).getTime() : Date.now())
+      });
+    }
+
+    if (Array.isArray(source?.readinessLogs)) source.readinessLogs.forEach(addReadinessCandidate);
+    if (Array.isArray(source?.readiness)) source.readiness.forEach(addReadinessCandidate);
+
+    const localReadiness = storageGet(`hg_readiness_${profileId}`, []);
+    if (Array.isArray(localReadiness)) localReadiness.forEach(addReadinessCandidate);
+
+    try {
+      const rawLegacy = localStorage.getItem(`data:${profileId}`);
+      if (rawLegacy) {
+        const parsed = JSON.parse(rawLegacy);
+        if (Array.isArray(parsed.readiness)) parsed.readiness.forEach(addReadinessCandidate);
+        if (Array.isArray(parsed.readinessLogs)) parsed.readinessLogs.forEach(addReadinessCandidate);
+      }
+    } catch (_) {}
+
+    const readinessLogs = readinessCandidates.sort((a, b) => a.date.localeCompare(b.date));
+
+    // 3. Recover and deduplicate Sleep Logs
+    const sleepCandidates = [];
+    const sleepSeen = new Set();
+    function addSleepCandidate(s) {
+      if (!s || !s.date) return;
+      const id = String(s.id || `slp_${s.date}`);
+      if (sleepSeen.has(id)) return;
+      sleepSeen.add(id);
+      sleepCandidates.push({
+        id,
+        date: String(s.date),
+        hours: s.hours != null ? Number(s.hours) : 7,
+        mins: s.mins != null ? Number(s.mins) : 30,
+        totalHours: s.totalHours != null ? Number(s.totalHours) : (s.hours != null ? Number(s.hours) + (Number(s.mins) || 0) / 60 : 7.5),
+        notes: String(s.notes || "").trim(),
+        timestamp: s.timestamp || (s.date ? new Date(`${s.date}T12:00:00`).getTime() : Date.now())
+      });
+    }
+
+    if (Array.isArray(source?.sleepLogs)) source.sleepLogs.forEach(addSleepCandidate);
+    if (Array.isArray(source?.sleep)) source.sleep.forEach(addSleepCandidate);
+
+    const localSleep = storageGet(`hg_sleep_${profileId}`, []);
+    if (Array.isArray(localSleep)) localSleep.forEach(addSleepCandidate);
+
+    // Derive sleep records from readiness if not explicitly logged
+    readinessLogs.forEach(r => {
+      addSleepCandidate({
+        id: `slp_${r.date}`,
+        date: r.date,
+        hours: r.sleepHours,
+        mins: r.sleepMins,
+        totalHours: r.sleep,
+        notes: r.notes,
+        timestamp: r.timestamp
+      });
+    });
+
+    const sleepLogs = sleepCandidates.sort((a, b) => a.date.localeCompare(b.date));
+
+    // 4. Backward-compatible sync to standalone keys
+    syncLegacyStorage(profileId, {
+      bodyWeightLogs,
+      readinessLogs,
+      sleepLogs
+    });
+
+    return { bodyWeightLogs, readinessLogs, sleepLogs };
+  }
+
   function loadDecoupledProfile(profileId) {
     const k = (I.K && I.K[profileId]) ? I.K[profileId] : { goals: "", resumeNote: "", sessions: [] };
     const defaultData = {
@@ -1157,6 +1386,9 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
       sessions: Array.isArray(k.sessions) ? k.sessions : [],
       weekOverrides: {},
       logs: [],
+      bodyWeightLogs: [],
+      sleepLogs: [],
+      readinessLogs: [],
       updatedAt: 0,
     };
 
@@ -1179,24 +1411,35 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
         if (raw) parsedData = JSON.parse(raw);
       } catch (e) {}
 
-      const source = userPpv1 || perUserPpv1 || parsedData;
-      if (source && typeof source === "object") {
-        const logs = Array.isArray(source.logs) ? source.logs.map(i => ({ ...i, exerciseId: i.exerciseId || i.liftId })) : [];
-        return {
-          startDate: source.startDate || defaultData.startDate,
-          goals: source.goals || defaultData.goals,
-          resumeNote: source.resumeNote || defaultData.resumeNote,
-          sessions: Array.isArray(source.sessions) && source.sessions.length ? source.sessions : defaultData.sessions,
-          weekOverrides: source.weekOverrides && typeof source.weekOverrides === "object" ? source.weekOverrides : {},
-          logs: logs,
-          equipment: source.equipment || null,
-          updatedAt: typeof source.updatedAt === "number" ? source.updatedAt : 0,
-        };
-      }
+      const source = userPpv1 || perUserPpv1 || parsedData || {};
+      const logs = Array.isArray(source.logs) ? source.logs.map(i => ({ ...i, exerciseId: i.exerciseId || i.liftId })) : [];
+
+      // Hydrate health tracking and standalone keys into central state
+      const health = hydrateHealthAndLogsForProfile(profileId, source);
+
+      return {
+        startDate: source.startDate || defaultData.startDate,
+        goals: source.goals || defaultData.goals,
+        resumeNote: source.resumeNote || defaultData.resumeNote,
+        sessions: Array.isArray(source.sessions) && source.sessions.length ? source.sessions : defaultData.sessions,
+        weekOverrides: source.weekOverrides && typeof source.weekOverrides === "object" ? source.weekOverrides : {},
+        logs: logs,
+        bodyWeightLogs: health.bodyWeightLogs,
+        sleepLogs: health.sleepLogs,
+        readinessLogs: health.readinessLogs,
+        equipment: source.equipment || null,
+        updatedAt: typeof source.updatedAt === "number" ? source.updatedAt : 0,
+      };
     } catch (e) {
       console.warn("loadDecoupledProfile parse error:", e);
     }
-    return defaultData;
+    const health = hydrateHealthAndLogsForProfile(profileId, {});
+    return {
+      ...defaultData,
+      bodyWeightLogs: health.bodyWeightLogs,
+      sleepLogs: health.sleepLogs,
+      readinessLogs: health.readinessLogs
+    };
   }
 
   // --- Equipment & Progressive Overload Helpers ---
@@ -1638,11 +1881,13 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
     );
   }
 
-  function ReadinessInline({ personId, showToast }) {
+  function ReadinessInline({ personId, data, updateData, showToast }) {
     const key = `hg_readiness_${personId}`;
     const today = I.W();
-    const rawRecords = storageGet(key, []);
-    const records = Array.isArray(rawRecords) ? rawRecords : [];
+    const centralRecords = (Array.isArray(data?.readinessLogs) && data.readinessLogs.length > 0)
+      ? data.readinessLogs
+      : storageGet(key, []);
+    const records = Array.isArray(centralRecords) ? centralRecords : [];
     const current = records.find(item => item.date === today);
     const [open, setOpen] = useState(!current);
 
@@ -1674,7 +1919,12 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
         timestamp: Date.now()
       };
       GymCloudEngine.saveReadinessLog(personId, entry);
-      storageSet(key, [...records.filter(item => item.date !== today), entry]);
+      const nextRecords = [...records.filter(item => item.date !== today), entry].sort((a, b) => a.date.localeCompare(b.date));
+      storageSet(key, nextRecords);
+      syncLegacyStorage(personId, { readinessLogs: nextRecords });
+      if (updateData) {
+        updateData(personId, cur => ({ ...cur, readinessLogs: nextRecords }));
+      }
       setOpen(false);
       showToast("Readiness saved");
     }
@@ -1765,11 +2015,11 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
     );
   }
 
-  function ChecklistStep({ title, copy, items, checked, onToggle, onNext, onBack, showReadiness, personId, showToast }) {
+  function ChecklistStep({ title, copy, items, checked, onToggle, onNext, onBack, showReadiness, personId, data, updateData, showToast }) {
     return h("div", { className: "hg-card" },
       h("div", { className: "hg-card-title" }, title),
       copy && h("div", { className: "hg-card-copy" }, copy),
-      showReadiness && h(ReadinessInline, { personId, showToast }),
+      showReadiness && h(ReadinessInline, { personId, data, updateData, showToast }),
       items.length > 0 ? h("div", { className: "hg-checklist" },
         items.map((item, index) => {
           const key = `${title}:${index}`;
@@ -2091,6 +2341,8 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
         onNext: advance,
         showReadiness: true,
         personId,
+        data,
+        updateData,
         showToast,
       }),
       step.type === "exercise" && h(ExerciseStep, {
@@ -2179,6 +2431,7 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
         h("h1", null, "Today"),
         h("p", null, new Date(`${today}T12:00:00`).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" }))
       ),
+      h(ReadinessInline, { personId, data, updateData, showToast }),
       sessions.length === 0 && h("div", { className: "hg-card hg-empty" },
         h("div", { className: "hg-pill success" }, "Rest day"),
         h("h2", { style: { marginTop: 13 } }, "Nothing scheduled today"),
@@ -2718,26 +2971,40 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
     );
   }
 
-  function MetricsView({ meta, personId, data, showToast }) {
+  function MetricsView({ meta, personId, data, updateData, showToast }) {
     const [subTab, setSubTab] = useState("weight"); // "weight" | "readiness"
     const weightKey = `hg_metrics_${personId}`;
     const readinessKey = `hg_readiness_${personId}`;
 
-    const [weights, setWeights] = useState(() => {
+    const getInitialWeights = () => {
+      if (Array.isArray(data?.bodyWeightLogs) && data.bodyWeightLogs.length > 0) {
+        return data.bodyWeightLogs;
+      }
       const w = storageGet(weightKey, []);
       return Array.isArray(w) ? w : [];
-    });
-    const [readiness, setReadiness] = useState(() => {
+    };
+
+    const getInitialReadiness = () => {
+      if (Array.isArray(data?.readinessLogs) && data.readinessLogs.length > 0) {
+        return data.readinessLogs;
+      }
       const r = storageGet(readinessKey, []);
       return Array.isArray(r) ? r : [];
-    });
+    };
+
+    const [weights, setWeights] = useState(getInitialWeights);
+    const [readiness, setReadiness] = useState(getInitialReadiness);
 
     useEffect(() => {
-      const w = storageGet(weightKey, []);
-      const r = storageGet(readinessKey, []);
+      const w = (Array.isArray(data?.bodyWeightLogs) && data.bodyWeightLogs.length > 0)
+        ? data.bodyWeightLogs
+        : storageGet(weightKey, []);
+      const r = (Array.isArray(data?.readinessLogs) && data.readinessLogs.length > 0)
+        ? data.readinessLogs
+        : storageGet(readinessKey, []);
       setWeights(Array.isArray(w) ? w : []);
       setReadiness(Array.isArray(r) ? r : []);
-    }, [personId]);
+    }, [personId, data?.bodyWeightLogs, data?.readinessLogs]);
 
     const [weightDate, setWeightDate] = useState(I.W());
     const [weightVal, setWeightVal] = useState("");
@@ -2750,15 +3017,21 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
       const entry = {
         id: I.HGuid ? I.HGuid("metric") : `w_${Date.now()}`,
         date: weightDate,
-        weight: num,
+        weight: Math.round(num * 10) / 10,
         note: weightNote.trim(),
         timestamp: Date.now()
       };
       GymCloudEngine.saveBodyweightLog(personId, entry);
-      const curWeights = Array.isArray(weights) ? weights : [];
+      const curWeights = (Array.isArray(data?.bodyWeightLogs) && data.bodyWeightLogs.length > 0)
+        ? data.bodyWeightLogs
+        : (Array.isArray(weights) ? weights : []);
       const next = [...curWeights.filter(w => w.date !== weightDate), entry].sort((a, b) => a.date.localeCompare(b.date));
       setWeights(next);
       storageSet(weightKey, next);
+      syncLegacyStorage(personId, { bodyWeightLogs: next });
+      if (updateData) {
+        updateData(personId, cur => ({ ...cur, bodyWeightLogs: next }));
+      }
       showToast("Body weight logged");
       setWeightVal("");
       setWeightNote("");
@@ -2766,17 +3039,31 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
 
     function deleteWeight(id) {
       GymCloudEngine.deleteBodyweightLog(personId, id);
-      const next = (Array.isArray(weights) ? weights : []).filter(w => w.id !== id);
+      const curWeights = (Array.isArray(data?.bodyWeightLogs) && data.bodyWeightLogs.length > 0)
+        ? data.bodyWeightLogs
+        : (Array.isArray(weights) ? weights : []);
+      const next = curWeights.filter(w => w.id !== id);
       setWeights(next);
       storageSet(weightKey, next);
+      syncLegacyStorage(personId, { bodyWeightLogs: next });
+      if (updateData) {
+        updateData(personId, cur => ({ ...cur, bodyWeightLogs: next }));
+      }
       showToast("Weight entry deleted");
     }
 
     function deleteReadiness(id) {
       GymCloudEngine.deleteReadinessLog(personId, id);
-      const next = (Array.isArray(readiness) ? readiness : []).filter(r => r.id !== id);
+      const curReadiness = (Array.isArray(data?.readinessLogs) && data.readinessLogs.length > 0)
+        ? data.readinessLogs
+        : (Array.isArray(readiness) ? readiness : []);
+      const next = curReadiness.filter(r => r.id !== id);
       setReadiness(next);
       storageSet(readinessKey, next);
+      syncLegacyStorage(personId, { readinessLogs: next });
+      if (updateData) {
+        updateData(personId, cur => ({ ...cur, readinessLogs: next }));
+      }
       showToast("Readiness entry deleted");
     }
 
@@ -3974,10 +4261,18 @@ const EXERCISE_SUGGESTIONS = [
         : (Array.isArray(pBackup.readiness) ? pBackup.readiness : []);
       const sleepLogs = Array.isArray(pBackup.sleepLogs) ? pBackup.sleepLogs : [];
 
-      // 1. Write local storage caches
-      storageSet(`hg_metrics_${pId}`, bodyWeightLogs);
-      storageSet(`hg_readiness_${pId}`, readinessLogs);
-      storageSet(`hg_sleep_${pId}`, sleepLogs);
+      // 1. Write local storage caches & sync legacy keys
+      syncLegacyStorage(pId, {
+        bodyWeightLogs,
+        readinessLogs,
+        sleepLogs,
+        sessions,
+        weekOverrides,
+        logs,
+        startDate: pBackup.startDate,
+        goals: pBackup.goals,
+        resumeNote: pBackup.resumeNote
+      });
 
       // 2. Sync to cloud Firestore collections
       for (const bw of bodyWeightLogs) {
@@ -4001,15 +4296,6 @@ const EXERCISE_SUGGESTIONS = [
         sleepLogs,
         updatedAt: Date.now()
       }));
-
-      try {
-        localStorage.setItem(`plateplan_v1:${pId}`, JSON.stringify({
-          sessions,
-          startDate: pBackup.startDate,
-          goals: pBackup.goals,
-          updatedAt: Date.now()
-        }));
-      } catch (e) {}
 
       count++;
     }
@@ -4350,7 +4636,7 @@ const EXERCISE_SUGGESTIONS = [
 
     const sessions = Array.isArray(data.sessions) ? data.sessions : [];
     const activeSession = sessions[activeSessionIdx] || sessions[0] || null;
-    const exercises = useMemo(() => extractSessionExercises(activeSession), [activeSession]);
+    const exercises = (useMemo || React.useMemo)(() => extractSessionExercises(activeSession), [activeSession]);
 
     const activeProgramName = data.programName || "Current Routine";
     const sessionCount = sessions.length;
@@ -5421,14 +5707,18 @@ const EXERCISE_SUGGESTIONS = [
         const next = {
           ...updated,
           logs: preservedLogs,
+          bodyWeightLogs: updated.bodyWeightLogs || currentProfile.bodyWeightLogs || [],
+          readinessLogs: updated.readinessLogs || currentProfile.readinessLogs || [],
+          sleepLogs: updated.sleepLogs || currentProfile.sleepLogs || [],
           updatedAt: Date.now()
         };
 
         // Save active program to sub-collection
         GymCloudEngine.saveActiveProgram(id, next);
 
-        // Mirror to local storage
+        // Mirror to local storage & legacy keys
         I.Ee(id, next);
+        syncLegacyStorage(id, next);
 
         return { ...current, [id]: next };
       });
@@ -5507,11 +5797,11 @@ const EXERCISE_SUGGESTIONS = [
     }
 
     let content;
-    if (view === "today") content = h(TodayView, { personId, data, meta, active, onStart: startWorkout, updateData, showToast });
-    if (view === "history") content = h(HistoryView, { personId, data, updateData, showToast });
-    if (view === "progress") content = h(ProgressView, { personId, data, meta, weekInfo, showToast });
-    if (view === "metrics") content = h(MetricsView, { meta, personId, data, showToast });
-    if (view === "plan") content = h(PlanView, { personId, data, store, meta, updateData, showToast });
+    if (view === "today") content = h(ErrorBoundary, { title: "Could not display Today view" }, h(TodayView, { personId, data, meta, active, onStart: startWorkout, updateData, showToast }));
+    if (view === "history") content = h(ErrorBoundary, { title: "Could not display History view" }, h(HistoryView, { personId, data, updateData, showToast }));
+    if (view === "progress") content = h(ErrorBoundary, { title: "Could not display Progress view" }, h(ProgressView, { personId, data, meta, weekInfo, showToast }));
+    if (view === "metrics") content = h(ErrorBoundary, { title: "Could not display Metrics view" }, h(MetricsView, { meta, personId, data, updateData, showToast }));
+    if (view === "plan") content = h(ErrorBoundary, { title: "Could not display Plan view" }, h(PlanView, { personId, data, store, meta, updateData, showToast }));
 
     return h("div", { className: "hg-app", style: { "--person-accent": meta.accent } },
       h("div", { className: "hg-app-shell" },

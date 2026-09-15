@@ -763,6 +763,15 @@ html[data-theme="light"] .hg-legacy-wrap [style*="color: rgb(91, 98, 112)"] { co
    Apple HIG Plan Page UI & Inset Group Components
    ========================================================================== */
 
+.hg-plan-container {
+  width: 100%;
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  min-width: 0;
+}
+
 .hg-plan-header {
   display: flex;
   align-items: center;
@@ -1177,5 +1186,32 @@ html[data-theme="light"] .hg-legacy-wrap [style*="color: rgb(91, 98, 112)"] { co
 @keyframes hgFadeIn {
   from { opacity: 0; }
   to { opacity: 1; }
+}
+
+.hg-hig-error-card {
+  background: var(--hg-surface);
+  border: 1px solid var(--hg-border);
+  border-radius: 20px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.08);
+  width: min(480px, 100%);
+  margin: 32px auto;
+  padding: 32px 24px;
+  text-align: center;
+  box-sizing: border-box;
+  animation: hgAlertIn 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.hg-hig-error-icon {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  background: rgba(255, 59, 48, 0.12);
+  color: #ff3b30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  font-weight: 700;
+  margin: 0 auto 16px;
 }
 
