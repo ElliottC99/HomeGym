@@ -9,7 +9,7 @@
 
   const h = React.createElement;
   const { useState, useEffect, useCallback, useRef, useMemo } = React;
-  const APP_VERSION = "v2.4.3";
+  const APP_VERSION = "v2.5.0";
 
   class ErrorBoundary extends React.Component {
     constructor(props) {
@@ -212,6 +212,9 @@
 
 const PLATEPLAN_V1_KEY = "plateplan_v1";
   const QUEUE_STORAGE_KEY = "plateplan_offline_queue";
+  const DEAD_LETTER_QUEUE_KEY = "plateplan_dead_letter_queue";
+  const MAX_QUEUE_RETRIES = 3;
+  let isProcessingOfflineQueue = false;
 
   function getPlatePlanV1Local() {
     try {
@@ -228,7 +231,7 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
     try {
       let existing = getPlatePlanV1Local();
       if (!existing || typeof existing !== "object") {
-        existing = { version: "2.4.1", updatedAt: Date.now(), users: {} };
+        existing = { version: "2.5.0", updatedAt: Date.now(), users: {} };
       }
       if (!existing.users || typeof existing.users !== "object") {
         existing.users = {};
@@ -262,6 +265,36 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
     } catch (e) {}
   }
 
+  function getDeadLetterQueue() {
+    try {
+      const raw = localStorage.getItem(DEAD_LETTER_QUEUE_KEY);
+      return raw ? JSON.parse(raw) : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function saveDeadLetterQueue(queue) {
+    try {
+      localStorage.setItem(DEAD_LETTER_QUEUE_KEY, JSON.stringify(queue || []));
+    } catch (e) {}
+  }
+
+  function moveToDeadLetterQueue(item, reason) {
+    try {
+      const dlq = getDeadLetterQueue();
+      const deadItem = {
+        ...(item || {}),
+        failedAt: Date.now(),
+        reason: reason || item?.lastError || "Exceeded maximum retry threshold (3) or bad mutation schema"
+      };
+      dlq.push(deadItem);
+      if (dlq.length > 100) dlq.splice(0, dlq.length - 100);
+      saveDeadLetterQueue(dlq);
+      console.warn(`[PlatePlan Offline Queue] Moved mutation ${item?.id || "unknown"} (${item?.type || "unknown"}) to dead-letter queue:`, reason);
+    } catch (e) {}
+  }
+
   function enqueueOfflineMutation(userId, type, payload) {
     const queue = getOfflineQueue();
     const mutation = {
@@ -269,6 +302,7 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
       userId,
       type,
       payload,
+      retryCount: 0,
       timestamp: Date.now()
     };
     queue.push(mutation);
@@ -308,9 +342,15 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
 
     getOfflineQueue,
     saveOfflineQueue,
+    getDeadLetterQueue,
+    saveDeadLetterQueue,
+    moveToDeadLetterQueue,
     enqueueOfflineMutation,
 
     async processOfflineQueue(onProgress) {
+      if (isProcessingOfflineQueue) {
+        return { processed: 0, remaining: getOfflineQueue().length, busy: true };
+      }
       if (!navigator.onLine) {
         return { processed: 0, remaining: getOfflineQueue().length };
       }
@@ -320,15 +360,30 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
       const queue = getOfflineQueue();
       if (!queue.length) return { processed: 0, remaining: 0 };
 
+      isProcessingOfflineQueue = true;
       console.log(`[PlatePlan Offline Queue] Draining ${queue.length} offline mutations...`);
       const failed = [];
       let processed = 0;
 
       for (const item of queue) {
-        try {
-          const { userId, type, payload } = item;
-          if (!userId || !payload) continue;
+        if (!item || typeof item !== "object") {
+          console.warn("[PlatePlan Offline Queue] Discarding null/non-object mutation from queue");
+          continue;
+        }
 
+        const { userId, type, payload } = item;
+        if (!userId || !type || !payload || typeof payload !== "object") {
+          moveToDeadLetterQueue(item, "Missing required fields (userId, type, or payload)");
+          continue;
+        }
+
+        // Schema validation: record mutations must have an id
+        if (!payload.id && type !== "save_program" && type !== "save_plateplan") {
+          moveToDeadLetterQueue(item, `Missing payload.id for mutation type: ${type}`);
+          continue;
+        }
+
+        try {
           if (type === "save_log") {
             const clean = { ...payload, updatedAt: payload.updatedAt || Date.now() };
             await fs.collection("gym_users").doc(userId).collection("logs").doc(String(clean.id)).set(clean, { merge: true });
@@ -344,25 +399,55 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
             await fs.collection("gym_users").doc(userId).collection("plateplan").doc("current").set(clean, { merge: true }).catch(() => {});
             processed++;
           } else if (type === "save_readiness") {
-            await fs.collection("gym_users").doc(userId).collection("readiness_logs").doc(String(payload.id)).set(payload, { merge: true });
+            const clean = { ...payload, updatedAt: payload.updatedAt || Date.now() };
+            // Primary path: gym_users/{userId}/readiness
+            await fs.collection("gym_users").doc(userId).collection("readiness").doc(String(clean.id)).set(clean, { merge: true });
+            await fs.collection("gym_users").doc(userId).collection("readiness_logs").doc(String(clean.id)).set(clean, { merge: true }).catch(() => {});
             processed++;
           } else if (type === "delete_readiness") {
+            await fs.collection("gym_users").doc(userId).collection("readiness").doc(String(payload.id)).delete();
             await fs.collection("gym_users").doc(userId).collection("readiness_logs").doc(String(payload.id)).delete().catch(() => {});
             processed++;
           } else if (type === "save_bodyweight") {
-            await fs.collection("gym_users").doc(userId).collection("bodyweight_logs").doc(String(payload.id)).set(payload, { merge: true });
+            const clean = { ...payload, updatedAt: payload.updatedAt || Date.now() };
+            // Primary path: gym_users/{userId}/bodyweight
+            await fs.collection("gym_users").doc(userId).collection("bodyweight").doc(String(clean.id)).set(clean, { merge: true });
+            await fs.collection("gym_users").doc(userId).collection("bodyweight_logs").doc(String(clean.id)).set(clean, { merge: true }).catch(() => {});
             processed++;
           } else if (type === "delete_bodyweight") {
+            await fs.collection("gym_users").doc(userId).collection("bodyweight").doc(String(payload.id)).delete();
             await fs.collection("gym_users").doc(userId).collection("bodyweight_logs").doc(String(payload.id)).delete().catch(() => {});
             processed++;
+          } else if (type === "save_sleep") {
+            const clean = { ...payload, updatedAt: payload.updatedAt || Date.now() };
+            // Primary path: gym_users/{userId}/sleep
+            await fs.collection("gym_users").doc(userId).collection("sleep").doc(String(clean.id)).set(clean, { merge: true });
+            processed++;
+          } else if (type === "delete_sleep") {
+            await fs.collection("gym_users").doc(userId).collection("sleep").doc(String(payload.id)).delete();
+            processed++;
+          } else {
+            moveToDeadLetterQueue(item, `Unrecognized mutation type: ${type}`);
           }
         } catch (err) {
-          console.warn("[PlatePlan Offline Queue] Mutation sync error, keeping in queue:", err?.message);
-          failed.push(item);
+          const retries = (item.retryCount || 0) + 1;
+          item.retryCount = retries;
+          item.lastError = err?.message || String(err);
+          item.lastAttempt = Date.now();
+
+          if (retries >= MAX_QUEUE_RETRIES) {
+            console.warn(`[PlatePlan Offline Queue] Mutation ${item.id} (${item.type}) failed after ${retries} attempts (${item.lastError}). Moved to dead-letter queue.`);
+            moveToDeadLetterQueue(item, `Exceeded ${MAX_QUEUE_RETRIES} attempts: ${item.lastError}`);
+          } else {
+            console.warn(`[PlatePlan Offline Queue] Mutation ${item.id} (${item.type}) attempt ${retries}/${MAX_QUEUE_RETRIES} failed:`, item.lastError);
+            failed.push(item);
+          }
         }
       }
 
       saveOfflineQueue(failed);
+      isProcessingOfflineQueue = false;
+
       if (processed > 0) {
         console.info(`[PlatePlan Offline Queue] Successfully synced ${processed} mutation(s) to Firestore. Remaining: ${failed.length}`);
         onProgress?.({ processed, remaining: failed.length });
@@ -511,7 +596,9 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
       const fs = this.getFirestore();
       if (fs) {
         try {
-          await fs.collection("gym_users").doc(profileId).collection("readiness_logs").doc(String(clean.id)).set(clean, { merge: true });
+          // Primary subcollection path: gym_users/{profileId}/readiness
+          await fs.collection("gym_users").doc(profileId).collection("readiness").doc(String(clean.id)).set(clean, { merge: true });
+          await fs.collection("gym_users").doc(profileId).collection("readiness_logs").doc(String(clean.id)).set(clean, { merge: true }).catch(() => {});
         } catch (e) {
           if (!options.skipQueue) enqueueOfflineMutation(profileId, "save_readiness", clean);
         }
@@ -519,8 +606,27 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
 
       const rtdb = this.getRTDB();
       if (rtdb) {
-        try { await rtdb.ref(`gym_users/${profileId}/readiness_logs/${clean.id}`).set(clean); } catch (e) {}
+        try {
+          await rtdb.ref(`gym_users/${profileId}/readiness/${clean.id}`).set(clean).catch(() => {});
+          await rtdb.ref(`gym_users/${profileId}/readiness_logs/${clean.id}`).set(clean).catch(() => {});
+        } catch (e) {}
       }
+
+      // Automatically mirror to sleep collection if hours/totalHours provided
+      if (clean.sleep != null || clean.sleepHours != null) {
+        const sleepDoc = {
+          id: `slp_${clean.date}`,
+          date: clean.date,
+          hours: clean.sleepHours != null ? clean.sleepHours : Math.floor(clean.sleep),
+          mins: clean.sleepMins != null ? clean.sleepMins : Math.round((clean.sleep % 1) * 60),
+          totalHours: clean.sleep,
+          notes: clean.notes || "",
+          timestamp: clean.timestamp,
+          updatedAt: clean.updatedAt
+        };
+        this.saveSleepLog(profileId, sleepDoc, { skipQueue: options.skipQueue }).catch(() => {});
+      }
+
       return clean;
     },
 
@@ -532,13 +638,19 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
       }
       const fs = this.getFirestore();
       if (fs) {
-        try { await fs.collection("gym_users").doc(profileId).collection("readiness_logs").doc(String(logId)).delete(); } catch (e) {
+        try {
+          await fs.collection("gym_users").doc(profileId).collection("readiness").doc(String(logId)).delete();
+          await fs.collection("gym_users").doc(profileId).collection("readiness_logs").doc(String(logId)).delete().catch(() => {});
+        } catch (e) {
           if (!options.skipQueue) enqueueOfflineMutation(profileId, "delete_readiness", { id: logId });
         }
       }
       const rtdb = this.getRTDB();
       if (rtdb) {
-        try { await rtdb.ref(`gym_users/${profileId}/readiness_logs/${logId}`).remove(); } catch (e) {}
+        try {
+          await rtdb.ref(`gym_users/${profileId}/readiness/${logId}`).remove().catch(() => {});
+          await rtdb.ref(`gym_users/${profileId}/readiness_logs/${logId}`).remove().catch(() => {});
+        } catch (e) {}
       }
     },
 
@@ -561,14 +673,19 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
       const fs = this.getFirestore();
       if (fs) {
         try {
-          await fs.collection("gym_users").doc(profileId).collection("bodyweight_logs").doc(String(clean.id)).set(clean, { merge: true });
+          // Primary subcollection path: gym_users/{profileId}/bodyweight
+          await fs.collection("gym_users").doc(profileId).collection("bodyweight").doc(String(clean.id)).set(clean, { merge: true });
+          await fs.collection("gym_users").doc(profileId).collection("bodyweight_logs").doc(String(clean.id)).set(clean, { merge: true }).catch(() => {});
         } catch (e) {
           if (!options.skipQueue) enqueueOfflineMutation(profileId, "save_bodyweight", clean);
         }
       }
       const rtdb = this.getRTDB();
       if (rtdb) {
-        try { await rtdb.ref(`gym_users/${profileId}/bodyweight_logs/${clean.id}`).set(clean); } catch (e) {}
+        try {
+          await rtdb.ref(`gym_users/${profileId}/bodyweight/${clean.id}`).set(clean).catch(() => {});
+          await rtdb.ref(`gym_users/${profileId}/bodyweight_logs/${clean.id}`).set(clean).catch(() => {});
+        } catch (e) {}
       }
       return clean;
     },
@@ -581,13 +698,76 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
       }
       const fs = this.getFirestore();
       if (fs) {
-        try { await fs.collection("gym_users").doc(profileId).collection("bodyweight_logs").doc(String(logId)).delete(); } catch (e) {
+        try {
+          await fs.collection("gym_users").doc(profileId).collection("bodyweight").doc(String(logId)).delete();
+          await fs.collection("gym_users").doc(profileId).collection("bodyweight_logs").doc(String(logId)).delete().catch(() => {});
+        } catch (e) {
           if (!options.skipQueue) enqueueOfflineMutation(profileId, "delete_bodyweight", { id: logId });
         }
       }
       const rtdb = this.getRTDB();
       if (rtdb) {
-        try { await rtdb.ref(`gym_users/${profileId}/bodyweight_logs/${logId}`).remove(); } catch (e) {}
+        try {
+          await rtdb.ref(`gym_users/${profileId}/bodyweight/${logId}`).remove().catch(() => {});
+          await rtdb.ref(`gym_users/${profileId}/bodyweight_logs/${logId}`).remove().catch(() => {});
+        } catch (e) {}
+      }
+    },
+
+    async saveSleepLog(profileId, log, options = {}) {
+      if (!profileId || !log || !log.id) return;
+      const hours = log.hours != null ? Number(log.hours) : (log.totalHours != null ? Math.floor(Number(log.totalHours)) : 7);
+      const mins = log.mins != null ? Number(log.mins) : (log.totalHours != null ? Math.round((Number(log.totalHours) % 1) * 60) : 30);
+      const totalHours = log.totalHours != null ? Number(log.totalHours) : Math.round((hours + mins / 60) * 100) / 100;
+      const clean = {
+        id: String(log.id),
+        date: log.date || I.W(),
+        hours,
+        mins,
+        totalHours,
+        notes: log.notes || log.note || "",
+        timestamp: log.timestamp || Date.now(),
+        updatedAt: Date.now()
+      };
+
+      if (!navigator.onLine) {
+        if (!options.skipQueue) enqueueOfflineMutation(profileId, "save_sleep", clean);
+        return clean;
+      }
+
+      const fs = this.getFirestore();
+      if (fs) {
+        try {
+          // Primary subcollection path: gym_users/{profileId}/sleep
+          await fs.collection("gym_users").doc(profileId).collection("sleep").doc(String(clean.id)).set(clean, { merge: true });
+        } catch (e) {
+          if (!options.skipQueue) enqueueOfflineMutation(profileId, "save_sleep", clean);
+        }
+      }
+      const rtdb = this.getRTDB();
+      if (rtdb) {
+        try { await rtdb.ref(`gym_users/${profileId}/sleep/${clean.id}`).set(clean); } catch (e) {}
+      }
+      return clean;
+    },
+
+    async deleteSleepLog(profileId, logId, options = {}) {
+      if (!profileId || !logId) return;
+      if (!navigator.onLine) {
+        if (!options.skipQueue) enqueueOfflineMutation(profileId, "delete_sleep", { id: logId });
+        return;
+      }
+      const fs = this.getFirestore();
+      if (fs) {
+        try {
+          await fs.collection("gym_users").doc(profileId).collection("sleep").doc(String(logId)).delete();
+        } catch (e) {
+          if (!options.skipQueue) enqueueOfflineMutation(profileId, "delete_sleep", { id: logId });
+        }
+      }
+      const rtdb = this.getRTDB();
+      if (rtdb) {
+        try { await rtdb.ref(`gym_users/${profileId}/sleep/${logId}`).remove(); } catch (e) {}
       }
     },
 
@@ -772,12 +952,22 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
         // 1. Process any pending offline mutations first
         await this.processOfflineQueue();
 
-        // 2. Fetch remote documents
-        const [logsSnap, legacyLogsSnap, plateplanDoc, activeProgDoc] = await Promise.allSettled([
+        // 2. Fetch remote documents including health metric collections
+        const [
+          logsSnap, legacyLogsSnap, plateplanDoc, activeProgDoc,
+          readinessSnap, legacyReadSnap,
+          bwSnap, legacyBwSnap,
+          sleepSnap
+        ] = await Promise.allSettled([
           fs.collection("gym_users").doc(userId).collection("logs").get(),
           fs.collection("gym_users").doc(userId).collection("exercise_logs").get(),
           fs.collection("gym_users").doc(userId).collection("plateplan").doc("current").get(),
-          fs.collection("gym_users").doc(userId).collection("active_program").doc("current").get()
+          fs.collection("gym_users").doc(userId).collection("active_program").doc("current").get(),
+          fs.collection("gym_users").doc(userId).collection("readiness").get(),
+          fs.collection("gym_users").doc(userId).collection("readiness_logs").get(),
+          fs.collection("gym_users").doc(userId).collection("bodyweight").get(),
+          fs.collection("gym_users").doc(userId).collection("bodyweight_logs").get(),
+          fs.collection("gym_users").doc(userId).collection("sleep").get()
         ]);
 
         const remoteLogsMap = new Map();
@@ -798,6 +988,44 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
           });
         }
 
+        // Remote Readiness
+        const remoteReadinessMap = new Map();
+        const ingestReadiness = (snap) => {
+          if (snap && snap.forEach) {
+            snap.forEach(doc => {
+              const d = doc.data();
+              const id = String(d.id || doc.id);
+              remoteReadinessMap.set(id, { ...d, id });
+            });
+          }
+        };
+        if (readinessSnap.status === "fulfilled" && readinessSnap.value) ingestReadiness(readinessSnap.value);
+        if (legacyReadSnap.status === "fulfilled" && legacyReadSnap.value) ingestReadiness(legacyReadSnap.value);
+
+        // Remote Bodyweight
+        const remoteBwMap = new Map();
+        const ingestBw = (snap) => {
+          if (snap && snap.forEach) {
+            snap.forEach(doc => {
+              const d = doc.data();
+              const id = String(d.id || doc.id);
+              remoteBwMap.set(id, { ...d, id });
+            });
+          }
+        };
+        if (bwSnap.status === "fulfilled" && bwSnap.value) ingestBw(bwSnap.value);
+        if (legacyBwSnap.status === "fulfilled" && legacyBwSnap.value) ingestBw(legacyBwSnap.value);
+
+        // Remote Sleep
+        const remoteSleepMap = new Map();
+        if (sleepSnap.status === "fulfilled" && sleepSnap.value) {
+          sleepSnap.value.forEach(doc => {
+            const d = doc.data();
+            const id = String(d.id || doc.id);
+            remoteSleepMap.set(id, { ...d, id });
+          });
+        }
+
         const remotePlateplan = (plateplanDoc.status === "fulfilled" && plateplanDoc.value?.exists)
           ? plateplanDoc.value.data()
           : null;
@@ -806,7 +1034,7 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
           ? activeProgDoc.value.data()
           : null;
 
-        // 3. Read local state from plateplan_v1 & data:${userId}
+        // 3. Read local state from plateplan_v1 & data:${userId} & standalone keys
         const localProfile = loadDecoupledProfile(userId);
         const localLogs = Array.isArray(localProfile.logs) ? localProfile.logs : [];
         const localLogsMap = new Map();
@@ -820,7 +1048,7 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
         let hydratedToLocal = 0;
         const toPush = [];
 
-        // Check if local contains newer or missing entries -> push to Firestore
+        // Check if local contains newer or missing exercise logs -> push to Firestore
         for (const [key, localLog] of localLogsMap.entries()) {
           const remoteLog = remoteLogsMap.get(key) || remoteLogsMap.get(String(localLog.id));
           const localTime = Number(localLog.updatedAt || localLog.timestamp || 0);
@@ -837,7 +1065,7 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
           await Promise.allSettled(toPush.map(log => this.saveExerciseLog(userId, log, { skipQueue: true })));
         }
 
-        // Check if remote contains newer entries -> hydrate local
+        // Check if remote contains newer exercise logs -> hydrate local
         const mergedLogsMap = new Map(localLogsMap);
         for (const [remoteKey, remoteLog] of remoteLogsMap.entries()) {
           const localLog = localLogsMap.get(remoteKey) || localLogsMap.get(String(remoteLog.id));
@@ -846,6 +1074,108 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
 
           if (!localLog || remoteTime > localTime) {
             mergedLogsMap.set(String(remoteLog.id || remoteKey), remoteLog);
+            hydratedToLocal++;
+          }
+        }
+
+        // --- Reconcile Bodyweight Logs ---
+        const localBw = Array.isArray(localProfile.bodyWeightLogs) ? localProfile.bodyWeightLogs : [];
+        const localBwMap = new Map();
+        localBw.forEach(bw => {
+          if (!bw) return;
+          const key = String(bw.id || `bw_${bw.date}`);
+          localBwMap.set(key, bw);
+        });
+
+        const toPushBw = [];
+        for (const [key, localItem] of localBwMap.entries()) {
+          const remoteItem = remoteBwMap.get(key) || remoteBwMap.get(String(localItem.id));
+          const localTime = Number(localItem.updatedAt || localItem.timestamp || 0);
+          const remoteTime = Number(remoteItem?.updatedAt || remoteItem?.timestamp || 0);
+          if (!remoteItem || localTime > remoteTime) {
+            toPushBw.push(localItem);
+            pushedToRemote++;
+          }
+        }
+        if (toPushBw.length > 0) {
+          await Promise.allSettled(toPushBw.map(bw => this.saveBodyweightLog(userId, bw, { skipQueue: true })));
+        }
+
+        const mergedBwMap = new Map(localBwMap);
+        for (const [remoteKey, remoteItem] of remoteBwMap.entries()) {
+          const localItem = localBwMap.get(remoteKey) || localBwMap.get(String(remoteItem.id));
+          const localTime = Number(localItem?.updatedAt || localItem?.timestamp || 0);
+          const remoteTime = Number(remoteItem.updatedAt || remoteItem.timestamp || 0);
+          if (!localItem || remoteTime > localTime) {
+            mergedBwMap.set(String(remoteItem.id || remoteKey), remoteItem);
+            hydratedToLocal++;
+          }
+        }
+
+        // --- Reconcile Readiness Logs ---
+        const localReadiness = Array.isArray(localProfile.readinessLogs) ? localProfile.readinessLogs : [];
+        const localReadinessMap = new Map();
+        localReadiness.forEach(r => {
+          if (!r) return;
+          const key = String(r.id || `r_${r.date}`);
+          localReadinessMap.set(key, r);
+        });
+
+        const toPushReadiness = [];
+        for (const [key, localItem] of localReadinessMap.entries()) {
+          const remoteItem = remoteReadinessMap.get(key) || remoteReadinessMap.get(String(localItem.id));
+          const localTime = Number(localItem.updatedAt || localItem.timestamp || 0);
+          const remoteTime = Number(remoteItem?.updatedAt || remoteItem?.timestamp || 0);
+          if (!remoteItem || localTime > remoteTime) {
+            toPushReadiness.push(localItem);
+            pushedToRemote++;
+          }
+        }
+        if (toPushReadiness.length > 0) {
+          await Promise.allSettled(toPushReadiness.map(r => this.saveReadinessLog(userId, r, { skipQueue: true })));
+        }
+
+        const mergedReadinessMap = new Map(localReadinessMap);
+        for (const [remoteKey, remoteItem] of remoteReadinessMap.entries()) {
+          const localItem = localReadinessMap.get(remoteKey) || localReadinessMap.get(String(remoteItem.id));
+          const localTime = Number(localItem?.updatedAt || localItem?.timestamp || 0);
+          const remoteTime = Number(remoteItem.updatedAt || remoteItem.timestamp || 0);
+          if (!localItem || remoteTime > localTime) {
+            mergedReadinessMap.set(String(remoteItem.id || remoteKey), remoteItem);
+            hydratedToLocal++;
+          }
+        }
+
+        // --- Reconcile Sleep Logs ---
+        const localSleep = Array.isArray(localProfile.sleepLogs) ? localProfile.sleepLogs : [];
+        const localSleepMap = new Map();
+        localSleep.forEach(s => {
+          if (!s) return;
+          const key = String(s.id || `slp_${s.date}`);
+          localSleepMap.set(key, s);
+        });
+
+        const toPushSleep = [];
+        for (const [key, localItem] of localSleepMap.entries()) {
+          const remoteItem = remoteSleepMap.get(key) || remoteSleepMap.get(String(localItem.id));
+          const localTime = Number(localItem.updatedAt || localItem.timestamp || 0);
+          const remoteTime = Number(remoteItem?.updatedAt || remoteItem?.timestamp || 0);
+          if (!remoteItem || localTime > remoteTime) {
+            toPushSleep.push(localItem);
+            pushedToRemote++;
+          }
+        }
+        if (toPushSleep.length > 0) {
+          await Promise.allSettled(toPushSleep.map(s => this.saveSleepLog(userId, s, { skipQueue: true })));
+        }
+
+        const mergedSleepMap = new Map(localSleepMap);
+        for (const [remoteKey, remoteItem] of remoteSleepMap.entries()) {
+          const localItem = localSleepMap.get(remoteKey) || localSleepMap.get(String(remoteItem.id));
+          const localTime = Number(localItem?.updatedAt || localItem?.timestamp || 0);
+          const remoteTime = Number(remoteItem.updatedAt || remoteItem.timestamp || 0);
+          if (!localItem || remoteTime > localTime) {
+            mergedSleepMap.set(String(remoteItem.id || remoteKey), remoteItem);
             hydratedToLocal++;
           }
         }
@@ -877,16 +1207,23 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
         const mergedLogsArray = Array.from(mergedLogsMap.values()).sort((a, b) =>
           (b.date || "").localeCompare(a.date || "") || ((b.timestamp || 0) - (a.timestamp || 0))
         );
+        const mergedBwArray = Array.from(mergedBwMap.values()).sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+        const mergedReadinessArray = Array.from(mergedReadinessMap.values()).sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+        const mergedSleepArray = Array.from(mergedSleepMap.values()).sort((a, b) => (a.date || "").localeCompare(b.date || ""));
 
         const reconciledProfile = {
           ...finalProgram,
           logs: mergedLogsArray,
+          bodyWeightLogs: mergedBwArray,
+          readinessLogs: mergedReadinessArray,
+          sleepLogs: mergedSleepArray,
           updatedAt: Math.max(Number(finalProgram.updatedAt || 0), Date.now())
         };
 
-        // Hydrate localStorage cache
+        // Hydrate localStorage cache & legacy storage keys
         savePlatePlanV1Local(userId, reconciledProfile);
         I.Ee(userId, reconciledProfile);
+        syncLegacyStorage(userId, reconciledProfile);
 
         console.info(`[PlatePlan Sync] Completed sync for ${userId}: pushed ${pushedToRemote}, hydrated ${hydratedToLocal}`);
         if (pushedToRemote > 0 || hydratedToLocal > 0) {
@@ -905,6 +1242,9 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
      * - onSnapshot for active program (gym_users/{profileId}/active_program/current)
      * - onSnapshot for plateplan (gym_users/{profileId}/plateplan/current)
      * - onSnapshot for history logs (gym_users/{profileId}/logs and exercise_logs)
+     * - onSnapshot for readiness (gym_users/{profileId}/readiness and readiness_logs)
+     * - onSnapshot for bodyweight (gym_users/{profileId}/bodyweight and bodyweight_logs)
+     * - onSnapshot for sleep (gym_users/{profileId}/sleep)
      * - Ensures changes on mobile immediately update desktop/laptop state!
      */
     subscribe(profileId, onRemoteUpdate, onStatusChange) {
@@ -937,31 +1277,67 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
             }, () => {});
           unsubscribers.push(unsubExerciseLogs);
 
-          // 3. Readiness logs listener
+          // 3. Readiness listener (primary: readiness)
+          const unsubReadiness = fs.collection("gym_users").doc(profileId).collection("readiness")
+            .onSnapshot(snap => {
+              const items = [];
+              snap.forEach(doc => items.push({ id: doc.id, ...doc.data() }));
+              if (items.length > 0) {
+                if (navigator.onLine) onStatusChange?.("synced");
+                onRemoteUpdate?.("readiness", items);
+              }
+            }, () => {});
+          unsubscribers.push(unsubReadiness);
+
+          // 4. Readiness logs listener (legacy fallback: readiness_logs)
           const unsubRead = fs.collection("gym_users").doc(profileId).collection("readiness_logs")
             .onSnapshot(snap => {
               const items = [];
               snap.forEach(doc => items.push({ id: doc.id, ...doc.data() }));
               if (items.length > 0) {
                 if (navigator.onLine) onStatusChange?.("synced");
-                onRemoteUpdate?.("readiness_logs", items);
+                onRemoteUpdate?.("readiness", items);
               }
             }, () => {});
           unsubscribers.push(unsubRead);
 
-          // 4. Bodyweight logs listener
+          // 5. Bodyweight listener (primary: bodyweight)
+          const unsubBwPrimary = fs.collection("gym_users").doc(profileId).collection("bodyweight")
+            .onSnapshot(snap => {
+              const items = [];
+              snap.forEach(doc => items.push({ id: doc.id, ...doc.data() }));
+              if (items.length > 0) {
+                if (navigator.onLine) onStatusChange?.("synced");
+                onRemoteUpdate?.("bodyweight", items);
+              }
+            }, () => {});
+          unsubscribers.push(unsubBwPrimary);
+
+          // 6. Bodyweight logs listener (legacy fallback: bodyweight_logs)
           const unsubBw = fs.collection("gym_users").doc(profileId).collection("bodyweight_logs")
             .onSnapshot(snap => {
               const items = [];
               snap.forEach(doc => items.push({ id: doc.id, ...doc.data() }));
               if (items.length > 0) {
                 if (navigator.onLine) onStatusChange?.("synced");
-                onRemoteUpdate?.("bodyweight_logs", items);
+                onRemoteUpdate?.("bodyweight", items);
               }
             }, () => {});
           unsubscribers.push(unsubBw);
 
-          // 5. Active program listener (gym_users/{profileId}/active_program/current)
+          // 7. Sleep listener (primary: sleep)
+          const unsubSleep = fs.collection("gym_users").doc(profileId).collection("sleep")
+            .onSnapshot(snap => {
+              const items = [];
+              snap.forEach(doc => items.push({ id: doc.id, ...doc.data() }));
+              if (items.length > 0) {
+                if (navigator.onLine) onStatusChange?.("synced");
+                onRemoteUpdate?.("sleep", items);
+              }
+            }, () => {});
+          unsubscribers.push(unsubSleep);
+
+          // 8. Active program listener (gym_users/{profileId}/active_program/current)
           const unsubProg = fs.collection("gym_users").doc(profileId).collection("active_program").doc("current")
             .onSnapshot(doc => {
               if (doc.exists) {
@@ -971,7 +1347,7 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
             }, () => {});
           unsubscribers.push(unsubProg);
 
-          // 6. Plateplan current listener (gym_users/{profileId}/plateplan/current)
+          // 9. Plateplan current listener (gym_users/{profileId}/plateplan/current)
           const unsubPlateplan = fs.collection("gym_users").doc(profileId).collection("plateplan").doc("current")
             .onSnapshot(doc => {
               if (doc.exists) {
@@ -4186,13 +4562,36 @@ const EXERCISE_SUGGESTIONS = [
 
   function exportBackupJSON(store) {
     const people = {};
-    const profiles = ["elliott", "chloe"];
+    const candidateProfiles = new Set(["elliott", "chloe"]);
+
+    // Detect any additional user profiles in localStorage
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith("data:")) {
+          const id = k.slice(5).trim();
+          if (id) candidateProfiles.add(id);
+        }
+      }
+    } catch (e) {}
+
+    const profiles = Array.from(candidateProfiles);
 
     profiles.forEach(pId => {
-      const pData = store?.[pId] || {};
-      const bodyWeightLogs = storageGet(`hg_metrics_${pId}`, []) || pData.bodyWeightLogs || [];
-      const readinessLogs = storageGet(`hg_readiness_${pId}`, []) || pData.readinessLogs || [];
-      let sleepLogs = storageGet(`hg_sleep_${pId}`, []) || pData.sleepLogs || [];
+      const pData = (store && store[pId]) ? store[pId] : loadDecoupledProfile(pId);
+      const decoupled = loadDecoupledProfile(pId);
+
+      const bodyWeightLogs = (Array.isArray(pData.bodyWeightLogs) && pData.bodyWeightLogs.length > 0)
+        ? pData.bodyWeightLogs
+        : (decoupled.bodyWeightLogs || []);
+
+      const readinessLogs = (Array.isArray(pData.readinessLogs) && pData.readinessLogs.length > 0)
+        ? pData.readinessLogs
+        : (decoupled.readinessLogs || []);
+
+      let sleepLogs = (Array.isArray(pData.sleepLogs) && pData.sleepLogs.length > 0)
+        ? pData.sleepLogs
+        : (decoupled.sleepLogs || []);
 
       if (!Array.isArray(sleepLogs) || sleepLogs.length === 0) {
         if (Array.isArray(readinessLogs) && readinessLogs.length > 0) {
@@ -4200,7 +4599,7 @@ const EXERCISE_SUGGESTIONS = [
             const h = r.sleepHours != null ? Number(r.sleepHours) : Math.floor(Number(r.sleep) || 0);
             const m = r.sleepMins != null ? Number(r.sleepMins) : Math.round(((Number(r.sleep) || 0) % 1) * 60);
             return {
-              id: r.id ? `sleep_${r.id}` : `sleep_${r.date}`,
+              id: r.id ? `slp_${r.id}` : `slp_${r.date}`,
               date: r.date,
               hours: h,
               mins: m,
@@ -4213,27 +4612,46 @@ const EXERCISE_SUGGESTIONS = [
       }
 
       people[pId] = {
-        startDate: pData.startDate || "2026-09-07",
-        goals: pData.goals || "",
-        resumeNote: pData.resumeNote || "",
-        sessions: Array.isArray(pData.sessions) ? pData.sessions : [],
-        weekOverrides: pData.weekOverrides || {},
-        logs: Array.isArray(pData.logs) ? pData.logs : [],
+        startDate: pData.startDate || decoupled.startDate || "2026-09-07",
+        goals: pData.goals || decoupled.goals || "",
+        resumeNote: pData.resumeNote || decoupled.resumeNote || "",
+        sessions: Array.isArray(pData.sessions) && pData.sessions.length > 0 ? pData.sessions : (decoupled.sessions || []),
+        weekOverrides: pData.weekOverrides || decoupled.weekOverrides || {},
+        logs: Array.isArray(pData.logs) && pData.logs.length > 0 ? pData.logs : (decoupled.logs || []),
         bodyWeightLogs: Array.isArray(bodyWeightLogs) ? bodyWeightLogs : [],
         sleepLogs: Array.isArray(sleepLogs) ? sleepLogs : [],
         readinessLogs: Array.isArray(readinessLogs) ? readinessLogs : [],
-        updatedAt: pData.updatedAt || Date.now()
+        updatedAt: pData.updatedAt || Date.now(),
+        rawLocalStorage: {
+          [`data:${pId}`]: localStorage.getItem(`data:${pId}`),
+          [`hg_readiness_${pId}`]: localStorage.getItem(`hg_readiness_${pId}`),
+          [`hg_sleep_${pId}`]: localStorage.getItem(`hg_sleep_${pId}`),
+          [`hg_metrics_${pId}`]: localStorage.getItem(`hg_metrics_${pId}`),
+          [`plateplan_v1_${pId}`]: localStorage.getItem(`plateplan_v1_${pId}`)
+        }
       };
     });
 
-    return {
+    const backup = {
       schemaVersion: 3,
       app: "home-gym-log",
       type: "full-backup",
+      version: "2.5.0",
       exportedAt: (I.W ? I.W() : new Date().toISOString().slice(0, 10)),
-      instructions: "Full backup of both profiles, including sessions, day overrides, logged exercise history, and health tracking stores (body weight, sleep, readiness).",
+      timestamp: Date.now(),
+      instructions: "Comprehensive full backup of both profiles, including sessions, day overrides, logged exercise history, and all health tracking stores (body weight, sleep, readiness) and offline queues.",
+      globalSettings: {
+        pin: localStorage.getItem("hg_pin") || "",
+        appearance: localStorage.getItem("hg_appearance") || "system"
+      },
+      offlineQueues: {
+        pending: PlatePlanSyncEngine.getOfflineQueue(),
+        deadLetter: PlatePlanSyncEngine.getDeadLetterQueue()
+      },
       people
     };
+
+    return backup;
   }
 
   async function restoreBackupJSON(payload, updateData, showToast) {
@@ -4241,7 +4659,7 @@ const EXERCISE_SUGGESTIONS = [
       throw new Error("Invalid backup format: missing 'people' profile data.");
     }
 
-    const profiles = ["elliott", "chloe"];
+    const profiles = Object.keys(payload.people);
     let count = 0;
 
     for (const pId of profiles) {
@@ -4261,7 +4679,21 @@ const EXERCISE_SUGGESTIONS = [
         : (Array.isArray(pBackup.readiness) ? pBackup.readiness : []);
       const sleepLogs = Array.isArray(pBackup.sleepLogs) ? pBackup.sleepLogs : [];
 
-      // 1. Write local storage caches & sync legacy keys
+      // Restore raw keys if present
+      if (pBackup.rawLocalStorage && typeof pBackup.rawLocalStorage === "object") {
+        try {
+          Object.entries(pBackup.rawLocalStorage).forEach(([k, v]) => {
+            if (v != null) localStorage.setItem(k, v);
+          });
+        } catch (e) {}
+      }
+
+      // 1. Explicitly write local storage caches & standalone health keys
+      storageSet(`hg_metrics_${pId}`, bodyWeightLogs);
+      storageSet(`hg_readiness_${pId}`, readinessLogs);
+      storageSet(`hg_sleep_${pId}`, sleepLogs);
+
+      // Sync legacy storage keys (data:pId, plateplan_v1_pId)
       syncLegacyStorage(pId, {
         bodyWeightLogs,
         readinessLogs,
@@ -4281,23 +4713,54 @@ const EXERCISE_SUGGESTIONS = [
       for (const rd of readinessLogs) {
         try { await GymCloudEngine.saveReadinessLog(pId, rd, { skipQueue: true }); } catch (e) {}
       }
+      for (const sl of sleepLogs) {
+        try { await GymCloudEngine.saveSleepLog(pId, sl, { skipQueue: true }); } catch (e) {}
+      }
+      for (const lg of logs) {
+        try { await GymCloudEngine.saveExerciseLog(pId, lg, { skipQueue: true }); } catch (e) {}
+      }
+      try {
+        await GymCloudEngine.saveActiveProgram(pId, {
+          startDate: pBackup.startDate,
+          goals: pBackup.goals,
+          resumeNote: pBackup.resumeNote,
+          sessions,
+          weekOverrides,
+          updatedAt: Date.now()
+        }, { skipQueue: true });
+      } catch (e) {}
 
       // 3. React state update
-      await updateData(pId, cur => ({
-        ...cur,
-        startDate: pBackup.startDate || cur.startDate,
-        goals: pBackup.goals || cur.goals,
-        resumeNote: pBackup.resumeNote || cur.resumeNote,
-        sessions,
-        weekOverrides,
-        logs,
-        bodyWeightLogs,
-        readinessLogs,
-        sleepLogs,
-        updatedAt: Date.now()
-      }));
+      if (updateData) {
+        await updateData(pId, cur => ({
+          ...cur,
+          startDate: pBackup.startDate || cur.startDate,
+          goals: pBackup.goals || cur.goals,
+          resumeNote: pBackup.resumeNote || cur.resumeNote,
+          sessions,
+          weekOverrides,
+          logs,
+          bodyWeightLogs,
+          readinessLogs,
+          sleepLogs,
+          updatedAt: Date.now()
+        }));
+      }
+
+      // 4. Trigger cloud synchronization check
+      PlatePlanSyncEngine.syncPlatePlanWithFirestore(pId).catch(() => {});
 
       count++;
+    }
+
+    // Restore global settings if present
+    if (payload.globalSettings) {
+      if (payload.globalSettings.pin) {
+        localStorage.setItem("hg_pin", payload.globalSettings.pin);
+      }
+      if (payload.globalSettings.appearance) {
+        localStorage.setItem("hg_appearance", payload.globalSettings.appearance);
+      }
     }
 
     if (showToast) {
@@ -4306,11 +4769,39 @@ const EXERCISE_SUGGESTIONS = [
     return count;
   }
 
-  // Hook into internal exports for compatibility
+  // Hook into internal exports and window for accessibility
   try {
     if (window.HG_INTERNALS) {
       window.HG_INTERNALS.tt = exportBackupJSON;
     }
+    window.exportBackupJSON = exportBackupJSON;
+    window.restoreBackupJSON = restoreBackupJSON;
+
+    window.exportFullBackup = function(options = { download: true }) {
+      try {
+        const store = window.__HG_STORE__ || {
+          elliott: loadDecoupledProfile("elliott"),
+          chloe: loadDecoupledProfile("chloe")
+        };
+        const payload = exportBackupJSON(store);
+        if (options.download !== false) {
+          const dateStr = (I.W ? I.W() : new Date().toISOString().slice(0, 10));
+          downloadFile(payload, `training-full-backup-${dateStr}.json`);
+        }
+        if (typeof window.__HG_SHOW_TOAST__ === "function") {
+          window.__HG_SHOW_TOAST__("Exported full backup (.json)");
+        } else {
+          console.log("Full backup exported successfully:", payload);
+        }
+        return payload;
+      } catch (err) {
+        console.error("exportFullBackup error, trying exportRecoveredData fallback:", err);
+        if (typeof window.exportRecoveredData === "function") {
+          return window.exportRecoveredData(options);
+        }
+        throw err;
+      }
+    };
   } catch (e) {}
 
   function downloadFile(data, filename, type = "application/json") {
@@ -5330,6 +5821,9 @@ const EXERCISE_SUGGESTIONS = [
     const [chloeStart, setChloeStart] = useState(store?.chloe?.startDate || "2026-09-07");
     const [reminderHour, setReminderHour] = useState(() => storageGet(`hg_reminderhour_${personId}`, 9));
     const [enabling, setEnabling] = useState(false);
+    const [restoring, setRestoring] = useState(false);
+    const [deadLetters, setDeadLetters] = useState(() => PlatePlanSyncEngine.getDeadLetterQueue());
+    const backupFileInputRef = useRef(null);
 
     function chooseTheme(value) {
       setTheme(value);
@@ -5352,6 +5846,44 @@ const EXERCISE_SUGGESTIONS = [
       showToast(ok ? "Notifications enabled" : "Notifications could not be enabled");
     }
 
+    function handleExportBackup() {
+      try {
+        if (typeof window.exportFullBackup === "function") {
+          window.exportFullBackup({ download: true });
+        } else {
+          const payload = exportBackupJSON(store);
+          const dateStr = (I.W ? I.W() : new Date().toISOString().slice(0, 10));
+          downloadFile(payload, `training-full-backup-${dateStr}.json`);
+          showToast("Exported full backup (.json)");
+        }
+      } catch (err) {
+        showToast("Export failed: " + (err?.message || "Unknown error"));
+      }
+    }
+
+    async function handleRestoreFileChange(e) {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = async () => {
+        try {
+          const parsed = JSON.parse(reader.result);
+          if (!window.confirm("Restoring this backup will replace current workouts and health metrics for both profiles. Continue?")) {
+            return;
+          }
+          setRestoring(true);
+          await restoreBackupJSON(parsed, updateData, showToast);
+          setRestoring(false);
+          onClose?.();
+        } catch (err) {
+          setRestoring(false);
+          showToast("Restore failed: " + (err?.message || "Invalid JSON file"));
+        }
+      };
+      reader.readAsText(file);
+      e.target.value = "";
+    }
+
     return h("div", { className: "hg-modal-wrap", onClick: onClose },
       h("div", { className: "hg-modal", onClick: event => event.stopPropagation() },
         h("div", { className: "hg-modal-head" },
@@ -5372,7 +5904,7 @@ const EXERCISE_SUGGESTIONS = [
         h("div", { className: "hg-setting-section" },
           h("h3", null, "Cloud-First Architecture & Automated Sync"),
           h("p", null,
-            `${syncStatus === "synced" ? "Cloud Synced." : syncStatus === "connecting" ? "Connecting to Firestore…" : syncStatus === "offline" ? "Offline mode active." : "Local cache."} PlatePlan v2.4.1 two-way cloud sync engine automatically replicates exercise history (gym_users/{userId}/logs) and program routines.`
+            `${syncStatus === "synced" ? "Cloud Synced." : syncStatus === "connecting" ? "Connecting to Firestore…" : syncStatus === "offline" ? "Offline mode active." : "Local cache."} PlatePlan v2.5.0 two-way cloud sync engine automatically replicates exercise history and health metrics (bodyweight, sleep, readiness) to Firestore.`
           ),
           h("div", { style: { marginTop: 10, padding: "12px 14px", background: "rgba(255,255,255,0.03)", border: "1px solid var(--border)", borderRadius: 8, fontSize: 13 } },
             h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 } },
@@ -5391,6 +5923,41 @@ const EXERCISE_SUGGESTIONS = [
                 }
               }
             }, "Sync Now with Firestore")
+          )
+        ),
+        h("div", { className: "hg-setting-section" },
+          h("h3", null, "Data & Full Backup"),
+          h("p", null, "Export a complete JSON archive of all workout routines, logged exercise history, bodyweight logs, sleep metrics, and readiness logs for all profiles. Restoring repopulates local storage and cloud database."),
+          h("div", { style: { display: "flex", gap: 10, flexWrap: "wrap", marginTop: 12 } },
+            h(Button, {
+              primary: true,
+              id: "hg-export-full-backup-btn",
+              onClick: handleExportBackup
+            }, "📥 Export Full Backup (.json)"),
+            h(Button, {
+              id: "hg-restore-backup-btn",
+              disabled: restoring,
+              onClick: () => backupFileInputRef.current?.click()
+            }, restoring ? "Restoring…" : "Restore from Backup"),
+            h("input", {
+              ref: backupFileInputRef,
+              type: "file",
+              accept: "application/json",
+              style: { display: "none" },
+              onChange: handleRestoreFileChange
+            })
+          ),
+          deadLetters.length > 0 && h("div", { style: { marginTop: 12, padding: "10px 12px", background: "rgba(239, 68, 68, 0.08)", border: "1px solid rgba(239, 68, 68, 0.25)", borderRadius: 8, fontSize: 12.5 } },
+            h("div", { style: { color: "#ef4444", fontWeight: 600, marginBottom: 4 } }, `Dead-Letter Queue: ${deadLetters.length} unprocessable mutation(s)`),
+            h("div", { style: { color: "var(--text-muted)", marginBottom: 8 } }, "Mutations that failed 3 times or had invalid schema were moved here to prevent offline queue deadlock."),
+            h(Button, {
+              style: { fontSize: 12, padding: "4px 10px" },
+              onClick: () => {
+                PlatePlanSyncEngine.clearDeadLetterQueue();
+                setDeadLetters([]);
+                showToast("Dead-letter queue cleared");
+              }
+            }, "Clear Dead-Letter Queue")
           )
         ),
         h("div", { className: "hg-setting-section" },
