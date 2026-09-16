@@ -1,6 +1,6 @@
 {
   "name": "Home Gym Log",
-  "description": "Strength training tracker HomeGym v2.5.3 with strict cloud-first architecture, type safeguards against workout set contamination, consolidated readiness check-in, and accessible metrics",
+  "description": "Strength training tracker HomeGym v2.5.5 with flat exercise log parsing, name sanitization, Brzycki 1RM analytics, Recharts top set trend tracking, and direct Firestore deletion",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

@@ -9,8 +9,8 @@
 
   const h = React.createElement;
   const { useState, useEffect, useCallback, useRef, useMemo } = React;
-  const APP_VERSION = "v2.5.3";
-  const STORAGE_VERSION = "2.5.3";
+  const APP_VERSION = "v2.5.5";
+  const STORAGE_VERSION = "2.5.5";
 
   // --- v2.5.3 Cloud-First Architecture & Automated Storage Migration ---
   function runStorageMigration() {
@@ -121,6 +121,54 @@
     }
   }
   window.formatChartDate = formatChartDate;
+
+  // --- v2.5.5 Exercise Name Sanitization & 1RM Calculations ---
+  function formatExerciseDisplayName(rawName) {
+    if (!rawName) return "Unknown Exercise";
+    let s = String(rawName).trim();
+    // 1. Remove trailing _e or _run suffixes (e.g. dead_bugs_e -> dead_bugs, db_crunch_e -> db_crunch)
+    s = s.replace(/(_e|_run|-e|-run)$/i, "");
+    // 2. Replace underscores and raw delimiters with spaces
+    s = s.replace(/[_-]+/g, " ").trim();
+
+    // Acronym map for common lifting terminology
+    const acronyms = {
+      db: "DB",
+      bb: "BB",
+      rdl: "RDL",
+      ohp: "OHP",
+      kb: "KB",
+      ez: "EZ",
+      pr: "PR",
+      "1rm": "1RM",
+      amrap: "AMRAP",
+      bw: "BW",
+      bicep: "Bicep",
+      tricep: "Tricep"
+    };
+
+    const words = s.split(/\s+/).filter(Boolean);
+    const titleWords = words.map(w => {
+      const lower = w.toLowerCase().replace(/[^a-z0-9]/g, "");
+      if (acronyms[lower]) {
+        return acronyms[lower];
+      }
+      return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
+    });
+
+    return titleWords.join(" ");
+  }
+  window.formatExerciseDisplayName = formatExerciseDisplayName;
+
+  function calculateBrzycki1RM(weight, reps) {
+    const w = Number(weight) || 0;
+    const r = Number(reps) || 0;
+    if (w <= 0 || r <= 0) return 0;
+    if (r === 1) return w;
+    if (r >= 37) return w; // Guard against negative or 0 denominator in Brzycki formula: 37 - reps
+    return Math.round(w * (36 / (37 - r)) * 10) / 10;
+  }
+  window.calculateBrzycki1RM = calculateBrzycki1RM;
 
   class ErrorBoundary extends React.Component {
     constructor(props) {
@@ -954,6 +1002,7 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
       if (fs) {
         try {
           await fs.collection("users").doc(profileId).collection("workouts").doc(String(logId)).delete().catch(() => {});
+          await fs.collection("workouts").doc(String(logId)).delete().catch(() => {});
           await fs.collection("gym_users").doc(profileId).collection("logs").doc(String(logId)).delete();
           await fs.collection("gym_users").doc(profileId).collection("exercise_logs").doc(String(logId)).delete().catch(() => {});
         } catch (e) {
@@ -3645,10 +3694,14 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
   }
 
   function logDisplay(data, log) {
-    if (log.type === "run") return `${log.distance}km · ${log.duration} min`;
+    if (log.type === "run") return `${log.distance || 0}km · ${log.duration || 0} min`;
     const found = findExercise(data, log.sessionId, log.exerciseId);
     const exercise = found?.exercise;
-    return `${log.weight != null ? I.je(log.weight, exercise?.weightMode === "perSide") + " · " : ""}${log.sets} × ${log.reps}${exercise?.metric === "seconds" ? " sec" : ""}`;
+    const w = Number(log.weight);
+    const weightStr = !Number.isNaN(w) && w > 0 ? (I.je ? I.je(w, exercise?.weightMode === "perSide") + " · " : `${w} kg · `) : "";
+    const setsVal = Array.isArray(log.sets) ? log.sets.length : (log.sets || 1);
+    const repsVal = log.reps != null ? log.reps : (Array.isArray(log.sets) && log.sets[0]?.reps ? log.sets[0].reps : "reps");
+    return `${weightStr}${setsVal} × ${repsVal}${exercise?.metric === "seconds" ? " sec" : ""}`;
   }
 
   function HistoryEditor({ personId, data, initialLog, updateData, showToast, onClose }) {
@@ -3771,11 +3824,22 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
     const logsList = Array.isArray(data?.logs) ? data.logs : [];
     const sorted = [...logsList].sort((a, b) => b.date.localeCompare(a.date) || String(b.id).localeCompare(String(a.id))).slice(0, 50);
 
-    function remove(log) {
+    async function remove(log) {
       if (!window.confirm("Delete this history entry? This cannot be undone.")) return;
-      GymCloudEngine.deleteExerciseLog(personId, log.id);
-      updateData(personId, current => ({ ...current, logs: (current?.logs || []).filter(item => item.id !== log.id) }));
-      showToast("Entry deleted");
+      if (updateData) {
+        updateData(personId, current => ({ ...current, logs: (current?.logs || []).filter(item => item.id !== log.id) }));
+      }
+      try {
+        await GymCloudEngine.deleteExerciseLog(personId, log.id);
+        const fs = GymCloudEngine.getFirestore();
+        if (fs) {
+          fs.collection("workouts").doc(String(log.id)).delete().catch(() => {});
+          fs.collection("users").doc(personId).collection("workouts").doc(String(log.id)).delete().catch(() => {});
+        }
+        showToast("Entry deleted");
+      } catch (err) {
+        showToast("Deleted locally");
+      }
     }
 
     return h(React.Fragment, null,
@@ -3793,9 +3857,11 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
         sorted.map(log => {
           const found = log.type === "exercise" ? findExercise(data, log.sessionId, log.exerciseId) : null;
           const session = (data?.sessions || []).find(item => item.id === log.sessionId);
+          const rawTitle = log.type === "run" ? (session?.name || log.exerciseName || "Run") : (found?.exercise?.name || log.exerciseName || log.exerciseId);
+          const displayTitle = log.type === "run" ? rawTitle : formatExerciseDisplayName(rawTitle);
           return h("div", { className: "hg-history-row", key: log.id },
             h("div", null,
-              h("div", { className: "hg-history-result" }, log.type === "run" ? (session?.name || log.exerciseName || "Run") : (found?.exercise?.name || log.exerciseName || log.exerciseId)),
+              h("div", { className: "hg-history-result" }, displayTitle),
               h("div", null, logDisplay(data, log)),
               h("div", { className: "hg-history-meta" },
                 `${log.date}${log.feeling ? ` · ${FEELING_LABELS[log.feeling] || log.feeling}` : log.rpe != null ? ` · RPE ${log.rpe}` : ""}${log.type === "run" ? ` · ${log.effort}` : ""}`
@@ -4542,10 +4608,365 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
     );
   }
 
-  function ProgressView({ personId, data, meta, weekInfo, showToast }) {
+  // --- v2.5.5 Recharts & SVG Exercise Progress Chart ---
+  function ExerciseProgressChart({ data, accent }) {
+    if (!data || data.length === 0) return null;
+
+    const Recharts = window.Recharts;
+    const chartAccent = accent || "var(--hg-accent, #3B82F6)";
+
+    if (Recharts && Recharts.LineChart && Recharts.ResponsiveContainer) {
+      return h("div", { style: { width: "100%", height: 230, marginTop: 12 } },
+        h(Recharts.ResponsiveContainer, { width: "100%", height: "100%" },
+          h(Recharts.LineChart, { data, margin: { top: 12, right: 16, left: -14, bottom: 6 } },
+            h(Recharts.CartesianGrid, { strokeDasharray: "3 3", stroke: "var(--hg-border)", opacity: 0.6 }),
+            h(Recharts.XAxis, {
+              dataKey: "formattedDate",
+              tick: { fontSize: 11, fill: "var(--hg-text-3)" },
+              tickLine: false,
+              axisLine: { stroke: "var(--hg-border)" }
+            }),
+            h(Recharts.YAxis, {
+              domain: [
+                dataMin => Math.max(0, Math.floor(dataMin * 0.9)),
+                dataMax => Math.ceil(dataMax * 1.1) || 10
+              ],
+              tick: { fontSize: 11, fill: "var(--hg-text-3)" },
+              tickLine: false,
+              axisLine: { stroke: "var(--hg-border)" },
+              unit: "kg"
+            }),
+            h(Recharts.Tooltip, {
+              contentStyle: {
+                backgroundColor: "var(--hg-surface)",
+                borderColor: "var(--hg-border)",
+                borderRadius: "10px",
+                fontSize: "12px",
+                color: "var(--hg-text)",
+                boxShadow: "0 4px 14px rgba(0,0,0,0.15)"
+              },
+              formatter: (val) => [`${val} kg`, "Top Set Weight"],
+              labelFormatter: (lbl, items) => {
+                const item = items && items[0] && items[0].payload;
+                return item ? item.fullDate : lbl;
+              }
+            }),
+            h(Recharts.Line, {
+              type: "monotone",
+              dataKey: "topWeight",
+              stroke: chartAccent,
+              strokeWidth: 2.5,
+              dot: { r: 4, fill: chartAccent, strokeWidth: 2, stroke: "var(--hg-surface)" },
+              activeDot: { r: 6 }
+            })
+          )
+        )
+      );
+    }
+
+    // High-fidelity SVG Fallback if Recharts library is unavailable or offline
+    return h(SVGExerciseTrendChart, { records: data, accent: chartAccent });
+  }
+
+  function SVGExerciseTrendChart({ records, accent }) {
+    if (!records || records.length === 0) return null;
+    const weights = records.map(r => Number(r.topWeight) || 0);
+    const minW = Math.max(0, Math.floor(Math.min(...weights) - 2));
+    const maxW = Math.ceil(Math.max(...weights) + 2) || 10;
+    const rangeW = maxW - minW || 1;
+
+    const width = 360;
+    const height = 180;
+    const padLeft = 46;
+    const padRight = 16;
+    const padTop = 18;
+    const padBottom = 32;
+
+    const plotW = width - padLeft - padRight;
+    const plotH = height - padTop - padBottom;
+
+    const getX = index => records.length === 1 ? padLeft + plotW / 2 : padLeft + (index / (records.length - 1)) * plotW;
+    const getY = val => padTop + plotH - ((val - minW) / rangeW) * plotH;
+
+    const points = records.map((r, i) => `${getX(i).toFixed(1)},${getY(Number(r.topWeight) || 0).toFixed(1)}`).join(" ");
+
+    const yTicks = [minW, Math.round((minW + rangeW / 2) * 10) / 10, maxW];
+    const xIndices = records.length <= 2 ? records.map((_, i) => i) : [0, Math.floor(records.length / 2), records.length - 1];
+
+    return h("div", { className: "hg-chart-wrap" },
+      h("svg", { viewBox: `0 0 ${width} ${height}`, className: "hg-svg-chart" },
+        yTicks.map((tick, idx) => {
+          const y = getY(tick);
+          return h("g", { key: idx },
+            h("line", { x1: padLeft, y1: y, x2: width - padRight, y2: y, stroke: "var(--hg-border)", strokeDasharray: "3,3", strokeWidth: 1 }),
+            h("text", { x: padLeft - 8, y: y + 4, textAnchor: "end", fontSize: 11, fill: "var(--hg-text-3)", fontFamily: "system-ui, sans-serif" }, `${tick}kg`)
+          );
+        }),
+        records.length > 1 && h("polyline", {
+          fill: "none",
+          stroke: accent || "var(--hg-accent)",
+          strokeWidth: 2.5,
+          strokeLinecap: "round",
+          strokeLinejoin: "round",
+          points
+        }),
+        records.map((r, i) =>
+          h("circle", {
+            key: i,
+            cx: getX(i),
+            cy: getY(Number(r.topWeight) || 0),
+            r: 4,
+            fill: accent || "var(--hg-accent)",
+            stroke: "var(--hg-surface)",
+            strokeWidth: 2
+          })
+        ),
+        xIndices.map(i => {
+          const rec = records[i];
+          if (!rec) return null;
+          const x = getX(i);
+          const anchor = i === 0 ? "start" : i === records.length - 1 ? "end" : "middle";
+          return h("text", {
+            key: i,
+            x,
+            y: height - 8,
+            textAnchor: anchor,
+            fontSize: 11,
+            fill: "var(--hg-text-3)",
+            fontFamily: "system-ui, sans-serif"
+          }, rec.formattedDate);
+        })
+      )
+    );
+  }
+
+  function formatSessionDate(dateStr) {
+    if (!dateStr) return "Unknown Date";
+    try {
+      const parts = String(dateStr).slice(0, 10).split("-");
+      if (parts.length === 3) {
+        const d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+        return d.toLocaleDateString("en-US", { weekday: "short", day: "numeric", month: "short", year: "numeric" });
+      }
+    } catch (_) {}
+    return String(dateStr);
+  }
+
+  function renderSetsBreakdown(sets) {
+    if (!sets || sets.length === 0) return h("div", { style: { color: "var(--hg-text-3)", fontSize: 13 } }, "No set data");
+
+    const first = sets[0];
+    const allIdentical = sets.length > 1 && sets.every(s => s.weight === first.weight && s.reps === first.reps);
+
+    if (allIdentical) {
+      const e1rm = calculateBrzycki1RM(first.weight, first.reps);
+      return h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 13, fontWeight: 600, padding: "2px 0" } },
+        h("span", null, `${sets.length} sets × ${first.weight > 0 ? `${first.weight} kg × ` : ""}${first.reps} reps${first.weight <= 0 ? " (BW)" : ""}`),
+        e1rm > 0 && h("span", { style: { fontSize: 11, color: "var(--hg-text-3)", fontWeight: 500 } }, `e1RM: ${e1rm} kg`)
+      );
+    }
+
+    return sets.map((s, idx) => {
+      const e1rm = calculateBrzycki1RM(s.weight, s.reps);
+      return h("div", { key: idx, style: { display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 13, padding: "3px 0" } },
+        h("span", null,
+          h("strong", { style: { color: "var(--hg-text-2)", marginRight: 8, fontSize: 12 } }, `Set ${idx + 1}`),
+          s.weight > 0 ? `${s.weight} kg × ${s.reps} reps` : `${s.reps} reps (BW)`,
+          s.rpe != null ? ` @ RPE ${s.rpe}` : ""
+        ),
+        e1rm > 0 && h("span", { style: { fontSize: 11, color: "var(--hg-text-3)" } }, `e1RM: ${e1rm} kg`)
+      );
+    });
+  }
+
+  function ProgressView({ personId, data, meta, weekInfo, updateData, showToast }) {
     const streak = I.HGcurrentStreak ? I.HGcurrentStreak(data) : 0;
     const logsList = Array.isArray(data?.logs) ? data.logs : [];
-    const completed = logsList.filter(log => log.date.slice(0, 7) === I.W().slice(0, 7)).length;
+    const completedMonth = logsList.filter(log => (log.date || "").slice(0, 7) === (I.W ? I.W() : new Date().toISOString()).slice(0, 7)).length;
+
+    // 1. Ingest flat schema logs and legacy multi-exercise logs
+    const flatLogs = [];
+    logsList.forEach(log => {
+      if (!log) return;
+      if (log.type === "run") {
+        // Excluded from strength exercise picker as per specification
+        return;
+      }
+      if (Array.isArray(log.exercises) && log.exercises.length > 0) {
+        log.exercises.forEach((ex, idx) => {
+          const rawName = ex.name || ex.exerciseName || ex.id || ex.exerciseId;
+          if (!rawName) return;
+          flatLogs.push({
+            id: `${log.id}_ex_${idx}`,
+            parentId: log.id,
+            type: "exercise",
+            sessionId: log.sessionId,
+            exerciseId: ex.id || ex.exerciseId,
+            exerciseName: rawName,
+            date: log.date || (log.timestamp ? new Date(log.timestamp).toISOString().slice(0, 10) : ""),
+            timestamp: log.timestamp || (log.date ? new Date(log.date).getTime() : Date.now()),
+            reps: ex.reps,
+            weight: ex.weight,
+            sets: ex.sets,
+            notes: log.notes || log.note || "",
+            rpe: log.rpe,
+            feeling: log.feeling
+          });
+        });
+      } else {
+        const rawName = log.exerciseName || log.name || log.exerciseId;
+        if (!rawName) return;
+        flatLogs.push({
+          id: log.id,
+          parentId: log.id,
+          type: log.type || "exercise",
+          sessionId: log.sessionId,
+          exerciseId: log.exerciseId,
+          exerciseName: rawName,
+          date: log.date || (log.timestamp ? new Date(log.timestamp).toISOString().slice(0, 10) : ""),
+          timestamp: log.timestamp || (log.date ? new Date(log.date).getTime() : Date.now()),
+          reps: log.reps,
+          weight: log.weight,
+          sets: log.sets,
+          notes: log.notes || log.note || "",
+          rpe: log.rpe,
+          feeling: log.feeling
+        });
+      }
+    });
+
+    // 2. Extract unique sanitized exercise names alphabetically
+    const nameMap = new Map(); // displayName -> array of flat logs
+    flatLogs.forEach(entry => {
+      const cleanName = formatExerciseDisplayName(entry.exerciseName);
+      if (!nameMap.has(cleanName)) {
+        nameMap.set(cleanName, []);
+      }
+      nameMap.get(cleanName).push(entry);
+    });
+
+    const exerciseNames = Array.from(nameMap.keys()).sort((a, b) => a.localeCompare(b));
+
+    // Determine the most recently logged exercise to default to
+    let mostRecentExercise = "";
+    if (flatLogs.length > 0) {
+      const sortedByRecency = [...flatLogs].sort((a, b) => (b.date || "").localeCompare(a.date || "") || (b.timestamp || 0) - (a.timestamp || 0));
+      if (sortedByRecency[0]) {
+        mostRecentExercise = formatExerciseDisplayName(sortedByRecency[0].exerciseName);
+      }
+    }
+
+    const [selectedExercise, setSelectedExercise] = useState("");
+
+    // Fallback selection: selected, or most recent, or first alphabetically
+    const currentExercise = (selectedExercise && exerciseNames.includes(selectedExercise))
+      ? selectedExercise
+      : (mostRecentExercise && exerciseNames.includes(mostRecentExercise))
+        ? mostRecentExercise
+        : (exerciseNames[0] || "");
+
+    // 3. Session aggregation for currentExercise
+    const matchingLogs = currentExercise ? (nameMap.get(currentExercise) || []) : [];
+
+    // Group entries by date
+    const sessionMap = new Map();
+    matchingLogs.forEach(entry => {
+      const dateKey = entry.date || "Unknown Date";
+      if (!sessionMap.has(dateKey)) {
+        sessionMap.set(dateKey, {
+          date: dateKey,
+          timestamp: entry.timestamp || (entry.date ? new Date(entry.date).getTime() : 0),
+          docIds: new Set(),
+          sets: [],
+          notes: [],
+          rpe: null,
+          feeling: null
+        });
+      }
+      const sess = sessionMap.get(dateKey);
+      if (entry.parentId || entry.id) sess.docIds.add(String(entry.parentId || entry.id));
+      if (entry.notes) sess.notes.push(entry.notes);
+      if (entry.rpe != null) sess.rpe = entry.rpe;
+      if (entry.feeling) sess.feeling = entry.feeling;
+
+      // Extract set items
+      if (Array.isArray(entry.sets)) {
+        entry.sets.forEach(s => {
+          sess.sets.push({
+            reps: Number(s.reps) || 0,
+            weight: Number(s.weight) || 0,
+            rpe: s.rpe != null ? s.rpe : entry.rpe
+          });
+        });
+      } else {
+        const count = Math.max(1, Number(entry.sets) || 1);
+        const reps = Number(entry.reps) || 0;
+        const weight = Number(entry.weight) || 0;
+        for (let i = 0; i < count; i++) {
+          sess.sets.push({
+            reps,
+            weight,
+            rpe: entry.rpe
+          });
+        }
+      }
+    });
+
+    const sessions = Array.from(sessionMap.values()).map(sess => {
+      const topWeight = sess.sets.length ? Math.max(...sess.sets.map(s => s.weight)) : 0;
+      const max1RM = sess.sets.length ? Math.max(...sess.sets.map(s => calculateBrzycki1RM(s.weight, s.reps))) : 0;
+      return {
+        ...sess,
+        topWeight,
+        max1RM
+      };
+    });
+
+    // Chronological sessions for chart (oldest to newest)
+    const sortedSessionsAsc = [...sessions].sort((a, b) => a.date.localeCompare(b.date));
+    // Sessions for history log (newest first)
+    const sortedSessionsDesc = [...sessions].sort((a, b) => b.date.localeCompare(a.date));
+
+    // KPI Metrics
+    const allSets = sessions.flatMap(s => s.sets);
+    const topSetWeight = allSets.length ? Math.max(0, ...allSets.map(s => s.weight)) : 0;
+    const topEstimated1RM = allSets.length ? Math.max(0, ...allSets.map(s => calculateBrzycki1RM(s.weight, s.reps))) : 0;
+    const totalSessions = sessions.length;
+
+    // Chart data tracking Top Set Weight over time
+    const chartData = sortedSessionsAsc.map(s => ({
+      rawDate: s.date,
+      formattedDate: formatChartDate(s.date),
+      fullDate: s.date,
+      topWeight: s.topWeight,
+      setsCount: s.sets.length
+    }));
+
+    async function deleteSession(session) {
+      if (!window.confirm(`Delete ${currentExercise} logs for ${session.date}? This cannot be undone.`)) return;
+      const idsToDelete = Array.from(session.docIds);
+      if (updateData) {
+        updateData(personId, cur => ({
+          ...cur,
+          logs: (cur?.logs || []).filter(l => !idsToDelete.includes(String(l.id)))
+        }));
+      }
+      try {
+        const fs = GymCloudEngine.getFirestore();
+        for (const docId of idsToDelete) {
+          await GymCloudEngine.deleteExerciseLog(personId, docId);
+          if (fs) {
+            fs.collection("workouts").doc(docId).delete().catch(() => {});
+            fs.collection("users").doc(personId).collection("workouts").doc(docId).delete().catch(() => {});
+          }
+        }
+        if (showToast) showToast("Exercise session deleted");
+      } catch (err) {
+        console.warn("Delete error:", err);
+        if (showToast) showToast("Deleted locally");
+      }
+    }
+
     return h(React.Fragment, null,
       h("div", { className: "hg-view-header" },
         h("h1", null, "Progress"),
@@ -4553,10 +4974,85 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
       ),
       h("div", { className: "hg-stats" },
         h("div", { className: "hg-stat" }, h("span", null, "Week streak"), h("strong", null, streak)),
-        h("div", { className: "hg-stat" }, h("span", null, "Logs this month"), h("strong", null, completed))
+        h("div", { className: "hg-stat" }, h("span", null, "Logs this month"), h("strong", null, completedMonth))
       ),
-      h("div", { className: "hg-legacy-wrap" },
-        h(I.Ct, { meta, data, weekInfo })
+
+      // Empty Fallback UI
+      exerciseNames.length === 0 ? h("div", { className: "hg-card hg-empty", style: { marginTop: 14 } },
+        h("h2", null, "No exercise history recorded yet."),
+        h("p", null, "Completed strength exercises will appear here with automated 1RM calculations, top set trends, and chronological session histories.")
+      ) : h(React.Fragment, null,
+        // Exercise Dropdown Picker
+        h("div", { className: "hg-card", style: { marginBottom: 14 } },
+          h("label", { htmlFor: "exercise-progress-select", className: "hg-card-title", style: { display: "block", marginBottom: 8 } }, "Select Exercise"),
+          h("select", {
+            id: "exercise-progress-select",
+            className: "hg-input",
+            value: currentExercise,
+            onChange: e => setSelectedExercise(e.target.value),
+            style: { cursor: "pointer", fontWeight: 600 }
+          },
+            exerciseNames.map(name =>
+              h("option", { key: name, value: name }, name)
+            )
+          )
+        ),
+
+        // KPI Metrics Grid
+        h("div", { className: "hg-stats", style: { gridTemplateColumns: "repeat(auto-fit, minmax(105px, 1fr))", marginBottom: 14 } },
+          h("div", { className: "hg-stat" },
+            h("span", null, "Top Set Weight"),
+            h("strong", null, topSetWeight > 0 ? `${topSetWeight} kg` : (allSets.length ? "Bodyweight" : "—"))
+          ),
+          h("div", { className: "hg-stat" },
+            h("span", null, "Estimated 1RM"),
+            h("strong", null, topEstimated1RM > 0 ? `${topEstimated1RM} kg` : "—")
+          ),
+          h("div", { className: "hg-stat" },
+            h("span", null, "Total Sessions"),
+            h("strong", null, `${totalSessions}`)
+          )
+        ),
+
+        // Progress Chart
+        h("div", { className: "hg-card", style: { marginBottom: 14 } },
+          h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline" } },
+            h("h2", { className: "hg-card-title" }, `${currentExercise} Progress`),
+            h("span", { style: { fontSize: 12, color: "var(--hg-text-3)", fontWeight: 500 } }, "Top Set Weight")
+          ),
+          chartData.length > 0 ? h(ExerciseProgressChart, { data: chartData, accent: meta.accent }) : h("div", { style: { padding: "24px 0", textAlign: "center", color: "var(--hg-text-3)", fontSize: 14 } }, "Not enough data for chart")
+        ),
+
+        // Chronological Session Log
+        h("div", { style: { marginTop: 18 } },
+          h("h2", { style: { fontSize: 17, fontWeight: 750, marginBottom: 10 } }, "Session History"),
+          sortedSessionsDesc.length === 0 ? h("div", { className: "hg-card", style: { color: "var(--hg-text-2)", textAlign: "center", padding: 20 } }, "No sessions logged for this exercise.") : sortedSessionsDesc.map(session =>
+            h("div", { className: "hg-card", key: session.date, style: { marginBottom: 10 } },
+              h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 } },
+                h("div", null,
+                  h("div", { style: { fontWeight: 700, fontSize: 15 } }, formatSessionDate(session.date)),
+                  h("div", { style: { fontSize: 12, color: "var(--hg-text-2)", marginTop: 2 } },
+                    session.topWeight > 0 ? `Top Set: ${session.topWeight} kg · ${session.sets.length} ${session.sets.length === 1 ? "set" : "sets"}` : `${session.sets.length} ${session.sets.length === 1 ? "set" : "sets"} (Bodyweight)`
+                  )
+                ),
+                h("button", {
+                  type: "button",
+                  className: "hg-link-button",
+                  style: { color: "var(--hg-danger)", padding: "4px 8px", fontSize: 13 },
+                  onClick: () => deleteSession(session)
+                }, "Delete")
+              ),
+              h("div", { style: { display: "grid", gap: 4, borderTop: "1px solid var(--hg-border)", paddingTop: 8 } },
+                renderSetsBreakdown(session.sets)
+              ),
+              (session.notes.length > 0 || session.rpe != null || session.feeling) && h("div", { style: { marginTop: 8, fontSize: 12, color: "var(--hg-text-2)", borderTop: "1px dashed var(--hg-border)", paddingTop: 6 } },
+                session.feeling ? `Feeling: ${FEELING_LABELS[session.feeling] || session.feeling} · ` : "",
+                session.rpe != null ? `RPE: ${session.rpe} · ` : "",
+                session.notes.filter(Boolean).join(" · ")
+              )
+            )
+          )
+        )
       )
     );
   }
@@ -7402,7 +7898,7 @@ const EXERCISE_SUGGESTIONS = [
     let content;
     if (view === "today") content = h(ErrorBoundary, { title: "Could not display Today view" }, h(TodayView, { personId, data, meta, active, onStart: startWorkout, updateData, showToast }));
     if (view === "history") content = h(ErrorBoundary, { title: "Could not display History view" }, h(HistoryView, { personId, data, updateData, showToast }));
-    if (view === "progress") content = h(ErrorBoundary, { title: "Could not display Progress view" }, h(ProgressView, { personId, data, meta, weekInfo, showToast }));
+    if (view === "progress") content = h(ErrorBoundary, { title: "Could not display Progress view" }, h(ProgressView, { personId, data, meta, weekInfo, updateData, showToast }));
     if (view === "metrics") content = h(ErrorBoundary, { title: "Could not display Metrics view" }, h(MetricsView, { meta, personId, data, updateData, showToast }));
     if (view === "plan") content = h(ErrorBoundary, { title: "Could not display Plan view" }, h(PlanView, { personId, data, store, meta, updateData, showToast }));
 
