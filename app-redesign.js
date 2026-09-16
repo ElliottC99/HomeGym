@@ -9,7 +9,7 @@
 
   const h = React.createElement;
   const { useState, useEffect, useCallback, useRef, useMemo } = React;
-  const APP_VERSION = "v2.5.1";
+  const APP_VERSION = "v2.5.2";
 
   class ErrorBoundary extends React.Component {
     constructor(props) {
@@ -152,6 +152,257 @@
   function storageSet(key, value) {
     safeStorageSet(key, value);
   }
+
+  // Safe parsing helper for direct metrics arrays from localStorage
+  function parseStorageArray(key) {
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed;
+      if (parsed && typeof parsed === "object") {
+        if (Array.isArray(parsed.entries)) return parsed.entries;
+        if (Array.isArray(parsed.logs)) return parsed.logs;
+        if (Array.isArray(parsed.items)) return parsed.items;
+        if (Array.isArray(parsed.data)) return parsed.data;
+        if (Array.isArray(parsed.weights)) return parsed.weights;
+        if (Array.isArray(parsed.bodyweight)) return parsed.bodyweight;
+        if (Array.isArray(parsed.sleep)) return parsed.sleep;
+        if (Array.isArray(parsed.readiness)) return parsed.readiness;
+        const vals = Object.values(parsed).filter(v => v && typeof v === "object");
+        if (vals.length > 0) return vals;
+      }
+    } catch (e) {
+      console.warn(`[Storage] Failed parsing array from "${key}":`, e?.message);
+    }
+    return [];
+  }
+
+  // Direct localStorage metrics binding for Elliott ('hg_weight_elliott', 'hg_sleep_elliott', 'hg_readiness_elliott') and general profiles
+  function parseDirectMetricsFromStorage(profileId) {
+    const pId = profileId || (window.__HG_CURRENT_PERSON__ || "elliott");
+
+    // 1. Direct Weight Binding: 'hg_weight_elliott', 'hg_weight_{pId}', 'hg_metrics_{pId}', 'hg_bodyweight_{pId}'
+    const weightKeys = [`hg_weight_${pId}`, `hg_metrics_${pId}`, `hg_bodyweight_${pId}`];
+    if (pId === "elliott") weightKeys.unshift("hg_weight_elliott");
+    const weightMap = new Map();
+    weightKeys.forEach(k => {
+      parseStorageArray(k).forEach(w => {
+        if (!w) return;
+        const date = String(w.date || "").trim();
+        const rawWeight = w.weight != null ? w.weight : (w.bodyweight != null ? w.bodyweight : w.val);
+        if (!date || rawWeight == null) return;
+        const num = Number(rawWeight);
+        if (Number.isNaN(num) || num <= 0) return;
+        const id = String(w.id || `bw_${date}`);
+        if (!weightMap.has(id)) {
+          weightMap.set(id, {
+            id,
+            date,
+            weight: Math.round(num * 10) / 10,
+            note: String(w.note || w.notes || "").trim(),
+            timestamp: w.timestamp || (date ? new Date(`${date}T12:00:00`).getTime() : Date.now())
+          });
+        }
+      });
+    });
+    const weights = Array.from(weightMap.values()).sort((a, b) => a.date.localeCompare(b.date));
+
+    // 2. Direct Sleep Binding: 'hg_sleep_elliott', 'hg_sleep_{pId}'
+    const sleepKeys = [`hg_sleep_${pId}`];
+    if (pId === "elliott") sleepKeys.unshift("hg_sleep_elliott");
+    const sleepMap = new Map();
+    sleepKeys.forEach(k => {
+      parseStorageArray(k).forEach(s => {
+        if (!s) return;
+        const date = String(s.date || "").trim();
+        if (!date) return;
+        const id = String(s.id || `slp_${date}`);
+        if (!sleepMap.has(id)) {
+          const hours = s.hours != null ? Number(s.hours) : (s.sleepHours != null ? Number(s.sleepHours) : (s.totalHours != null ? Math.floor(Number(s.totalHours)) : (s.sleep != null ? Math.floor(Number(s.sleep)) : 7)));
+          const mins = s.mins != null ? Number(s.mins) : (s.sleepMins != null ? Number(s.sleepMins) : (s.totalHours != null ? Math.round((Number(s.totalHours) % 1) * 60) : (s.sleep != null ? Math.round((Number(s.sleep) % 1) * 60) : 30)));
+          const totalHours = s.totalHours != null ? Number(s.totalHours) : (s.sleep != null ? Number(s.sleep) : Math.round((hours + mins / 60) * 100) / 100);
+          sleepMap.set(id, {
+            id,
+            date,
+            hours,
+            mins,
+            totalHours,
+            sleep: totalHours,
+            notes: String(s.notes || s.note || "").trim(),
+            timestamp: s.timestamp || (date ? new Date(`${date}T12:00:00`).getTime() : Date.now())
+          });
+        }
+      });
+    });
+    const sleep = Array.from(sleepMap.values()).sort((a, b) => a.date.localeCompare(b.date));
+
+    // 3. Direct Readiness Binding: 'hg_readiness_elliott', 'hg_readiness_{pId}'
+    const readinessKeys = [`hg_readiness_${pId}`];
+    if (pId === "elliott") readinessKeys.unshift("hg_readiness_elliott");
+    const readinessMap = new Map();
+    readinessKeys.forEach(k => {
+      parseStorageArray(k).forEach(r => {
+        if (!r) return;
+        const date = String(r.date || "").trim();
+        if (!date) return;
+        const id = String(r.id || `r_${date}`);
+        if (!readinessMap.has(id)) {
+          const sleepVal = r.sleep != null ? Number(r.sleep) : (r.totalHours != null ? Number(r.totalHours) : (r.sleepHours != null ? Number(r.sleepHours) + (Number(r.sleepMins) || 0) / 60 : 7.5));
+          const h = r.sleepHours != null ? Number(r.sleepHours) : Math.floor(sleepVal);
+          const m = r.sleepMins != null ? Number(r.sleepMins) : Math.round((sleepVal % 1) * 60);
+          readinessMap.set(id, {
+            id,
+            date,
+            sleep: sleepVal,
+            sleepHours: h,
+            sleepMins: m,
+            soreness: r.soreness != null ? Number(r.soreness) : 3,
+            motivation: r.motivation != null ? Number(r.motivation) : 3,
+            notes: String(r.notes || r.note || "").trim(),
+            timestamp: r.timestamp || (date ? new Date(`${date}T12:00:00`).getTime() : Date.now())
+          });
+        }
+      });
+    });
+    const readiness = Array.from(readinessMap.values()).sort((a, b) => a.date.localeCompare(b.date));
+
+    return { weights, sleep, readiness };
+  }
+  window.parseDirectMetricsFromStorage = parseDirectMetricsFromStorage;
+
+  // Batch auto-upload metrics to Firestore: gym_users/{profileId}/metrics_* and gym_users/{profileId}/metrics/{type}/entries
+  async function autoUploadMetricsToFirestore(profileId = "elliott", stateMetrics = null) {
+    try {
+      if (!navigator.onLine) {
+        return { status: "offline", uploaded: 0 };
+      }
+      const fs = (window.PlatePlanSyncEngine && window.PlatePlanSyncEngine.getFirestore)
+        ? window.PlatePlanSyncEngine.getFirestore()
+        : (window.firebase?.firestore?.() || null);
+      if (!fs) {
+        return { status: "no_firestore", uploaded: 0 };
+      }
+
+      const direct = parseDirectMetricsFromStorage(profileId);
+      const metrics = stateMetrics || (window.__HG_STORE__ && window.__HG_STORE__[profileId]?.metrics) || {
+        weight: direct.weights,
+        sleep: direct.sleep,
+        readiness: direct.readiness
+      };
+
+      const categories = [
+        {
+          key: "weight",
+          subCol: "metrics_weight",
+          legacyCols: ["weight", "bodyweight"],
+          items: Array.isArray(metrics.weight) && metrics.weight.length ? metrics.weight : direct.weights
+        },
+        {
+          key: "sleep",
+          subCol: "metrics_sleep",
+          legacyCols: ["sleep"],
+          items: Array.isArray(metrics.sleep) && metrics.sleep.length ? metrics.sleep : direct.sleep
+        },
+        {
+          key: "readiness",
+          subCol: "metrics_readiness",
+          legacyCols: ["readiness"],
+          items: Array.isArray(metrics.readiness) && metrics.readiness.length ? metrics.readiness : direct.readiness
+        }
+      ];
+
+      let totalUploaded = 0;
+      const serverTs = (window.firebase?.firestore?.FieldValue?.serverTimestamp
+        ? window.firebase.firestore.FieldValue.serverTimestamp()
+        : new Date().toISOString());
+
+      for (const cat of categories) {
+        if (!cat.items || cat.items.length === 0) continue;
+
+        const existingIds = new Set();
+        try {
+          const snap = await fs.collection("gym_users").doc(profileId).collection(cat.subCol).get();
+          snap.forEach(d => existingIds.add(d.id));
+        } catch (_) {}
+
+        try {
+          const snapEntries = await fs.collection("gym_users").doc(profileId).collection("metrics").doc(cat.key).collection("entries").get();
+          snapEntries.forEach(d => existingIds.add(d.id));
+        } catch (_) {}
+
+        const missing = cat.items.filter(item => {
+          const id = String(item.id || (cat.key === "weight" ? `bw_${item.date}` : cat.key === "sleep" ? `slp_${item.date}` : `r_${item.date}`));
+          return !existingIds.has(id);
+        });
+
+        if (missing.length === 0) continue;
+
+        console.info(`[HomeGym Cloud Auto-Upload] Batch uploading ${missing.length} un-synced ${cat.key} records for ${profileId}...`);
+
+        const operations = [];
+        for (const item of missing) {
+          const id = String(item.id || (cat.key === "weight" ? `bw_${item.date}` : cat.key === "sleep" ? `slp_${item.date}` : `r_${item.date}`));
+          const clean = {
+            ...item,
+            id,
+            timestamp: item.timestamp || Date.now(),
+            updatedAt: Date.now(),
+            serverTimestamp: serverTs
+          };
+
+          // 1. Primary path: gym_users/{profileId}/metrics_{key}/{id}
+          operations.push({
+            ref: fs.collection("gym_users").doc(profileId).collection(cat.subCol).doc(id),
+            data: clean
+          });
+
+          // 2. Sub-document path: gym_users/{profileId}/metrics/{cat.key}/entries/{id}
+          operations.push({
+            ref: fs.collection("gym_users").doc(profileId).collection("metrics").doc(cat.key).collection("entries").doc(id),
+            data: clean
+          });
+
+          // 3. Fallback compatibility paths: gym_users/{profileId}/{legacyCol}/{id}
+          for (const leg of cat.legacyCols) {
+            operations.push({
+              ref: fs.collection("gym_users").doc(profileId).collection(leg).doc(id),
+              data: clean
+            });
+          }
+        }
+
+        // Firestore batch commits in chunks of 250
+        const BATCH_LIMIT = 250;
+        for (let i = 0; i < operations.length; i += BATCH_LIMIT) {
+          const chunk = operations.slice(i, i + BATCH_LIMIT);
+          const batch = fs.batch();
+          chunk.forEach(op => batch.set(op.ref, op.data, { merge: true }));
+          await batch.commit();
+        }
+
+        totalUploaded += missing.length;
+      }
+
+      // Update consolidated health_metrics document
+      try {
+        const latestWeight = direct.weights[direct.weights.length - 1];
+        const latestSleep = direct.sleep[direct.sleep.length - 1];
+        const latestReadiness = direct.readiness[direct.readiness.length - 1];
+        const consolidated = { updatedAt: Date.now(), lastSync: new Date().toISOString() };
+        if (latestWeight) consolidated.weight = latestWeight;
+        if (latestSleep) consolidated.sleep = latestSleep;
+        if (latestReadiness) consolidated.readiness = latestReadiness;
+        await fs.collection("gym_users").doc(profileId).collection("health_metrics").doc("current").set(consolidated, { merge: true });
+      } catch (_) {}
+
+      return { status: "success", uploaded: totalUploaded };
+    } catch (err) {
+      console.warn(`[HomeGym Cloud Auto-Upload] Error for ${profileId}:`, err?.message);
+      return { status: "error", error: err?.message };
+    }
+  }
+  window.autoUploadMetricsToFirestore = autoUploadMetricsToFirestore;
 
   function activeKey(personId) {
     return `hg_active_workout_v1:${personId}`;
@@ -675,6 +926,11 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
             .collection("entries").doc(String(clean.id))
             .set(clean, { merge: true });
 
+          // 1b. Direct collection path: gym_users/{profileId}/metrics_{metricType}/{id}
+          await fs.collection("gym_users").doc(profileId)
+            .collection(`metrics_${type}`).doc(String(clean.id))
+            .set(clean, { merge: true }).catch(() => {});
+
           // 2. Dedicated Firestore document: gym_users/{profileId}/metrics/{metricType}
           await fs.collection("gym_users").doc(profileId)
             .collection("metrics").doc(type)
@@ -749,6 +1005,10 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
           await fs.collection("gym_users").doc(profileId)
             .collection("metrics").doc(type)
             .collection("entries").doc(strId)
+            .delete().catch(() => {});
+
+          await fs.collection("gym_users").doc(profileId)
+            .collection(`metrics_${type}`).doc(strId)
             .delete().catch(() => {});
 
           const colName = type === "weight" ? "bodyweight" : type;
@@ -896,7 +1156,7 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
         const existing = JSON.parse(localStorage.getItem(storedKey) || "[]");
         const filtered = Array.isArray(existing) ? existing.filter(p => p.id !== programId) : [];
         filtered.unshift(payload);
-        localStorage.setItem(storedKey, JSON.stringify(filtered));
+        safeStorageSet(storedKey, filtered);
       } catch (e) {}
 
       return payload;
@@ -953,7 +1213,7 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
         const storedKey = `hg_programs_${userId}`;
         const existing = JSON.parse(localStorage.getItem(storedKey) || "[]");
         const filtered = Array.isArray(existing) ? existing.filter(p => p.id !== programId) : [];
-        localStorage.setItem(storedKey, JSON.stringify(filtered));
+        safeStorageSet(storedKey, filtered);
       } catch (e) {}
     },
 
@@ -1402,6 +1662,42 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
             }, () => {});
           unsubscribers.push(unsubMetricsReadiness);
 
+          // 7f. Direct metrics_weight collection listener
+          const unsubDirectMWeight = fs.collection("gym_users").doc(profileId).collection("metrics_weight")
+            .onSnapshot(snap => {
+              const items = [];
+              snap.forEach(doc => items.push({ id: doc.id, ...doc.data() }));
+              if (items.length > 0) {
+                if (navigator.onLine) onStatusChange?.("synced");
+                onRemoteUpdate?.("weight", items);
+              }
+            }, () => {});
+          unsubscribers.push(unsubDirectMWeight);
+
+          // 7g. Direct metrics_sleep collection listener
+          const unsubDirectMSleep = fs.collection("gym_users").doc(profileId).collection("metrics_sleep")
+            .onSnapshot(snap => {
+              const items = [];
+              snap.forEach(doc => items.push({ id: doc.id, ...doc.data() }));
+              if (items.length > 0) {
+                if (navigator.onLine) onStatusChange?.("synced");
+                onRemoteUpdate?.("sleep", items);
+              }
+            }, () => {});
+          unsubscribers.push(unsubDirectMSleep);
+
+          // 7h. Direct metrics_readiness collection listener
+          const unsubDirectMReadiness = fs.collection("gym_users").doc(profileId).collection("metrics_readiness")
+            .onSnapshot(snap => {
+              const items = [];
+              snap.forEach(doc => items.push({ id: doc.id, ...doc.data() }));
+              if (items.length > 0) {
+                if (navigator.onLine) onStatusChange?.("synced");
+                onRemoteUpdate?.("readiness", items);
+              }
+            }, () => {});
+          unsubscribers.push(unsubDirectMReadiness);
+
           // 7e. Consolidated health_metrics document listener
           const unsubHealthDoc = fs.collection("gym_users").doc(profileId)
             .collection("health_metrics").doc("current")
@@ -1590,10 +1886,9 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
             timestamp: r.timestamp || new Date(`${r.date}T12:00:00`).getTime(),
           });
         }
-        try {
-          const localR = JSON.parse(localStorage.getItem(`hg_readiness_${profileId}`) || "[]");
-          if (Array.isArray(localR)) localR.forEach(addReadinessCandidate);
-        } catch (e) {}
+        // Direct legacy key recovery for readiness
+        parseStorageArray(`hg_readiness_${profileId}`).forEach(addReadinessCandidate);
+        if (profileId === "elliott") parseStorageArray("hg_readiness_elliott").forEach(addReadinessCandidate);
         if (legacyData?.readiness && Array.isArray(legacyData.readiness)) {
           legacyData.readiness.forEach(addReadinessCandidate);
         }
@@ -1617,14 +1912,10 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
             timestamp: w.timestamp || new Date(`${w.date}T12:00:00`).getTime(),
           });
         }
-        try {
-          const localW = JSON.parse(localStorage.getItem(`hg_metrics_${profileId}`) || "[]");
-          if (Array.isArray(localW)) localW.forEach(addWeightCandidate);
-        } catch (e) {}
-        try {
-          const localBw = JSON.parse(localStorage.getItem(`hg_weight_${profileId}`) || "[]");
-          if (Array.isArray(localBw)) localBw.forEach(addWeightCandidate);
-        } catch (e) {}
+        // Direct legacy key recovery for weights
+        parseStorageArray(`hg_weight_${profileId}`).forEach(addWeightCandidate);
+        parseStorageArray(`hg_metrics_${profileId}`).forEach(addWeightCandidate);
+        if (profileId === "elliott") parseStorageArray("hg_weight_elliott").forEach(addWeightCandidate);
         if (legacyData?.bodyweight && Array.isArray(legacyData.bodyweight)) {
           legacyData.bodyweight.forEach(addWeightCandidate);
         }
@@ -1654,10 +1945,9 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
             timestamp: s.timestamp || new Date(`${s.date}T12:00:00`).getTime(),
           });
         }
-        try {
-          const localS = JSON.parse(localStorage.getItem(`hg_sleep_${profileId}`) || "[]");
-          if (Array.isArray(localS)) localS.forEach(addSleepCandidate);
-        } catch (e) {}
+        // Direct legacy key recovery for sleep
+        parseStorageArray(`hg_sleep_${profileId}`).forEach(addSleepCandidate);
+        if (profileId === "elliott") parseStorageArray("hg_sleep_elliott").forEach(addSleepCandidate);
         if (legacyData?.sleepLogs && Array.isArray(legacyData.sleepLogs)) {
           legacyData.sleepLogs.forEach(addSleepCandidate);
         }
@@ -1704,30 +1994,9 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
           readiness: recoveredReadiness
         };
 
-        // Auto-clean legacy local data to prevent stale reads and free up browser quota
-        try {
-          localStorage.removeItem(`hg_sleep_${profileId}`);
-          localStorage.removeItem(`hg_readiness_${profileId}`);
-          localStorage.removeItem(`hg_weight_${profileId}`);
-          localStorage.removeItem(`hg_metrics_${profileId}`);
-
-          const rawData = localStorage.getItem(`data:${profileId}`);
-          if (rawData) {
-            const parsed = JSON.parse(rawData);
-            delete parsed.bodyweight;
-            delete parsed.readiness;
-            delete parsed.sleep;
-            delete parsed.bodyWeightLogs;
-            delete parsed.readinessLogs;
-            delete parsed.sleepLogs;
-            safeStorageSet(`data:${profileId}`, JSON.stringify(parsed));
-          }
-        } catch (cleanErr) {
-          console.warn(`[v2.5.1] LocalStorage cleanup notice for ${profileId}:`, cleanErr);
-        }
-
-        safeStorageSet(`hg_v251_metrics_migrated_${profileId}`, "true");
-        console.info(`[v2.5.1] Metrics migration confirmed for ${profileId}: ${recoveredWeights.length} weight, ${recoveredSleep.length} sleep, ${recoveredReadiness.length} readiness synced to Firestore & legacy keys cleaned.`);
+        // Retain local keys safely for direct offline persistence
+        safeStorageSet(`hg_v252_metrics_migrated_${profileId}`, "true");
+        console.info(`[v2.5.2] Metrics binding & sync confirmed for ${profileId}: ${recoveredWeights.length} weight, ${recoveredSleep.length} sleep, ${recoveredReadiness.length} readiness.`);
       } catch (err) {
         console.error(`[v2.5.1] Recovery notice for ${profileId}:`, err);
       }
@@ -1776,13 +2045,15 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
   }
 
   function hydrateHealthAndLogsForProfile(profileId, source) {
+    const direct = parseDirectMetricsFromStorage(profileId);
+
     // 1. Recover and deduplicate Body Weight Logs
     const weightCandidates = [];
     const weightSeen = new Set();
     function addWeightCandidate(w) {
       if (!w || !w.date || w.weight == null) return;
       const num = Number(w.weight);
-      if (Number.isNaN(num)) return;
+      if (Number.isNaN(num) || num <= 0) return;
       const id = String(w.id || `bw_${w.date}`);
       if (weightSeen.has(id)) return;
       weightSeen.add(id);
@@ -1790,10 +2061,13 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
         id,
         date: String(w.date),
         weight: Math.round(num * 10) / 10,
-        note: String(w.note || "").trim(),
+        note: String(w.note || w.notes || "").trim(),
         timestamp: w.timestamp || (w.date ? new Date(`${w.date}T12:00:00`).getTime() : Date.now())
       });
     }
+
+    // Direct binding from specific legacy keys
+    direct.weights.forEach(addWeightCandidate);
 
     if (Array.isArray(source?.bodyWeightLogs)) source.bodyWeightLogs.forEach(addWeightCandidate);
     if (Array.isArray(source?.weightLogs)) source.weightLogs.forEach(addWeightCandidate);
@@ -1804,6 +2078,8 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
     if (Array.isArray(localWeights)) localWeights.forEach(addWeightCandidate);
     const localBw = storageGet(`hg_bodyweight_${profileId}`, []);
     if (Array.isArray(localBw)) localBw.forEach(addWeightCandidate);
+    const localWeightDirect = storageGet(`hg_weight_${profileId}`, []);
+    if (Array.isArray(localWeightDirect)) localWeightDirect.forEach(addWeightCandidate);
 
     try {
       const rawLegacy = localStorage.getItem(`data:${profileId}`);
@@ -1841,6 +2117,9 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
       });
     }
 
+    // Direct binding from specific legacy keys
+    direct.readiness.forEach(addReadinessCandidate);
+
     if (Array.isArray(source?.readinessLogs)) source.readinessLogs.forEach(addReadinessCandidate);
     if (Array.isArray(source?.readiness)) source.readiness.forEach(addReadinessCandidate);
 
@@ -1877,6 +2156,9 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
       });
     }
 
+    // Direct binding from specific legacy keys
+    direct.sleep.forEach(addSleepCandidate);
+
     if (Array.isArray(source?.sleepLogs)) source.sleepLogs.forEach(addSleepCandidate);
     if (Array.isArray(source?.sleep)) source.sleep.forEach(addSleepCandidate);
 
@@ -1897,13 +2179,6 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
     });
 
     const sleepLogs = sleepCandidates.sort((a, b) => a.date.localeCompare(b.date));
-
-    // 4. Backward-compatible sync to standalone keys
-    syncLegacyStorage(profileId, {
-      bodyWeightLogs,
-      readinessLogs,
-      sleepLogs
-    });
 
     return { bodyWeightLogs, readinessLogs, sleepLogs };
   }
@@ -1958,6 +2233,11 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
         bodyWeightLogs: health.bodyWeightLogs,
         sleepLogs: health.sleepLogs,
         readinessLogs: health.readinessLogs,
+        metrics: {
+          weight: health.bodyWeightLogs,
+          sleep: health.sleepLogs,
+          readiness: health.readinessLogs
+        },
         equipment: source.equipment || null,
         updatedAt: typeof source.updatedAt === "number" ? source.updatedAt : 0,
       };
@@ -1969,7 +2249,12 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
       ...defaultData,
       bodyWeightLogs: health.bodyWeightLogs,
       sleepLogs: health.sleepLogs,
-      readinessLogs: health.readinessLogs
+      readinessLogs: health.readinessLogs,
+      metrics: {
+        weight: health.bodyWeightLogs,
+        sleep: health.sleepLogs,
+        readiness: health.readinessLogs
+      }
     };
   }
 
@@ -3585,22 +3870,33 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
     );
   }
 
-  // Unified metrics data getter reading from decoupled reactive Firestore state
+  // Unified metrics data getter reading directly from recovered LocalStorage keys and reactive Firestore state
   function getMetricsData(metricType, targetPersonId, profileData) {
-    const pId = targetPersonId || "elliott";
+    const pId = targetPersonId || (window.__HG_CURRENT_PERSON__ || "elliott");
     const profile = profileData || (window.__HG_STORE__ && window.__HG_STORE__[pId]) || loadDecoupledProfile(pId);
     const type = String(metricType || "").toLowerCase();
+    const direct = parseDirectMetricsFromStorage(pId);
+
     if (type === "weight" || type === "bodyweight" || type === "weights") {
-      const arr = Array.isArray(profile?.bodyWeightLogs) ? profile.bodyWeightLogs : [];
-      return [...arr].sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+      const map = new Map();
+      direct.weights.forEach(w => { if (w) map.set(String(w.id || `bw_${w.date}`), w); });
+      const fromProfile = Array.isArray(profile?.bodyWeightLogs) ? profile.bodyWeightLogs : (profile?.metrics?.weight || []);
+      fromProfile.forEach(w => { if (w) map.set(String(w.id || `bw_${w.date}`), w); });
+      return Array.from(map.values()).sort((a, b) => (a.date || "").localeCompare(b.date || ""));
     }
     if (type === "readiness") {
-      const arr = Array.isArray(profile?.readinessLogs) ? profile.readinessLogs : [];
-      return [...arr].sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+      const map = new Map();
+      direct.readiness.forEach(r => { if (r) map.set(String(r.id || `r_${r.date}`), r); });
+      const fromProfile = Array.isArray(profile?.readinessLogs) ? profile.readinessLogs : (profile?.metrics?.readiness || []);
+      fromProfile.forEach(r => { if (r) map.set(String(r.id || `r_${r.date}`), r); });
+      return Array.from(map.values()).sort((a, b) => (a.date || "").localeCompare(b.date || ""));
     }
     if (type === "sleep") {
-      const explicit = Array.isArray(profile?.sleepLogs) ? profile.sleepLogs : [];
-      const derived = (Array.isArray(profile?.readinessLogs) ? profile.readinessLogs : [])
+      const map = new Map();
+      direct.sleep.forEach(s => { if (s?.date) map.set(s.date, s); });
+      const explicit = Array.isArray(profile?.sleepLogs) ? profile.sleepLogs : (profile?.metrics?.sleep || []);
+      explicit.forEach(s => { if (s?.date) map.set(s.date, s); });
+      const derived = (Array.isArray(profile?.readinessLogs) ? profile.readinessLogs : direct.readiness)
         .filter(r => r && (r.sleep != null || r.sleepHours != null))
         .map(r => ({
           id: `slp_${r.date || r.id}`,
@@ -3611,14 +3907,127 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
           notes: r.notes || r.note || "",
           timestamp: r.timestamp || Date.now()
         }));
-      const map = new Map();
-      explicit.forEach(s => { if (s?.date) map.set(s.date, s); });
       derived.forEach(s => { if (s?.date && !map.has(s.date)) map.set(s.date, s); });
       return Array.from(map.values()).sort((a, b) => (a.date || "").localeCompare(b.date || ""));
     }
     return [];
   }
   window.getMetricsData = getMetricsData;
+
+  function renderWeightHistory(sortedWeights = [], deleteWeight = null, personId = "elliott") {
+    const weights = Array.isArray(sortedWeights) && sortedWeights.length > 0
+      ? sortedWeights
+      : getMetricsData("weight", personId);
+    return h("div", { className: "hg-card", style: { marginTop: 14 } },
+      h("div", { className: "hg-card-title", style: { display: "flex", justifyContent: "space-between", alignItems: "center" } },
+        h("span", null, "Weight History"),
+        h("span", { className: "hg-version-tag" }, `${weights.length} entries`)
+      ),
+      weights.length === 0 ? h("p", { className: "hg-card-copy" }, "No weigh-ins logged yet.") :
+      h("div", null,
+        [...weights].reverse().map(w =>
+          h("div", { key: w.id, className: "hg-history-row" },
+            h("div", null,
+              h("div", { className: "hg-history-result" }, `${w.weight} kg`),
+              h("div", { className: "hg-history-meta" }, w.date),
+              w.note && h("div", { className: "hg-history-meta", style: { fontStyle: "italic" } }, w.note)
+            ),
+            deleteWeight && h("button", {
+              type: "button",
+              className: "hg-link-button",
+              style: { color: "var(--hg-danger)" },
+              onClick: () => deleteWeight(w.id)
+            }, "Delete")
+          )
+        )
+      )
+    );
+  }
+  window.renderWeightHistory = renderWeightHistory;
+
+  function renderSleepHistory(sortedSleep = [], deleteSleep = null, personId = "elliott") {
+    const sleepLogs = Array.isArray(sortedSleep) && sortedSleep.length > 0
+      ? sortedSleep
+      : getMetricsData("sleep", personId);
+    return h("div", { className: "hg-card", style: { marginTop: 14 } },
+      h("div", { className: "hg-card-title", style: { display: "flex", justifyContent: "space-between", alignItems: "center" } },
+        h("span", null, "Sleep History"),
+        h("span", { className: "hg-version-tag" }, `${sleepLogs.length} entries`)
+      ),
+      sleepLogs.length === 0 ? h("p", { className: "hg-card-copy" }, "No sleep logs recorded yet.") :
+      h("div", null,
+        [...sleepLogs].reverse().map(s =>
+          h("div", { key: s.id, className: "hg-history-row" },
+            h("div", null,
+              h("div", { className: "hg-history-result" },
+                `${s.hours != null ? s.hours : Math.floor(s.totalHours || s.sleep || 0)}h ${s.mins != null ? s.mins : Math.round(((s.totalHours || s.sleep || 0) % 1) * 60)}m (${Number(s.totalHours || s.sleep || 0).toFixed(1)} hrs)`
+              ),
+              h("div", { className: "hg-history-meta" }, s.date),
+              s.notes && h("div", { className: "hg-history-meta", style: { fontStyle: "italic" } }, s.notes)
+            ),
+            deleteSleep && h("button", {
+              type: "button",
+              className: "hg-link-button",
+              style: { color: "var(--hg-danger)" },
+              onClick: () => deleteSleep(s.id)
+            }, "Delete")
+          )
+        )
+      )
+    );
+  }
+  window.renderSleepHistory = renderSleepHistory;
+
+  function renderReadinessHistory(sortedReadiness = [], deleteReadiness = null, personId = "elliott") {
+    const readiness = Array.isArray(sortedReadiness) && sortedReadiness.length > 0
+      ? sortedReadiness
+      : getMetricsData("readiness", personId);
+    return h("div", { className: "hg-card", style: { marginTop: 14 } },
+      h("div", { className: "hg-card-title", style: { display: "flex", justifyContent: "space-between", alignItems: "center" } },
+        h("span", null, "Readiness Log History"),
+        h("span", { className: "hg-version-tag" }, `${readiness.length} entries`)
+      ),
+      readiness.length === 0 ? h("p", { className: "hg-card-copy" }, "No readiness check-ins logged yet.") :
+      h("div", null,
+        [...readiness].reverse().map(r =>
+          h("div", { key: r.id, className: "hg-history-row" },
+            h("div", null,
+              h("div", { className: "hg-history-result" },
+                `${r.sleepHours ?? Math.floor(r.sleep)}h ${r.sleepMins ?? Math.round((r.sleep % 1) * 60)}m sleep`
+              ),
+              h("div", { className: "hg-history-meta" },
+                `${r.date} · Soreness: ${r.soreness}/5 (${SORENESS_MAP[r.soreness] || ""}) · Motivation: ${r.motivation}/5 (${MOTIVATION_MAP[r.motivation] || ""})`
+              ),
+              r.notes && h("div", { className: "hg-history-meta", style: { fontStyle: "italic" } }, r.notes)
+            ),
+            deleteReadiness && h("button", {
+              type: "button",
+              className: "hg-link-button",
+              style: { color: "var(--hg-danger)" },
+              onClick: () => deleteReadiness(r.id)
+            }, "Delete")
+          )
+        )
+      )
+    );
+  }
+  window.renderReadinessHistory = renderReadinessHistory;
+
+  function renderMetricsTab(props = {}) {
+    const pId = props.personId || (window.__HG_CURRENT_PERSON__ || "elliott");
+    const meta = props.meta || (I.ie && I.ie[pId]) || { label: pId, accent: "#2F54EB" };
+    const data = props.data || (window.__HG_STORE__ && window.__HG_STORE__[pId]) || loadDecoupledProfile(pId);
+    return h(MetricsView, {
+      meta,
+      personId: pId,
+      data,
+      updateData: props.updateData || ((pid, fn) => {
+        if (window.__HG_UPDATE_DATA__) window.__HG_UPDATE_DATA__(pid, fn);
+      }),
+      showToast: props.showToast || (msg => console.info(msg))
+    });
+  }
+  window.renderMetricsTab = renderMetricsTab;
 
   function MetricsView({ meta, personId, data, updateData, showToast }) {
     const [subTab, setSubTab] = useState("weight"); // "weight" | "sleep" | "readiness"
@@ -3820,27 +4229,7 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
           h(WeightTrendChart, { records: sortedWeights, accent: meta.accent })
         ),
 
-        h("div", { className: "hg-card", style: { marginTop: 14 } },
-          h("div", { className: "hg-card-title" }, "Weight History"),
-          sortedWeights.length === 0 ? h("p", { className: "hg-card-copy" }, "No weigh-ins logged yet.") :
-          h("div", null,
-            [...sortedWeights].reverse().map(w =>
-              h("div", { key: w.id, className: "hg-history-row" },
-                h("div", null,
-                  h("div", { className: "hg-history-result" }, `${w.weight} kg`),
-                  h("div", { className: "hg-history-meta" }, w.date),
-                  w.note && h("div", { className: "hg-history-meta", style: { fontStyle: "italic" } }, w.note)
-                ),
-                h("button", {
-                  type: "button",
-                  className: "hg-link-button",
-                  style: { color: "var(--hg-danger)" },
-                  onClick: () => deleteWeight(w.id)
-                }, "Delete")
-              )
-            )
-          )
-        )
+        renderWeightHistory(sortedWeights, deleteWeight, personId)
       ),
 
       subTab === "sleep" && h(React.Fragment, null,
@@ -3888,29 +4277,7 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
           h(SleepTrendChart, { records: sortedSleep, accent: meta.accent })
         ),
 
-        h("div", { className: "hg-card", style: { marginTop: 14 } },
-          h("div", { className: "hg-card-title" }, "Sleep History"),
-          sortedSleep.length === 0 ? h("p", { className: "hg-card-copy" }, "No sleep logs recorded yet.") :
-          h("div", null,
-            [...sortedSleep].reverse().map(s =>
-              h("div", { key: s.id, className: "hg-history-row" },
-                h("div", null,
-                  h("div", { className: "hg-history-result" },
-                    `${s.hours != null ? s.hours : Math.floor(s.totalHours || s.sleep || 0)}h ${s.mins != null ? s.mins : Math.round(((s.totalHours || s.sleep || 0) % 1) * 60)}m (${Number(s.totalHours || s.sleep || 0).toFixed(1)} hrs)`
-                  ),
-                  h("div", { className: "hg-history-meta" }, s.date),
-                  s.notes && h("div", { className: "hg-history-meta", style: { fontStyle: "italic" } }, s.notes)
-                ),
-                h("button", {
-                  type: "button",
-                  className: "hg-link-button",
-                  style: { color: "var(--hg-danger)" },
-                  onClick: () => deleteSleep(s.id)
-                }, "Delete")
-              )
-            )
-          )
-        )
+        renderSleepHistory(sortedSleep, deleteSleep, personId)
       ),
 
       subTab === "readiness" && h(React.Fragment, null,
@@ -3991,31 +4358,7 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
           h(ReadinessTrendsChart, { records: sortedReadiness, accent: meta.accent })
         ),
 
-        h("div", { className: "hg-card", style: { marginTop: 14 } },
-          h("div", { className: "hg-card-title" }, "Readiness Log History"),
-          sortedReadiness.length === 0 ? h("p", { className: "hg-card-copy" }, "No readiness check-ins logged yet.") :
-          h("div", null,
-            [...sortedReadiness].reverse().map(r =>
-              h("div", { key: r.id, className: "hg-history-row" },
-                h("div", null,
-                  h("div", { className: "hg-history-result" },
-                    `${r.sleepHours ?? Math.floor(r.sleep)}h ${r.sleepMins ?? Math.round((r.sleep % 1) * 60)}m sleep`
-                  ),
-                  h("div", { className: "hg-history-meta" },
-                    `${r.date} · Soreness: ${r.soreness}/5 (${SORENESS_MAP[r.soreness] || ""}) · Motivation: ${r.motivation}/5 (${MOTIVATION_MAP[r.motivation] || ""})`
-                  ),
-                  r.notes && h("div", { className: "hg-history-meta", style: { fontStyle: "italic" } }, r.notes)
-                ),
-                h("button", {
-                  type: "button",
-                  className: "hg-link-button",
-                  style: { color: "var(--hg-danger)" },
-                  onClick: () => deleteReadiness(r.id)
-                }, "Delete")
-              )
-            )
-          )
-        )
+        renderReadinessHistory(sortedReadiness, deleteReadiness, personId)
       )
     );
   }
@@ -5604,15 +5947,13 @@ const EXERCISE_SUGGESTIONS = [
           return updatedSession;
         });
         const next = { ...cur, sessions: nextSessions, updatedAt: Date.now() };
-        try {
-          localStorage.setItem(`plateplan_v1:${personId}`, JSON.stringify({
-            sessions: nextSessions,
-            startDate: cur.startDate,
-            goals: cur.goals,
-            updatedAt: Date.now()
-          }));
-          localStorage.setItem(`data:${personId}`, JSON.stringify(next));
-        } catch (e) {}
+        safeStorageSet(`plateplan_v1:${personId}`, JSON.stringify({
+          sessions: nextSessions,
+          startDate: cur.startDate,
+          goals: cur.goals,
+          updatedAt: Date.now()
+        }));
+        safeStorageSet(`data:${personId}`, JSON.stringify(next));
         GymCloudEngine.savePlatePlanState(personId, nextSessions, cur.startDate, cur.goals);
         return next;
       });
@@ -5762,15 +6103,13 @@ const EXERCISE_SUGGESTIONS = [
           programName: "Default 4-Day Plan",
           updatedAt: Date.now()
         };
-        try {
-          localStorage.setItem(`plateplan_v1:${personId}`, JSON.stringify({
-            sessions: defaultProg,
-            startDate: cur.startDate,
-            goals: cur.goals,
-            updatedAt: Date.now()
-          }));
-          localStorage.setItem(`data:${personId}`, JSON.stringify(next));
-        } catch (e) {}
+        safeStorageSet(`plateplan_v1:${personId}`, JSON.stringify({
+          sessions: defaultProg,
+          startDate: cur.startDate,
+          goals: cur.goals,
+          updatedAt: Date.now()
+        }));
+        safeStorageSet(`data:${personId}`, JSON.stringify(next));
         GymCloudEngine.savePlatePlanState(personId, defaultProg, cur.startDate, cur.goals);
         return next;
       });
@@ -6343,7 +6682,7 @@ const EXERCISE_SUGGESTIONS = [
         h("div", { className: "hg-setting-section" },
           h("h3", null, "Cloud-First Architecture & Automated Sync"),
           h("p", null,
-            `${syncStatus === "synced" ? "Cloud Synced." : syncStatus === "connecting" ? "Connecting to Firestore…" : syncStatus === "offline" ? "Offline mode active." : "Local cache."} PlatePlan v2.5.0 two-way cloud sync engine automatically replicates exercise history and health metrics (bodyweight, sleep, readiness) to Firestore.`
+            `${syncStatus === "synced" ? "Cloud Synced." : syncStatus === "connecting" ? "Connecting to Firestore…" : syncStatus === "offline" ? "Offline mode active." : "Local cache."} HomeGym ${APP_VERSION} two-way cloud sync engine automatically replicates exercise history and health metrics (bodyweight, sleep, readiness) to Firestore.`
           ),
           h("div", { style: { marginTop: 10, padding: "12px 14px", background: "rgba(255,255,255,0.03)", border: "1px solid var(--border)", borderRadius: 8, fontSize: 13 } },
             h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 } },
@@ -6477,7 +6816,7 @@ const EXERCISE_SUGGESTIONS = [
           statusText
         ),
         h("div", { className: "hg-brand-name" },
-          "PlatePlan",
+          "HomeGym",
           h("span", { className: "hg-version-tag" }, APP_VERSION)
         )
       ),

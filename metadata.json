@@ -1,6 +1,6 @@
 {
   "name": "Home Gym Log",
-  "description": "Strength training tracker and PlatePlan v2.5.1 with real-time Firestore health metrics syncing, offline queue deadlock protection, and Apple HIG layout",
+  "description": "Strength training tracker HomeGym v2.5.2 with direct localStorage metrics binding, batch Firestore auto-upload, and safe storage quota handling",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
