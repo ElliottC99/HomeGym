@@ -1215,3 +1215,92 @@ html[data-theme="light"] .hg-legacy-wrap [style*="color: rgb(91, 98, 112)"] { co
   margin: 0 auto 16px;
 }
 
+/* --- Tailwind Utility Classes & Scale Button Accessibility / High-Contrast --- */
+.bg-blue-600 {
+  background-color: #2563eb !important;
+}
+
+.text-white {
+  color: #ffffff !important;
+}
+
+.font-semibold {
+  font-weight: 600 !important;
+}
+
+.shadow-sm {
+  box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05) !important;
+}
+
+.bg-gray-100 {
+  background-color: #f3f4f6 !important;
+}
+
+html[data-theme="dark"] .bg-gray-100 {
+  background-color: #262a30 !important;
+}
+
+.text-gray-700 {
+  color: #374151 !important;
+}
+
+html[data-theme="dark"] .text-gray-700 {
+  color: #d1d5db !important;
+}
+
+.hover\:bg-gray-200:hover {
+  background-color: #e5e7eb !important;
+}
+
+html[data-theme="dark"] .hover\:bg-gray-200:hover {
+  background-color: #32373f !important;
+}
+
+.focus\:ring-2:focus-visible {
+  outline: none !important;
+  box-shadow: 0 0 0 2px #3b82f6 !important;
+}
+
+.focus\:ring-blue-500:focus-visible {
+  box-shadow: 0 0 0 2px #3b82f6 !important;
+}
+
+.focus\:outline-none:focus {
+  outline: none !important;
+}
+
+.hg-scale-btn {
+  flex: 1;
+  min-height: 44px;
+  padding: 10px 0;
+  font-size: 15px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+  cursor: pointer;
+  user-select: none;
+}
+
+.hg-scale-btn-active {
+  background-color: #2563eb !important;
+  color: #ffffff !important;
+  border-color: #1d4ed8 !important;
+  font-weight: 600 !important;
+  box-shadow: 0 1px 3px rgba(37, 99, 235, 0.3) !important;
+}
+
+.hg-scale-btn-inactive {
+  background-color: #f3f4f6;
+  color: #374151;
+  border-color: #e5e7eb;
+}
+
+html[data-theme="dark"] .hg-scale-btn-inactive {
+  background-color: #24262a;
+  color: #e2e8f0;
+  border-color: #35383e;
+}
+

@@ -1,6 +1,6 @@
 {
   "name": "Home Gym Log",
-  "description": "Strength training tracker HomeGym v2.5.2 with direct localStorage metrics binding, batch Firestore auto-upload, and safe storage quota handling",
+  "description": "Strength training tracker HomeGym v2.5.3 with strict cloud-first architecture, type safeguards against workout set contamination, consolidated readiness check-in, and accessible metrics",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
