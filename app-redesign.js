@@ -7,51 +7,28 @@
     return;
   }
 
+  // Completely eliminate deload mechanics globally
+  if (I) {
+    I.HGgetDeload = function () { return null; };
+    I.HGsetDeload = function () {};
+    if (typeof I.Re === "function") {
+      const origRe = I.Re;
+      I.Re = function (d) {
+        const res = origRe(d);
+        return { ...res, isDeload: false };
+      };
+    }
+  }
+
   const h = React.createElement;
   const { useState, useEffect, useCallback, useRef, useMemo } = React;
-  const APP_VERSION = "v2.5.6";
-  const STORAGE_VERSION = "2.5.6";
+  const APP_VERSION = "v2.5.7";
+  const STORAGE_VERSION = "2.5.7";
 
-  // --- v2.5.3 Cloud-First Architecture & Automated Storage Migration ---
+  // --- v2.5.7 LocalStorage Preservation & Version Registration ---
   function runStorageMigration() {
     try {
-      const currentVer = localStorage.getItem("app_version");
-      if (currentVer !== STORAGE_VERSION) {
-        console.info(`[Storage Migration] Version mismatch (found: ${currentVer}, target: ${STORAGE_VERSION}). Purging legacy un-namespaced state keys...`);
-        const legacyKeysToPurge = [
-          "data:elliott", "data:chloe",
-          "hg_weight_elliott", "hg_weight_chloe",
-          "hg_sleep_elliott", "hg_sleep_chloe",
-          "hg_readiness_elliott", "hg_readiness_chloe",
-          "hg_metrics_elliott", "hg_metrics_chloe",
-          "hg_bodyweight_elliott", "hg_bodyweight_chloe",
-          "hg_bodyweight_logs_elliott", "hg_bodyweight_logs_chloe",
-          "hg_v251_metrics_migrated_elliott", "hg_v251_metrics_migrated_chloe",
-          "hg_v252_metrics_migrated_elliott", "hg_v252_metrics_migrated_chloe"
-        ];
-        legacyKeysToPurge.forEach(k => {
-          try { localStorage.removeItem(k); } catch (_) {}
-        });
-
-        // Sweep any un-namespaced legacy keys
-        try {
-          const keys = Object.keys(localStorage);
-          keys.forEach(k => {
-            if (
-              k.startsWith("data:") ||
-              k.startsWith("hg_weight_") ||
-              k.startsWith("hg_sleep_") ||
-              k.startsWith("hg_readiness_") ||
-              k.startsWith("hg_metrics_")
-            ) {
-              localStorage.removeItem(k);
-            }
-          });
-        } catch (_) {}
-
-        localStorage.setItem("app_version", STORAGE_VERSION);
-        console.info(`[Storage Migration] Purged legacy cache and updated app_version to ${STORAGE_VERSION}`);
-      }
+      localStorage.setItem("app_version", STORAGE_VERSION);
     } catch (e) {
       console.warn("[Storage Migration] Warning:", e);
     }
@@ -280,10 +257,33 @@
     } catch (_) {}
   }
 
+  function notifyStorageSubscribers(key) {
+    try {
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("localstorage_sync", { detail: { key } }));
+      }
+    } catch (_) {}
+  }
+
+  // Hook localStorage.setItem to dispatch localstorage_sync whenever data or metrics change
+  try {
+    if (typeof window !== "undefined" && window.localStorage && !window.__hg_storage_hooked) {
+      window.__hg_storage_hooked = true;
+      const origSetItem = Storage.prototype.setItem;
+      Storage.prototype.setItem = function (k, v) {
+        origSetItem.apply(this, arguments);
+        if (typeof k === "string" && (k.startsWith("data:") || k.includes("plateplan") || k.includes("hg_"))) {
+          notifyStorageSubscribers(k);
+        }
+      };
+    }
+  } catch (_) {}
+
   function safeStorageSet(key, value) {
     try {
       const valStr = typeof value === "string" ? value : JSON.stringify(value);
       localStorage.setItem(key, valStr);
+      notifyStorageSubscribers(key);
       return true;
     } catch (err) {
       console.warn(`[Storage] Storage write failed or QuotaExceeded for "${key}". Purging orphan caches...`);
@@ -291,6 +291,7 @@
       try {
         const valStr = typeof value === "string" ? value : JSON.stringify(value);
         localStorage.setItem(key, valStr);
+        notifyStorageSubscribers(key);
         return true;
       } catch (retryErr) {
         console.error(`[Storage] Failed writing "${key}":`, retryErr?.message);
@@ -649,12 +650,16 @@
     const map = new Map();
     (baseLogs || []).forEach(l => {
       if (!l) return;
-      const key = l.id ? String(l.id) : `${l.date}_${l.exerciseId || l.name}_${l.weight}_${l.sets}_${l.reps}`;
+      const exKey = formatExerciseDisplayName(l.exerciseId || l.exerciseName || l.name || "");
+      const wKey = (l.weight != null && Number(l.weight) > 0) ? Number(l.weight) : "bw";
+      const key = l.id ? String(l.id) : `${l.date}_${exKey}_${wKey}_${l.sets}_${l.reps}`;
       map.set(String(key), l);
     });
     (incomingLogs || []).forEach(l => {
       if (!l) return;
-      const key = l.id ? String(l.id) : `${l.date}_${l.exerciseId || l.name}_${l.weight}_${l.sets}_${l.reps}`;
+      const exKey = formatExerciseDisplayName(l.exerciseId || l.exerciseName || l.name || "");
+      const wKey = (l.weight != null && Number(l.weight) > 0) ? Number(l.weight) : "bw";
+      const key = l.id ? String(l.id) : `${l.date}_${exKey}_${wKey}_${l.sets}_${l.reps}`;
       const existing = map.get(String(key));
       map.set(String(key), { ...(existing || {}), ...l });
     });
@@ -2422,9 +2427,12 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
     };
 
     try {
-      // 1. Check plateplan_v1 (cloud-first primary local cache)
-      const ppv1 = getPlatePlanV1Local();
-      const userPpv1 = ppv1?.users?.[profileId] || ppv1?.[profileId] || (ppv1?.userId === profileId ? ppv1 : null);
+      // 1. LocalStorage Priority: Read data:${profileId} FIRST (e.g. data:elliott)
+      let parsedData = null;
+      try {
+        const raw = localStorage.getItem(`data:${profileId}`);
+        if (raw) parsedData = JSON.parse(raw);
+      } catch (e) {}
 
       // 2. Check per-user key plateplan_v1_${profileId}
       let perUserPpv1 = null;
@@ -2433,24 +2441,42 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
         if (rawPer) perUserPpv1 = JSON.parse(rawPer);
       } catch (e) {}
 
-      // 3. Check legacy data:${profileId}
-      let parsedData = null;
-      try {
-        const raw = localStorage.getItem(`data:${profileId}`);
-        if (raw) parsedData = JSON.parse(raw);
-      } catch (e) {}
+      // 3. Check plateplan_v1 (cloud-first primary local cache)
+      const ppv1 = getPlatePlanV1Local();
+      const userPpv1 = ppv1?.users?.[profileId] || ppv1?.[profileId] || (ppv1?.userId === profileId ? ppv1 : null);
 
-      const source = userPpv1 || perUserPpv1 || parsedData || {};
-      const logs = Array.isArray(source.logs) ? source.logs.map(i => ({ ...i, exerciseId: i.exerciseId || i.liftId })) : [];
+      // LocalStorage Priority: data:${profileId} takes precedence if it contains logs or data
+      const source = parsedData || perUserPpv1 || userPpv1 || {};
+
+      // Ingest logs across local stores, with data:${profileId} as primary
+      const rawParsedLogs = Array.isArray(parsedData?.logs) ? parsedData.logs : [];
+      const rawPerLogs = Array.isArray(perUserPpv1?.logs) ? perUserPpv1.logs : [];
+      const rawUserPpv1Logs = Array.isArray(userPpv1?.logs) ? userPpv1.logs : [];
+
+      let mergedLogs = rawParsedLogs;
+      if (rawPerLogs.length > 0) {
+        mergedLogs = mergeDeduplicatedLogs(mergedLogs, rawPerLogs);
+      }
+      if (rawUserPpv1Logs.length > 0) {
+        mergedLogs = mergeDeduplicatedLogs(mergedLogs, rawUserPpv1Logs);
+      }
+
+      const logs = mergedLogs.map(i => ({ ...i, exerciseId: i.exerciseId || i.liftId }));
 
       // Hydrate health tracking and standalone keys into central state
       const health = hydrateHealthAndLogsForProfile(profileId, source);
 
+      const resolvedSessions = (Array.isArray(source.sessions) && source.sessions.length)
+        ? source.sessions
+        : ((Array.isArray(userPpv1?.sessions) && userPpv1.sessions.length)
+          ? userPpv1.sessions
+          : defaultData.sessions);
+
       return {
-        startDate: source.startDate || defaultData.startDate,
+        startDate: source.startDate || perUserPpv1?.startDate || userPpv1?.startDate || defaultData.startDate,
         goals: source.goals || defaultData.goals,
         resumeNote: source.resumeNote || defaultData.resumeNote,
-        sessions: Array.isArray(source.sessions) && source.sessions.length ? source.sessions : defaultData.sessions,
+        sessions: resolvedSessions,
         weekOverrides: source.weekOverrides && typeof source.weekOverrides === "object" ? source.weekOverrides : {},
         logs: logs,
         bodyWeightLogs: health.bodyWeightLogs,
@@ -2461,7 +2487,7 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
           sleep: health.sleepLogs,
           readiness: health.readinessLogs
         },
-        equipment: source.equipment || null,
+        equipment: source.equipment || userPpv1?.equipment || null,
         updatedAt: typeof source.updatedAt === "number" ? source.updatedAt : 0,
       };
     } catch (e) {
@@ -2590,19 +2616,12 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
     const previous = logs[0] || null;
     const prev2 = logs[1] || null;
 
-    const isDeload = weekInfo?.isDeload;
-
     let recWeight = null;
     let reason = "";
     let overloadType = "maintain";
     let weightDiff = 0;
 
-    if (isDeload) {
-      const baseVal = previous?.weight ?? exercise.startValue ?? 20;
-      recWeight = Math.round((baseVal * 0.8) * 2) / 2;
-      reason = "Deload week: Lightened load (80%) for active recovery";
-      overloadType = "deload";
-    } else if (previous) {
+    if (previous) {
       const prevW = Number(previous.weight);
       const feel = previous.feeling || rpeToFeeling(previous.rpe);
       const feel2 = prev2 ? (prev2.feeling || rpeToFeeling(prev2.rpe)) : null;
@@ -3291,9 +3310,7 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
 
   function GuidedWorkout({ personId, data, meta, active, setActive, updateData, showToast, onClose, onHistory }) {
     const session = data.sessions.find(item => item.id === active.sessionId);
-    const weekInfo = I.HGgetDeload(personId) === I.j(I.W())
-      ? { ...I.Re(data.startDate), isDeload: true }
-      : I.Re(data.startDate);
+    const weekInfo = I.Re ? I.Re(data.startDate) : {};
     const exercises = flattenExercises(session);
     const steps = session?.type === "run"
       ? [{ type: "run", key: "run" }, { type: "complete", key: "complete" }]
@@ -3697,18 +3714,37 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
     if (log.type === "run") return `${log.distance || 0}km · ${log.duration || 0} min`;
     const found = findExercise(data, log.sessionId, log.exerciseId);
     const exercise = found?.exercise;
-    const w = Number(log.weight);
-    const isWeighted = !Number.isNaN(w) && w > 0;
-    const setsVal = Array.isArray(log.sets) ? log.sets.length : (Number(log.sets) || 1);
-    const repsVal = log.reps != null ? Number(log.reps) : (Array.isArray(log.sets) && log.sets[0]?.reps ? Number(log.sets[0].reps) : 0);
-    const totalReps = Array.isArray(log.sets)
-      ? log.sets.reduce((sum, s) => sum + (Number(s.reps) || 0), 0)
-      : (setsVal * (repsVal || 0));
+    const unit = exercise?.unit || log.unit || "kg";
 
-    if (!isWeighted) {
-      return `${setsVal} sets × ${repsVal || 0} reps${totalReps > 0 ? ` (Total: ${totalReps} reps)` : ""}${exercise?.metric === "seconds" ? " sec" : ""}`;
+    let sets = 1;
+    let reps = 0;
+    let weight = null;
+
+    if (Array.isArray(log.sets) && log.sets.length > 0) {
+      sets = log.sets.length;
+      reps = Number(log.sets[0]?.reps) || 0;
+      const firstW = log.sets[0]?.weight;
+      if (firstW !== undefined && firstW !== null && firstW !== "") {
+        const num = Number(firstW);
+        if (!Number.isNaN(num) && num > 0) weight = num;
+        else if (num === 0) weight = 0;
+      }
+    } else {
+      sets = Math.max(1, Number(log.sets) || 1);
+      reps = Number(log.reps) || 0;
     }
-    return `${setsVal} sets × ${repsVal || 0} reps @ ${w} kg${exercise?.metric === "seconds" ? " sec" : ""}`;
+
+    // Top-level weight attribute in flat schema { exerciseName, weight, sets, reps } takes precedence
+    if (log.weight !== undefined && log.weight !== null && log.weight !== "") {
+      const num = Number(log.weight);
+      if (!Number.isNaN(num) && num > 0) weight = num;
+      else if (num === 0) weight = 0;
+    }
+
+    if (weight != null && weight > 0) {
+      return `${sets} sets × ${reps} reps @ ${weight} ${unit}`;
+    }
+    return `${sets} sets × ${reps} reps (Bodyweight)`;
   }
 
   function HistoryEditor({ personId, data, initialLog, updateData, showToast, onClose }) {
@@ -4767,24 +4803,25 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
     const allIdentical = sets.length > 1 && sets.every(s => s.weight === first.weight && s.reps === first.reps);
 
     if (allIdentical) {
-      const e1rm = isBodyweight ? 0 : calculateBrzycki1RM(first.weight, first.reps);
-      const totalReps = sets.length * first.reps;
+      const isWeighted = !isBodyweight && first.weight != null && Number(first.weight) > 0;
+      const e1rm = isWeighted ? calculateBrzycki1RM(first.weight, first.reps) : 0;
       return h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 13, fontWeight: 600, padding: "2px 0" } },
         h("span", null,
-          isBodyweight
-            ? `${sets.length} sets × ${first.reps} reps (Total: ${totalReps} reps)`
-            : `${sets.length} sets × ${first.reps} reps @ ${first.weight} kg`
+          isWeighted
+            ? `${sets.length} sets × ${first.reps} reps @ ${first.weight} kg`
+            : `${sets.length} sets × ${first.reps} reps (Bodyweight)`
         ),
         e1rm > 0 && h("span", { style: { fontSize: 11, color: "var(--hg-text-3)", fontWeight: 500 } }, `e1RM: ${e1rm} kg`)
       );
     }
 
     return sets.map((s, idx) => {
-      const e1rm = s.weight > 0 ? calculateBrzycki1RM(s.weight, s.reps) : 0;
+      const isWeighted = !isBodyweight && s.weight != null && Number(s.weight) > 0;
+      const e1rm = isWeighted ? calculateBrzycki1RM(s.weight, s.reps) : 0;
       return h("div", { key: idx, style: { display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 13, padding: "3px 0" } },
         h("span", null,
           h("strong", { style: { color: "var(--hg-text-2)", marginRight: 8, fontSize: 12 } }, `Set ${idx + 1}`),
-          s.weight > 0 ? `${s.reps} reps @ ${s.weight} kg` : `${s.reps} reps`,
+          isWeighted ? `${s.reps} reps @ ${s.weight} kg` : `${s.reps} reps (Bodyweight)`,
           s.rpe != null ? ` @ RPE ${s.rpe}` : ""
         ),
         e1rm > 0 && h("span", { style: { fontSize: 11, color: "var(--hg-text-3)" } }, `e1RM: ${e1rm} kg`)
@@ -7067,18 +7104,7 @@ const EXERCISE_SUGGESTIONS = [
                 setOverflowMenuOpen(false);
                 setEquipmentOpen(!equipmentOpen);
               }
-            }, "🛠 Equipment & plates"),
-            h("button", {
-              type: "button",
-              className: "hg-menu-item",
-              onClick: () => {
-                setOverflowMenuOpen(false);
-                const monday = I.j ? I.j(I.W()) : "this_week";
-                const active = I.HGgetDeload ? I.HGgetDeload(personId) === monday : false;
-                if (I.HGsetDeload) I.HGsetDeload(personId, active ? null : monday);
-                showToast(active ? "Deload cleared" : "Deload set for this week");
-              }
-            }, "⏸ Toggle weekly deload")
+            }, "🛠 Equipment & plates")
           )
         )
       ),
@@ -7726,6 +7752,26 @@ const EXERCISE_SUGGESTIONS = [
       toastTimer.current = setTimeout(() => setToast(""), 2800);
     }, []);
 
+    // Reactive Storage Subscription: propagate any localStorage updates into in-memory React state
+    useEffect(() => {
+      const handleStorageUpdate = (e) => {
+        const k = e?.detail?.key || e?.key;
+        if (!k || k.includes("elliott") || k.includes("plateplan") || k.includes("hg_")) {
+          setStore(cur => ({ ...cur, elliott: loadDecoupledProfile("elliott") }));
+        }
+        if (!k || k.includes("chloe") || k.includes("plateplan") || k.includes("hg_")) {
+          setStore(cur => ({ ...cur, chloe: loadDecoupledProfile("chloe") }));
+        }
+      };
+
+      window.addEventListener("storage", handleStorageUpdate);
+      window.addEventListener("localstorage_sync", handleStorageUpdate);
+      return () => {
+        window.removeEventListener("storage", handleStorageUpdate);
+        window.removeEventListener("localstorage_sync", handleStorageUpdate);
+      };
+    }, []);
+
     // Automated Two-Way Sync on boot & person switch
     useEffect(() => {
       let active = true;
@@ -7988,6 +8034,12 @@ const EXERCISE_SUGGESTIONS = [
         localStorage.setItem("currentProfile", id);
         localStorage.setItem("hg_selected_person", id);
       } catch {}
+      // LocalStorage Priority: immediately hydrate in-memory React state directly from local dataset on switch
+      const localData = loadDecoupledProfile(id);
+      setStore(current => ({
+        ...current,
+        [id]: localData
+      }));
       setPersonIdState(id);
       setView("today");
     }
@@ -8037,9 +8089,7 @@ const EXERCISE_SUGGESTIONS = [
     const data = (rawData && Array.isArray(rawData.sessions)) ? rawData : loadDecoupledProfile(personId);
     if (!data) return null;
     const meta = (I.ie && I.ie[personId]) ? I.ie[personId] : { name: personId, accent: "#2563EB" };
-    const weekInfo = (I.HGgetDeload && I.HGgetDeload(personId) === I.j(I.W()))
-      ? { ...(I.Re ? I.Re(data.startDate) : {}), isDeload: true }
-      : (I.Re ? I.Re(data.startDate) : {});
+    const weekInfo = I.Re ? I.Re(data.startDate) : {};
 
     if (active) {
       return h("div", { className: "hg-app", style: { "--person-accent": meta.accent } },
