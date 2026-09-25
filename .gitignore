@@ -1,0 +1,13 @@
+# Logs and environment files
+*.log
+.env
+.env.*
+
+# Compiled bundles and artifacts
+app.bundle.js
+
+# Dependencies
+node_modules/
+dist/
+build/
+.cache/
