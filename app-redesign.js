@@ -22,7 +22,7 @@
 
   const h = React.createElement;
   const { useState, useEffect, useCallback, useRef, useMemo } = React;
-  const APP_VERSION = "v2.5.9";
+  const APP_VERSION = "v2.5.10";
   const STORAGE_VERSION = "2.5.7";
 
   // --- v2.5.7 LocalStorage Preservation & Version Registration ---
@@ -8125,7 +8125,7 @@ const EXERCISE_SUGGESTIONS = [
 
     return h("div", { className: "hg-app", style: { "--person-accent": meta.accent } },
       h("div", { className: "hg-app-shell" },
-        h(Header, { personId, setPersonId, syncStatus, queueCount, onSettings: () => setSettingsOpen(true) }),
+        h(Header, { personId, setPersonId, syncStatus: pin ? syncStatus : "local-only", queueCount, onSettings: () => setSettingsOpen(true) }),
         h("div", { className: "hg-layout" },
           h(Navigation, { view, setView, mobile: false }),
           h("main", { className: "hg-main" }, content)
@@ -8133,7 +8133,7 @@ const EXERCISE_SUGGESTIONS = [
         h(Navigation, { view, setView, mobile: true })
       ),
       settingsOpen && h(SettingsModal, {
-        personId, store, pin, syncStatus, queueCount, updateData,
+        personId, store, pin, syncStatus: pin ? syncStatus : "local-only", queueCount, updateData,
         onSaveKey: saveHouseholdKey,
         onClose: () => setSettingsOpen(false),
         showToast,
