@@ -66,17 +66,6 @@ self.addEventListener("activate", event => {
   );
 });
 
-self.addEventListener("message", event => {
-  if (event.data?.type === "SKIP_WAITING") {
-    event.waitUntil(self.skipWaiting());
-  }
-  if (event.data?.type === "GET_VERSION") {
-    const message = { type: "HOMEGYM_VERSION", cacheName: CACHE_NAME };
-    if (event.ports?.[0]) event.ports[0].postMessage(message);
-    else event.source?.postMessage(message);
-  }
-});
-
 self.addEventListener("push", event => {
   let data = {};
   try {

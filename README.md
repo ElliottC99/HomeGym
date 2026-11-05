@@ -8,7 +8,7 @@ This folder has everything needed for a proper "tap the icon, opens like an app"
 - **Guided workouts.** Warm-up, each exercise, cool-down and the completion summary appear one step at a time. Every exercise is saved immediately and an interrupted workout resumes where it stopped.
 - **Simpler feedback.** Strength exercises use a five-choice feeling menu instead of asking for a numeric RPE.
 - **PlatePlan-style navigation.** Phone navigation is fixed at the bottom, tablets/desktops use a sidebar, and System / Light / Dark appearance choices are available in Settings.
-- **Better update and offline behavior.** A visible Update available action installs new releases, while required local files are cached independently from optional CDN libraries.
+- **Better update and offline behavior.** New releases install automatically (the service worker is network-first and takes over immediately; there is no update prompt), while required local files are cached independently from optional CDN libraries.
 - **Portrait handling.** The installed Android app requests portrait orientation and keeps a responsive landscape fallback for browsers that cannot lock orientation.
 - **Private household keys.** The old published default PIN has been removed. Generate a private household key in Settings and copy it to the other phone.
 
@@ -56,7 +56,7 @@ These files need to be deployed together, at the same folder level (don't nest t
 2. Gather the static files listed under "What's in this folder".
 3. On the repository page, click **Add file → Upload files**, then upload those files. GitHub will replace files with the same names.
 4. Go to **Settings → Pages** (left sidebar). Under "Build and deployment", set Source to **Deploy from a branch**, branch **main**, folder **/ (root)**. Save.
-5. Wait for GitHub Pages to finish publishing, then open the app on both phones and use **Update now** when offered.
+5. Wait for GitHub Pages to finish publishing, then open the app on both phones; it updates itself on the next load (close and reopen the app once if you still see the old version).
 
 ## Install it on your phone (and Chloe's)
 
