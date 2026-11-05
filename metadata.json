@@ -1,6 +1,6 @@
 {
   "name": "Home Gym Log",
-  "description": "Strength training tracker HomeGym v2.5.11 with LocalStorage priority hydration, reactive state synchronization, dual progress metrics for bodyweight and weighted movements, and deload removal",
+  "description": "Strength training tracker HomeGym v2.5.12 with Physio & AI Routine Assistant, clinical prompt generator, interactive checkbox diff, program version milestones, and cloud sync",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

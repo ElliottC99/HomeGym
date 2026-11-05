@@ -7,7 +7,7 @@
     "dev": "node server.js",
     "build": "echo 'Static site: no build step. Deploy the files listed in README.md'",
     "start": "node server.js",
-    "lint": "for f in app.bundle.js app-redesign.js auth-gate.js sw.js notifications.js firebase-config.js data-recovery-inspector.js server.js functions/index.js; do node --check $f || exit 1; done",
+    "lint": "for f in app.bundle.js app-redesign.js auth-gate.js sw.js notifications.js firebase-config.js data-recovery-inspector.js physio-engine.js server.js functions/index.js; do node --check $f || exit 1; done",
     "test": "npm run lint && node --test tests/"
   },
   "dependencies": {

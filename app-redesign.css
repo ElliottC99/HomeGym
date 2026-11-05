@@ -1304,3 +1304,141 @@ html[data-theme="dark"] .hg-scale-btn-inactive {
   border-color: #35383e;
 }
 
+
+/* --- Physio & AI Routine Assistant Styles --- */
+.hg-btn-physio-hig {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: 9999px;
+  font-size: 13.5px;
+  font-weight: 650;
+  border: 1px solid var(--hg-border);
+  background: var(--hg-surface-2);
+  color: var(--hg-text);
+  cursor: pointer;
+  transition: transform 0.12s ease, background 0.12s ease;
+  white-space: nowrap;
+}
+
+.hg-btn-physio-hig:hover {
+  background: var(--hg-surface);
+  transform: translateY(-1px);
+}
+
+.hg-btn-physio-hig:active {
+  transform: translateY(0);
+}
+
+.hg-physio-modal {
+  background: var(--hg-surface);
+  border: 1px solid var(--hg-border);
+  border-radius: 20px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.3);
+  width: min(580px, 94vw);
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: hgAlertIn 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.hg-physio-header {
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid var(--hg-border);
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.hg-physio-tabs {
+  display: flex;
+  background: var(--hg-surface-2);
+  padding: 4px;
+  margin: 12px 20px;
+  border-radius: 12px;
+  gap: 4px;
+}
+
+.hg-physio-tab-btn {
+  flex: 1;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  border: none;
+  background: transparent;
+  color: var(--hg-text-2);
+  border-radius: 9px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.hg-physio-tab-btn.active {
+  background: var(--hg-surface);
+  color: var(--hg-text);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+}
+
+.hg-physio-body {
+  padding: 0 20px 20px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.hg-diff-card {
+  background: var(--hg-surface-2);
+  border: 1px solid var(--hg-border);
+  border-radius: 14px;
+  padding: 14px;
+  margin-bottom: 12px;
+  transition: border-color 0.15s ease, opacity 0.15s ease;
+}
+
+.hg-diff-card.unchecked {
+  opacity: 0.55;
+}
+
+.hg-diff-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.hg-diff-badge.swap {
+  background: rgba(34, 197, 94, 0.15);
+  color: #16a34a;
+}
+
+.hg-diff-badge.load {
+  background: rgba(59, 130, 246, 0.15);
+  color: #2563eb;
+}
+
+.hg-diff-badge.new {
+  background: rgba(168, 85, 247, 0.15);
+  color: #9333ea;
+}
+
+.hg-diff-badge.removal {
+  background: rgba(239, 68, 68, 0.15);
+  color: #dc2626;
+}
+
+.hg-milestone-item {
+  background: var(--hg-surface-2);
+  border: 1px solid var(--hg-border);
+  border-radius: 14px;
+  padding: 14px 16px;
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}

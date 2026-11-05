@@ -1,0 +1,625 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Ideation: Workout Regime Evolution & Physio-AI Adaptation</title>
+  <style>
+    :root {
+      --bg: #F7F6F2;
+      --card-bg: #FFFFFF;
+      --text: #1C1C1E;
+      --text-muted: #6B7280;
+      --border: #E5E7EB;
+      --accent: #2563EB;
+      --accent-light: #EFF6FF;
+      --green: #059669;
+      --green-light: #ECFDF5;
+      --amber: #D97706;
+      --amber-light: #FFFBEB;
+      --purple: #7C3AED;
+      --purple-light: #F5F3FF;
+      --danger: #DC2626;
+      --danger-light: #FEF2F2;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #121214;
+        --card-bg: #1C1C1F;
+        --text: #F3F4F6;
+        --text-muted: #9CA3AF;
+        --border: #2E2E33;
+        --accent: #3B82F6;
+        --accent-light: #1E293B;
+        --green: #10B981;
+        --green-light: #064E3B;
+        --amber: #F59E0B;
+        --amber-light: #451A03;
+        --purple: #A855F7;
+        --purple-light: #3B0764;
+      }
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      line-height: 1.55;
+      padding: 32px 20px 80px;
+    }
+    .container {
+      max-width: 860px;
+      margin: 0 auto;
+    }
+    header {
+      margin-bottom: 28px;
+      padding-bottom: 20px;
+      border-bottom: 1px solid var(--border);
+    }
+    h1 {
+      font-size: 28px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      margin-bottom: 8px;
+      color: var(--text);
+    }
+    .header-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 14px;
+      font-size: 13.5px;
+      color: var(--text-muted);
+      margin-top: 6px;
+    }
+    details.metadata-box {
+      margin-top: 14px;
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-size: 12.5px;
+    }
+    details.metadata-box summary {
+      cursor: pointer;
+      font-weight: 600;
+      color: var(--text-muted);
+    }
+    details.metadata-box dl {
+      display: grid;
+      grid-template-columns: 140px 1fr;
+      gap: 6px 12px;
+      margin-top: 10px;
+      font-family: var(--font-mono);
+    }
+    details.metadata-box dt { color: var(--text-muted); }
+    details.metadata-box dd { color: var(--text); }
+    section {
+      margin-top: 36px;
+    }
+    h2 {
+      font-size: 20px;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+      margin-bottom: 14px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    p { margin-bottom: 12px; }
+    .jump-list {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px 18px;
+      margin-bottom: 24px;
+    }
+    .jump-list-title {
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+    }
+    .jump-list ol {
+      list-style-position: inside;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      font-size: 14px;
+    }
+    .jump-list a {
+      color: var(--accent);
+      text-decoration: none;
+      font-weight: 500;
+    }
+    .jump-list a:hover { text-decoration: underline; }
+    .idea-card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 22px;
+      margin-bottom: 24px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.02);
+    }
+    .idea-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .idea-title {
+      font-size: 18px;
+      font-weight: 700;
+      color: var(--text);
+    }
+    .badges {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 3px 8px;
+      border-radius: 6px;
+      font-size: 11.5px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+    }
+    .badge-blue { background: var(--accent-light); color: var(--accent); }
+    .badge-green { background: var(--green-light); color: var(--green); }
+    .badge-amber { background: var(--amber-light); color: var(--amber); }
+    .badge-purple { background: var(--purple-light); color: var(--purple); }
+    .card-fields {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-top: 14px;
+      font-size: 14px;
+    }
+    .card-field {
+      display: grid;
+      grid-template-columns: 100px 1fr;
+      gap: 10px;
+    }
+    .field-label {
+      font-weight: 600;
+      color: var(--text-muted);
+      font-size: 12.5px;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+    .field-value { color: var(--text); }
+    .field-value code {
+      font-family: var(--font-mono);
+      font-size: 12.5px;
+      background: var(--accent-light);
+      color: var(--accent);
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+    .diagram-box {
+      margin: 14px 0 8px;
+      padding: 14px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      text-align: center;
+    }
+    .diagram-box svg {
+      max-width: 100%;
+      height: auto;
+    }
+    table.rejection-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      margin-top: 12px;
+    }
+    table.rejection-table th, table.rejection-table td {
+      padding: 10px 14px;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+    }
+    table.rejection-table th {
+      background: var(--bg);
+      font-weight: 600;
+      color: var(--text-muted);
+    }
+    table.rejection-table tr:last-child td { border-bottom: none; }
+    footer.composition-signal {
+      margin-top: 50px;
+      padding-top: 20px;
+      border-top: 1px solid var(--border);
+      font-size: 12px;
+      color: var(--text-muted);
+      text-align: center;
+      font-family: var(--font-mono);
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Ideation: Workout Regime Evolution &amp; Physio-AI Adaptation</h1>
+      <div class="header-meta">
+        <time datetime="2026-11-05">Date: 2026-11-05</time>
+        <span>Focus: Regime Extraction, Physio Advice Ingestion, AI Iterations</span>
+        <span>Scope: HomeGym Application Architecture</span>
+      </div>
+      <details class="metadata-box">
+        <summary>Document metadata</summary>
+        <dl>
+          <dt>topic</dt><dd>regime-evolution-physio-ai</dd>
+          <dt>mode</dt><dd>repo-grounded</dd>
+          <dt>focus</dt><dd>exporting workout regime, physio advice ingestion, AI-assisted modifications</dd>
+          <dt>artifact_contract</dt><dd>ce-ideation/v1</dd>
+        </dl>
+      </details>
+    </header>
+
+    <section id="grounding-context">
+      <h2>Grounding Context (Codebase Context)</h2>
+      <p>
+        <strong>Current State:</strong> HomeGym represents each profile's program as a <code>sessions</code> array containing superset groups, target blocks, progression increments (e.g., 2.5kg or 5kg steps), warm-up/cooldown routines, and custom exercise IDs. State is synchronized in real-time to Firebase Realtime Database at <code>gym_users/${profileId}/active_program/current</code>.
+      </p>
+      <p>
+        <strong>Pain Points &amp; Friction:</strong>
+      </p>
+      <ul style="list-style-position: inside; margin-bottom: 12px; font-size: 14px; display: flex; flex-direction: column; gap: 6px;">
+        <li><strong>Extraction Gap:</strong> Currently, sharing your regime with an AI or physio requires copying a raw developer JSON backup, or manually typing all sessions, sets, and working weights.</li>
+        <li><strong>Ingestion Friction:</strong> When an AI or physio suggests changes (e.g. swapping Barbell RDL for Single-Leg DB RDL due to hamstring strain), the user must click through dozens of in-app inputs or risk hand-crafting JSON that could corrupt exercise history.</li>
+        <li><strong>Clinical Load Awareness:</strong> Standard workout apps treat changes as binary overwrites, losing track of <em>why</em> a movement was modified, what tissue restriction triggered it, and when to safely progress back.</li>
+      </ul>
+      <p>
+        <strong>Leverage Points:</strong> <code>app-redesign.js</code> already contains dedicated normalization utilities (<code>normalizeExerciseName</code>), 1RM estimators, and modular session/program structures that can be mapped to an AI exchange protocol.
+      </p>
+    </section>
+
+    <section id="topic-axes">
+      <h2>Topic Axes</h2>
+      <ol style="list-style-position: inside; font-size: 14px; display: flex; flex-direction: column; gap: 6px;">
+        <li><strong>Regime Serialization &amp; Prompt Generation:</strong> Packaging workouts, equipment, and recent weights into an LLM-ready prompt with clinical guardrails.</li>
+        <li><strong>Clinical Substitution &amp; Regression Hierarchy:</strong> Rules for adjusting external load, ROM, unilateral balance, and 24-hour symptom tracking.</li>
+        <li><strong>Interactive Ingestion &amp; Safe Diff Review:</strong> Visual before/after verification for proposed AI changes without risking stored history.</li>
+        <li><strong>Regime Versioning &amp; Longitudinal History:</strong> Tracking program iterations over time (e.g., Block 1 &rarr; Rehab Phase 1 &rarr; Return-to-Sport).</li>
+      </ol>
+    </section>
+
+    <section id="ranked-ideas">
+      <h2>Ranked Ideas</h2>
+
+      <div class="jump-list">
+        <div class="jump-list-title">Candidate Directions (Jump to idea)</div>
+        <ol>
+          <li><a href="#idea-1">1. "Consult AI with Physio Advice" One-Tap Prompt Bundler</a></li>
+          <li><a href="#idea-2">2. Clinical Substitution Engine with 24-Hour Pain Rules</a></li>
+          <li><a href="#idea-3">3. Interactive Visual Regime Diff Reviewer &amp; Merger</a></li>
+          <li><a href="#idea-4">4. Standing Physio Movement Constraints Layer</a></li>
+          <li><a href="#idea-5">5. "Return-to-Sport" Rehab Progression Ladders</a></li>
+          <li><a href="#idea-6">6. Post-Session Physio Executive Summary Exporter</a></li>
+          <li><a href="#idea-7">7. Program Versioning &amp; Milestone Changelog</a></li>
+        </ol>
+      </div>
+
+      <!-- Idea 1 -->
+      <article class="idea-card" id="idea-1">
+        <div class="idea-head">
+          <div class="idea-title">1. "Consult AI with Physio Advice" One-Tap Prompt Bundler</div>
+          <div class="badges">
+            <span class="badge badge-blue">Serialization</span>
+            <span class="badge badge-green">Conf: 94%</span>
+            <span class="badge badge-amber">Cx: Low</span>
+          </div>
+        </div>
+        <p>
+          Add a dedicated "Export for AI / Physio" action in the Plan tab that generates a pre-formatted, highly structured Markdown prompt ready to paste into ChatGPT, Claude, or Gemini. The prompt bundles your active split, exercise roster, current working weights, available equipment, and explicit clinical instructions (e.g. <em>"My physio advised: [PASTE PHYSIO NOTES HERE]. Regress or substitute affected movements while preserving weekly volume and output in HomeGym JSON format"</em>).
+        </p>
+
+        <div class="diagram-box">
+          <svg viewBox="0 0 680 100" xmlns="http://www.w3.org/2000/svg">
+            <rect x="10" y="25" width="160" height="50" rx="8" fill="#EFF6FF" stroke="#3B82F6" stroke-width="1.5"/>
+            <text x="90" y="54" text-anchor="middle" font-size="12" font-weight="600" fill="#1E40AF">HomeGym Active Split</text>
+            <path d="M170 50 L220 50" stroke="#94A3B8" stroke-width="2" marker-end="url(#arrow)"/>
+            <rect x="230" y="15" width="200" height="70" rx="8" fill="#F8FAFC" stroke="#64748B" stroke-width="1.5"/>
+            <text x="330" y="42" text-anchor="middle" font-size="11" font-weight="700" fill="#0F172A">Clipboard Prompt Generator</text>
+            <text x="330" y="60" text-anchor="middle" font-size="10" fill="#64748B">+ Physio Advice Placeholder</text>
+            <path d="M430 50 L480 50" stroke="#94A3B8" stroke-width="2"/>
+            <rect x="490" y="25" width="170" height="50" rx="8" fill="#ECFDF5" stroke="#10B981" stroke-width="1.5"/>
+            <text x="575" y="54" text-anchor="middle" font-size="12" font-weight="600" fill="#065F46">AI Model (Claude/ChatGPT)</text>
+          </svg>
+        </div>
+
+        <div class="card-fields">
+          <div class="card-field">
+            <span class="field-label">Axis:</span>
+            <span class="field-value">Regime Serialization &amp; Prompt Generation</span>
+          </div>
+          <div class="card-field">
+            <span class="field-label">Basis:</span>
+            <span class="field-value"><code>direct:</code> In <code>app-redesign.js:7578</code>, the app already exports full JSON backups; transforming this into a human-readable prompt tailored for LLM reasoning eliminates 90% of user copy-paste friction.</span>
+          </div>
+          <div class="card-field">
+            <span class="field-label">Rationale:</span>
+            <span class="field-value">LLMs excel at strength conditioning and clinical regression when given precise starting context (current weights, sets, equipment). Zero barrier to entry: requires no backend changes or API keys.</span>
+          </div>
+          <div class="card-field">
+            <span class="field-label">Downsides:</span>
+            <span class="field-value">Requires user to switch apps (HomeGym &rarr; ChatGPT &rarr; HomeGym).</span>
+          </div>
+        </div>
+      </article>
+
+      <!-- Idea 2 -->
+      <article class="idea-card" id="idea-2">
+        <div class="idea-head">
+          <div class="idea-title">2. Clinical Substitution Engine with 24-Hour Pain Rules</div>
+          <div class="badges">
+            <span class="badge badge-purple">Substitution</span>
+            <span class="badge badge-green">Conf: 90%</span>
+            <span class="badge badge-amber">Cx: Medium</span>
+          </div>
+        </div>
+        <p>
+          Embed clinical substitution hierarchies directly into exercise configurations. Each exercise defines structured regressions along specific clinical levers: Range of Motion (e.g. Barbell Squat &rarr; Box Squat), External Load distribution (e.g. Back Squat &rarr; Goblet Squat to reduce lumbar shear), or Stability (Bilateral &rarr; Supported Unilateral). Incorporates the clinical 24-hour symptom rule: if post-workout soreness or pain persists past 24 hours, the app automatically suggests stepping down one tier.
+        </p>
+        <div class="card-fields">
+          <div class="card-field">
+            <span class="field-label">Axis:</span>
+            <span class="field-value">Clinical Substitution &amp; Regression Hierarchy</span>
+          </div>
+          <div class="card-field">
+            <span class="field-label">Basis:</span>
+            <span class="field-value"><code>external:</code> Sports Physiotherapy tissue-capacity rules (Elevate Health, 2026): "Change only one variable at a time (Load &rarr; Volume &rarr; ROM &rarr; Velocity); regress immediately if symptoms persist >24h."</span>
+          </div>
+          <div class="card-field">
+            <span class="field-label">Rationale:</span>
+            <span class="field-value">Gives you instant, physiologically sound exercise swaps on your phone when feeling joint pain, without waiting for your next physio appointment.</span>
+          </div>
+          <div class="card-field">
+            <span class="field-label">Downsides:</span>
+            <span class="field-value">Requires curating regression chains for primary compound lifts (RDL, Squat, Bench, Row).</span>
+          </div>
+        </div>
+      </article>
+
+      <!-- Idea 3 -->
+      <article class="idea-card" id="idea-3">
+        <div class="idea-head">
+          <div class="idea-title">3. Interactive Visual Regime Diff Reviewer &amp; Merger</div>
+          <div class="badges">
+            <span class="badge badge-amber">Ingestion</span>
+            <span class="badge badge-green">Conf: 96%</span>
+            <span class="badge badge-purple">Cx: Medium</span>
+          </div>
+        </div>
+        <p>
+          Add a "Paste AI Workout Modification" modal in Settings / Plan. When you paste the response from ChatGPT or Claude, HomeGym parses the changes and presents a visual, color-coded diff: exercises added (green), modified (amber, showing changed sets/reps/tempo), and removed/regressed (red). You can uncheck individual modifications before applying, ensuring AI hallucinations never corrupt your program.
+        </p>
+
+        <div class="diagram-box">
+          <svg viewBox="0 0 680 110" xmlns="http://www.w3.org/2000/svg">
+            <rect x="20" y="20" width="180" height="70" rx="8" fill="#F8FAFC" stroke="#94A3B8" stroke-width="1.5"/>
+            <text x="110" y="45" text-anchor="middle" font-size="12" font-weight="700" fill="#334155">Paste AI JSON/YAML</text>
+            <text x="110" y="65" text-anchor="middle" font-size="10" fill="#64748B">From Claude / ChatGPT</text>
+            <path d="M200 55 L250 55" stroke="#94A3B8" stroke-width="2"/>
+            <rect x="260" y="10" width="220" height="90" rx="8" fill="#FFFFFF" stroke="#3B82F6" stroke-width="1.5"/>
+            <text x="370" y="30" text-anchor="middle" font-size="12" font-weight="700" fill="#1E40AF">Visual Diff Review</text>
+            <rect x="275" y="40" width="190" height="18" rx="4" fill="#ECFDF5"/>
+            <text x="370" y="53" text-anchor="middle" font-size="9.5" fill="#065F46">+ Added: DB Spanish Squat (3×12)</text>
+            <rect x="275" y="63" width="190" height="18" rx="4" fill="#FEF2F2"/>
+            <text x="370" y="76" text-anchor="middle" font-size="9.5" fill="#991B1B">- Substituted: Barbell Back Squat</text>
+            <path d="M480 55 L530 55" stroke="#94A3B8" stroke-width="2"/>
+            <rect x="540" y="20" width="120" height="70" rx="8" fill="#EFF6FF" stroke="#2563EB" stroke-width="1.5"/>
+            <text x="600" y="52" text-anchor="middle" font-size="11" font-weight="700" fill="#1E40AF">Apply to Plan</text>
+            <text x="600" y="68" text-anchor="middle" font-size="9" fill="#3B82F6">Syncs to RTDB</text>
+          </svg>
+        </div>
+
+        <div class="card-fields">
+          <div class="card-field">
+            <span class="field-label">Axis:</span>
+            <span class="field-value">Interactive Ingestion &amp; Safe Diff Review</span>
+          </div>
+          <div class="card-field">
+            <span class="field-label">Basis:</span>
+            <span class="field-value"><code>reasoned:</code> In code development, engineers never blindly apply patches without reviewing the diff. Applying the same concept to workout modifications prevents accidental deletion of routines or sudden dangerous weight spikes.</span>
+          </div>
+          <div class="card-field">
+            <span class="field-label">Rationale:</span>
+            <span class="field-value">Solves the second half of the workflow: getting altered workouts back into the app safely without manually re-typing 15 exercises.</span>
+          </div>
+          <div class="card-field">
+            <span class="field-label">Downsides:</span>
+            <span class="field-value">Requires client-side schema validation to safely handle malformed LLM outputs.</span>
+          </div>
+        </div>
+      </article>
+
+      <!-- Idea 4 -->
+      <article class="idea-card" id="idea-4">
+        <div class="idea-head">
+          <div class="idea-title">4. Standing Physio Movement Constraints Layer</div>
+          <div class="badges">
+            <span class="badge badge-blue">Versioning</span>
+            <span class="badge badge-green">Conf: 92%</span>
+            <span class="badge badge-amber">Cx: Low</span>
+          </div>
+        </div>
+        <p>
+          Store persistent clinical guidelines under each profile (e.g., <em>"Right knee patellar tendinopathy: limit deep knee flexion under load, substitute knee extension for isometric Spanish squats, 3-sec eccentric tempos"</em>). When active, these constraints appear as reminders during your guided workout and are automatically appended into any future AI prompt export, so the AI never forgets your injury history.
+        </p>
+        <div class="card-fields">
+          <div class="card-field">
+            <span class="field-label">Axis:</span>
+            <span class="field-value">Regime Versioning &amp; Longitudinal History</span>
+          </div>
+          <div class="card-field">
+            <span class="field-label">Basis:</span>
+            <span class="field-value"><code>direct:</code> In <code>app-redesign.js:8023</code>, <code>currentProfile</code> already holds persistent fields (<code>goals</code>, <code>resumeNote</code>, <code>equipment</code>). Adding a structured <code>physioConstraints</code> field integrates seamlessly with current sync logic.</span>
+          </div>
+          <div class="card-field">
+            <span class="field-label">Rationale:</span>
+            <span class="field-value">Prevents context loss over time. As you recover, you can toggle constraints on and off.</span>
+          </div>
+          <div class="card-field">
+            <span class="field-label">Downsides:</span>
+            <span class="field-value">Users must remember to update or deactivate restrictions once tissue heals.</span>
+          </div>
+        </div>
+      </article>
+
+      <!-- Idea 5 -->
+      <article class="idea-card" id="idea-5">
+        <div class="idea-head">
+          <div class="idea-title">5. "Return-to-Sport" Rehab Progression Ladders</div>
+          <div class="badges">
+            <span class="badge badge-purple">Substitution</span>
+            <span class="badge badge-green">Conf: 88%</span>
+            <span class="badge badge-purple">Cx: Medium</span>
+          </div>
+        </div>
+        <p>
+          Replace static 4-week block weight ladders with clinical multi-stage rehabilitation progressions. For example, progressing from Isometric Hold &rarr; Slow Tempo Eccentric &rarr; Full Bilateral &rarr; Explosive / Sport-Specific. Each stage defines exit criteria (e.g. 3 consecutive sessions with feeling &ge; 4 and pain score 0) before auto-unlocking the next movement tier.
+        </p>
+        <div class="card-fields">
+          <div class="card-field">
+            <span class="field-label">Axis:</span>
+            <span class="field-value">Clinical Substitution &amp; Regression Hierarchy</span>
+          </div>
+          <div class="card-field">
+            <span class="field-label">Basis:</span>
+            <span class="field-value"><code>direct:</code> The current codebase already models 4-block ladders (<code>exercise.blocks = [43, 46, 48.5, 51]</code> and <code>exercise.variation</code>). Generalizing this to stage criteria unlocks true clinical rehab tracking.</span>
+          </div>
+          <div class="card-field">
+            <span class="field-label">Rationale:</span>
+            <span class="field-value">Prevents jumping back into heavy compound lifts too early, reducing re-injury rates.</span>
+          </div>
+          <div class="card-field">
+            <span class="field-label">Downsides:</span>
+            <span class="field-value">Adds conceptual complexity to the Plan Tab.</span>
+          </div>
+        </div>
+      </article>
+
+      <!-- Idea 6 -->
+      <article class="idea-card" id="idea-6">
+        <div class="idea-head">
+          <div class="idea-title">6. Post-Session Physio Executive Summary Exporter</div>
+          <div class="badges">
+            <span class="badge badge-blue">Serialization</span>
+            <span class="badge badge-green">Conf: 95%</span>
+            <span class="badge badge-amber">Cx: Low</span>
+          </div>
+        </div>
+        <p>
+          Generate a concise, 1-page PDF or formatted shareable text summary for your physio ahead of your next appointment. Summarizes total volume per movement pattern, subjective feeling / RPE ratings, flagged pain events, and readiness scores across the last 2&ndash;4 weeks so your physio has objective clinical data rather than relying on memory.
+        </p>
+        <div class="card-fields">
+          <div class="card-field">
+            <span class="field-label">Axis:</span>
+            <span class="field-value">Regime Serialization &amp; Prompt Generation</span>
+          </div>
+          <div class="card-field">
+            <span class="field-label">Basis:</span>
+            <span class="field-value"><code>external:</code> Clinical adherence studies show physiotherapists alter exercise prescriptions significantly more accurately when provided objective compliance and symptom logs.</span>
+          </div>
+          <div class="card-field">
+            <span class="field-label">Rationale:</span>
+            <span class="field-value">Strengthens the feedback loop between you, your physio, and your training tracker.</span>
+          </div>
+          <div class="card-field">
+            <span class="field-label">Downsides:</span>
+            <span class="field-value">Generates an export artifact that requires email or messaging to send to the physio.</span>
+          </div>
+        </div>
+      </article>
+
+      <!-- Idea 7 -->
+      <article class="idea-card" id="idea-7">
+        <div class="idea-head">
+          <div class="idea-title">7. Program Versioning &amp; Milestone Changelog</div>
+          <div class="badges">
+            <span class="badge badge-blue">Versioning</span>
+            <span class="badge badge-green">Conf: 91%</span>
+            <span class="badge badge-amber">Cx: Medium</span>
+          </div>
+        </div>
+        <p>
+          Store routine adaptations as tagged milestones (e.g. <code>v1.0 Baseline</code> &rarr; <code>v1.1 Physio Hamstring Deload</code> &rarr; <code>v1.2 Return to Barbell RDL</code>) with commit notes. Allows you to view a timeline of how your program evolved over the year and rollback or restore a previous routine with a single tap.
+        </p>
+        <div class="card-fields">
+          <div class="card-field">
+            <span class="field-label">Axis:</span>
+            <span class="field-value">Regime Versioning &amp; Longitudinal History</span>
+          </div>
+          <div class="card-field">
+            <span class="field-label">Basis:</span>
+            <span class="field-value"><code>reasoned:</code> Athletes frequently want to remember "what was that lower body split that felt great back in June before my ankle sprain?". A changelog keeps routine history without polluting active training.</span>
+          </div>
+          <div class="card-field">
+            <span class="field-label">Rationale:</span>
+            <span class="field-value">Empowers continuous experimentation without fear of permanently losing working routines.</span>
+          </div>
+          <div class="card-field">
+            <span class="field-label">Downsides:</span>
+            <span class="field-value">Slight storage footprint increase in Realtime Database.</span>
+          </div>
+        </div>
+      </article>
+    </section>
+
+    <section id="rejection-summary">
+      <h2>Rejection Summary</h2>
+      <p>Ideas considered during divergent generation that were filtered out during adversarial critique:</p>
+      <table class="rejection-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Candidate Idea</th>
+            <th>Reason Rejected</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>1</td>
+            <td>Direct in-app Gemini API audio recording of physio sessions</td>
+            <td>Over-engineered &amp; privacy/consent barrier: recording clinical consultations in a gym tracker exceeds scope and incurs ongoing API token costs.</td>
+          </tr>
+          <tr>
+            <td>2</td>
+            <td>Full automated weekly AI re-programming without human approval</td>
+            <td>Safety violation: automated exercise changes without user verification can prescribe contraindicated movements during injury recovery.</td>
+          </tr>
+          <tr>
+            <td>3</td>
+            <td>Real-time computer vision camera tracking for form breakdown</td>
+            <td>Impractical hardware &amp; battery burden for phone-based PWA; does not address the core routine evolution challenge.</td>
+          </tr>
+          <tr>
+            <td>4</td>
+            <td>Crowdsourced physio exercise substitution database</td>
+            <td>Regulatory &amp; clinical liability risk: exercise substitution must be tailored to individual diagnoses, not crowdsourced votes.</td>
+          </tr>
+          <tr>
+            <td>5</td>
+            <td>Wearable EMG sensor integration</td>
+            <td>Hardware dependency: violates low-friction mobile PWA philosophy.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <footer class="composition-signal">
+      Composed 2026-11-05T14:50Z by ce-ideate · Saved to docs/ideation/2026-11-05-regime-evolution-physio-ai-ideation.html
+    </footer>
+  </div>
+</body>
+</html>

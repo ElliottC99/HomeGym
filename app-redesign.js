@@ -22,7 +22,7 @@
 
   const h = React.createElement;
   const { useState, useEffect, useCallback, useRef, useMemo } = React;
-  const APP_VERSION = "v2.5.11";
+  const APP_VERSION = "v2.5.12";
   const STORAGE_VERSION = "2.5.7";
 
   // --- v2.5.7 LocalStorage Preservation & Version Registration ---
@@ -1391,6 +1391,89 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
         const storedKey = `hg_programs_${userId}`;
         const existing = JSON.parse(localStorage.getItem(storedKey) || "[]");
         const filtered = Array.isArray(existing) ? existing.filter(p => p.id !== programId) : [];
+        safeStorageSet(storedKey, filtered);
+      } catch (e) {}
+    },
+
+    async saveProgramMilestone(userId, milestone) {
+      if (!userId || !milestone) return null;
+      const milestoneId = String(milestone.id || `ms_${Date.now()}`);
+      const payload = {
+        id: milestoneId,
+        label: milestone.label || "Routine Milestone",
+        createdAt: milestone.createdAt || Date.now(),
+        createdBy: userId,
+        programName: milestone.programName || "Active Routine",
+        sessions: Array.isArray(milestone.sessions) ? milestone.sessions : []
+      };
+
+      try {
+        const storedKey = `hg_milestones_${userId}`;
+        const existing = JSON.parse(localStorage.getItem(storedKey) || "[]");
+        const filtered = Array.isArray(existing) ? existing.filter(m => m.id !== milestoneId) : [];
+        filtered.unshift(payload);
+        safeStorageSet(storedKey, filtered.slice(0, 20));
+      } catch (e) {}
+
+      const rtdb = this.getRTDB();
+      if (rtdb) {
+        try {
+          await rtdb.ref(`gym_users/${userId}/program_milestones/${milestoneId}`).set(payload);
+        } catch (e) {}
+      }
+
+      return payload;
+    },
+
+    async loadProgramMilestones(userId) {
+      if (!userId) return [];
+      const list = [];
+      const seen = new Set();
+
+      const rtdb = this.getRTDB();
+      if (rtdb) {
+        try {
+          const snap = await rtdb.ref(`gym_users/${userId}/program_milestones`).once("value");
+          const val = snap.val();
+          if (val && typeof val === "object") {
+            Object.values(val).forEach(m => {
+              if (m && m.id && !seen.has(m.id)) {
+                seen.add(m.id);
+                list.push(m);
+              }
+            });
+          }
+        } catch (e) {}
+      }
+
+      try {
+        const local = JSON.parse(localStorage.getItem(`hg_milestones_${userId}`) || "[]");
+        if (Array.isArray(local)) {
+          local.forEach(m => {
+            if (m && m.id && !seen.has(m.id)) {
+              seen.add(m.id);
+              list.push(m);
+            }
+          });
+        }
+      } catch (e) {}
+
+      list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+      return list;
+    },
+
+    async deleteProgramMilestone(userId, milestoneId) {
+      if (!userId || !milestoneId) return;
+      const rtdb = this.getRTDB();
+      if (rtdb) {
+        try {
+          await rtdb.ref(`gym_users/${userId}/program_milestones/${milestoneId}`).remove();
+        } catch (e) {}
+      }
+      try {
+        const storedKey = `hg_milestones_${userId}`;
+        const existing = JSON.parse(localStorage.getItem(storedKey) || "[]");
+        const filtered = Array.isArray(existing) ? existing.filter(m => m.id !== milestoneId) : [];
         safeStorageSet(storedKey, filtered);
       } catch (e) {}
     },
@@ -6781,6 +6864,7 @@ const EXERCISE_SUGGESTIONS = [
     const [advancedOpen, setAdvancedOpen] = useState(false);
     const [wizardState, setWizardState] = useState({ open: false, initialProgram: null, mode: "create" });
     const [savedPrograms, setSavedPrograms] = useState([]);
+    const [physioModalOpen, setPhysioModalOpen] = useState(false);
 
     const fileInputRef = useRef(null);
 
@@ -7040,6 +7124,15 @@ const EXERCISE_SUGGESTIONS = [
           )
         ),
         h("div", { className: "hg-plan-actions" },
+          // Physio & AI Assistant Button
+          h("button", {
+            type: "button",
+            id: "hg-btn-physio-assistant",
+            className: "hg-btn-physio-hig",
+            title: "Consult AI with physio advice & safely adapt routine",
+            onClick: () => setPhysioModalOpen(true)
+          }, "🩺 AI & Physio"),
+
           // Primary Call-to-Action: + New exercise
           h("button", {
             type: "button",
@@ -7063,6 +7156,14 @@ const EXERCISE_SUGGESTIONS = [
 
           // Overflow Menu Popover
           overflowMenuOpen && h("div", { className: "hg-overflow-menu", onClick: e => e.stopPropagation() },
+            h("button", {
+              type: "button",
+              className: "hg-menu-item",
+              onClick: () => {
+                setOverflowMenuOpen(false);
+                setPhysioModalOpen(true);
+              }
+            }, "🩺 Physio & AI Routine Assistant…"),
             h("button", {
               type: "button",
               className: "hg-menu-item",
@@ -7454,7 +7555,414 @@ const EXERCISE_SUGGESTIONS = [
           setWizardState({ open: false, initialProgram: null, mode: "create" });
           loadSaved();
         }
+      }),
+
+      // Physio & AI Routine Assistant Modal
+      physioModalOpen && h(PhysioAIAssistantModal, {
+        personId,
+        data,
+        meta,
+        updateData,
+        showToast,
+        onClose: () => setPhysioModalOpen(false)
       })
+    );
+  }
+
+  function PhysioAIAssistantModal({ personId, data, meta, updateData, showToast, onClose }) {
+    const [tab, setTab] = useState("export"); // "export" | "import" | "milestones"
+    const [physioNotes, setPhysioNotes] = useState("");
+    const [rawAIResponse, setRawAIResponse] = useState("");
+    const [diffItems, setDiffItems] = useState([]);
+    const [proposedProgramName, setProposedProgramName] = useState("");
+    const [milestoneLabel, setMilestoneLabel] = useState("");
+    const [parseError, setParseError] = useState(null);
+    const [copied, setCopied] = useState(false);
+    const [milestonesList, setMilestonesList] = useState([]);
+    const [loadingMilestones, setLoadingMilestones] = useState(false);
+    const [applying, setApplying] = useState(false);
+
+    const engine = (typeof window !== "undefined" && window.HG_PHYSIO_ENGINE) ? window.HG_PHYSIO_ENGINE : null;
+
+    const loadMilestones = useCallback(async () => {
+      setLoadingMilestones(true);
+      try {
+        const list = await GymCloudEngine.loadProgramMilestones(personId);
+        setMilestonesList(list);
+      } catch (err) {
+        console.warn("Failed to load milestones:", err);
+      } finally {
+        setLoadingMilestones(false);
+      }
+    }, [personId]);
+
+    useEffect(() => {
+      if (tab === "milestones") {
+        loadMilestones();
+      }
+    }, [tab, loadMilestones]);
+
+    const generatedPrompt = useMemo(() => {
+      if (!engine?.buildClinicalPrompt) return "";
+      return engine.buildClinicalPrompt(data, meta?.label || personId, physioNotes);
+    }, [data, meta, physioNotes, engine]);
+
+    async function handleCopyPrompt() {
+      if (!generatedPrompt) return;
+      try {
+        await navigator.clipboard.writeText(generatedPrompt);
+        setCopied(true);
+        showToast("Clinical prompt copied to clipboard!");
+        setTimeout(() => setCopied(false), 2500);
+      } catch (e) {
+        showToast("Failed to copy automatically; please select and copy the text.");
+      }
+    }
+
+    function handleAnalyzeResponse() {
+      setParseError(null);
+      if (!rawAIResponse.trim()) {
+        setParseError("Please paste the AI's response text into the box first.");
+        return;
+      }
+      if (!engine?.extractRoutineFromText || !engine?.computeRoutineDiff) {
+        setParseError("Physio engine is not ready. Please refresh the page.");
+        return;
+      }
+
+      try {
+        const extracted = engine.extractRoutineFromText(rawAIResponse);
+        const currSessions = Array.isArray(data.sessions) ? data.sessions : [];
+        const diffs = engine.computeRoutineDiff(currSessions, extracted.sessions);
+        if (diffs.length === 0) {
+          setParseError("No differences found between your active routine and the proposed routine.");
+          setDiffItems([]);
+          return;
+        }
+        setDiffItems(diffs);
+        setProposedProgramName(extracted.programName || `${data.programName || "Routine"} (Adapted)`);
+        setMilestoneLabel(`Physio Update - ${new Date().toISOString().slice(0, 10)}`);
+      } catch (err) {
+        setParseError(err.message || "Failed to parse routine from response.");
+        setDiffItems([]);
+      }
+    }
+
+    function handleToggleDiff(diffId) {
+      setDiffItems(prev => prev.map(item => {
+        if (item.id === diffId) {
+          return { ...item, approved: !item.approved };
+        }
+        return item;
+      }));
+    }
+
+    async function handleApplyChanges() {
+      const approvedCount = diffItems.filter(d => d.approved).length;
+      if (approvedCount === 0) {
+        showToast("No changes are checked to apply.");
+        return;
+      }
+      setApplying(true);
+
+      try {
+        const label = milestoneLabel.trim() || `Physio Update - ${new Date().toISOString().slice(0, 10)}`;
+        const snapshot = engine.createMilestoneSnapshot(data, label, personId);
+        await GymCloudEngine.saveProgramMilestone(personId, snapshot);
+
+        const updatedSessions = engine.applyDiffToRoutine(data.sessions || [], diffItems);
+
+        updateData(personId, cur => {
+          const next = {
+            ...cur,
+            sessions: updatedSessions,
+            programName: proposedProgramName || cur.programName || "Active Routine",
+            updatedAt: Date.now()
+          };
+          safeStorageSet(`plateplan_v1:${personId}`, JSON.stringify({
+            sessions: updatedSessions,
+            startDate: cur.startDate,
+            goals: cur.goals,
+            updatedAt: Date.now()
+          }));
+          safeStorageSet(`data:${personId}`, JSON.stringify(next));
+          GymCloudEngine.savePlatePlanState(personId, updatedSessions, cur.startDate, cur.goals);
+          GymCloudEngine.saveActiveProgram(personId, next);
+          return next;
+        });
+
+        showToast(`Applied ${approvedCount} updates & saved milestone snapshot!`);
+        onClose();
+      } catch (err) {
+        showToast("Failed to apply changes: " + (err.message || "Unknown error"));
+      } finally {
+        setApplying(false);
+      }
+    }
+
+    async function handleRevertMilestone(milestone) {
+      if (!window.confirm(`Revert active routine to "${milestone.label}" from ${new Date(milestone.createdAt).toLocaleDateString()}? All past workout logs and PR records will remain safe and untouched.`)) {
+        return;
+      }
+
+      try {
+        const preRevertSnapshot = engine.createMilestoneSnapshot(data, `Before reverting to ${milestone.label}`, personId);
+        await GymCloudEngine.saveProgramMilestone(personId, preRevertSnapshot);
+
+        const restoredSessions = engine.restoreFromMilestoneSnapshot(milestone);
+
+        updateData(personId, cur => {
+          const next = {
+            ...cur,
+            sessions: restoredSessions,
+            programName: milestone.programName || cur.programName || "Active Routine",
+            updatedAt: Date.now()
+          };
+          safeStorageSet(`plateplan_v1:${personId}`, JSON.stringify({
+            sessions: restoredSessions,
+            startDate: cur.startDate,
+            goals: cur.goals,
+            updatedAt: Date.now()
+          }));
+          safeStorageSet(`data:${personId}`, JSON.stringify(next));
+          GymCloudEngine.savePlatePlanState(personId, restoredSessions, cur.startDate, cur.goals);
+          GymCloudEngine.saveActiveProgram(personId, next);
+          return next;
+        });
+
+        showToast(`Reverted routine to "${milestone.label}".`);
+        onClose();
+      } catch (err) {
+        showToast("Revert failed: " + (err.message || "Unknown error"));
+      }
+    }
+
+    async function handleDeleteMilestone(milestoneId) {
+      if (!window.confirm("Delete this milestone snapshot?")) return;
+      try {
+        await GymCloudEngine.deleteProgramMilestone(personId, milestoneId);
+        showToast("Deleted milestone snapshot.");
+        loadMilestones();
+      } catch (err) {
+        showToast("Failed to delete milestone.");
+      }
+    }
+
+    const approvedCount = diffItems.filter(d => d.approved).length;
+
+    return h("div", { className: "hg-hig-modal-backdrop", onClick: onClose },
+      h("div", { className: "hg-physio-modal", onClick: e => e.stopPropagation() },
+        h("div", { className: "hg-physio-header" },
+          h("div", null,
+            h("h3", { style: { margin: 0, fontSize: 18, fontWeight: 700, color: "var(--hg-text)" } }, "🩺 AI & Physio Assistant"),
+            h("div", { style: { fontSize: 13, color: "var(--hg-text-2)", marginTop: 2 } }, "Adapt routines with external AI guidance & safe milestones")
+          ),
+          h("button", {
+            type: "button",
+            style: { border: "none", background: "transparent", fontSize: 20, cursor: "pointer", color: "var(--hg-text-2)", padding: 4 },
+            onClick: onClose
+          }, "✕")
+        ),
+
+        h("div", { className: "hg-physio-tabs" },
+          h("button", {
+            type: "button",
+            className: "hg-physio-tab-btn " + (tab === "export" ? "active" : ""),
+            onClick: () => setTab("export")
+          }, "📋 Export for AI"),
+          h("button", {
+            type: "button",
+            className: "hg-physio-tab-btn " + (tab === "import" ? "active" : ""),
+            onClick: () => setTab("import")
+          }, "📥 Import & Review" + (diffItems.length > 0 ? ` (${diffItems.length})` : "")),
+          h("button", {
+            type: "button",
+            className: "hg-physio-tab-btn " + (tab === "milestones" ? "active" : ""),
+            onClick: () => setTab("milestones")
+          }, "⏳ Version Milestones")
+        ),
+
+        h("div", { className: "hg-physio-body" },
+          tab === "export" && h("div", null,
+            h("div", { style: { fontSize: 13.5, color: "var(--hg-text-2)", marginBottom: 12, lineHeight: 1.4 } },
+              "Export your active split, current weights, and home gym equipment into a clinical prompt bundle. Paste it into Claude, ChatGPT, or Gemini alongside your physio's advice."
+            ),
+            h("label", { style: { display: "block", fontSize: 13, fontWeight: 600, color: "var(--hg-text)", marginBottom: 6 } }, "Physiotherapist Advice / Injury Directives (optional):"),
+            h("textarea", {
+              className: "hg-input",
+              rows: 3,
+              style: { width: "100%", padding: 10, fontSize: 13.5, borderRadius: 10, resize: "vertical", boxSizing: "border-box", marginBottom: 14 },
+              placeholder: "e.g., Avoid back squats below parallel due to patellar tendinopathy. Substitute with heel-elevated goblet squats and reduce hamstring volume by 20%...",
+              value: physioNotes,
+              onChange: e => setPhysioNotes(e.target.value)
+            }),
+            h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 } },
+              h("span", { style: { fontSize: 13, fontWeight: 600, color: "var(--hg-text)" } }, "Generated AI Clinical Prompt:"),
+              h("button", {
+                type: "button",
+                className: "hg-btn-primary-hig",
+                style: { padding: "6px 14px", fontSize: 13 },
+                onClick: handleCopyPrompt
+              }, copied ? "✓ Copied to clipboard!" : "📋 Copy Prompt to Clipboard")
+            ),
+            h("textarea", {
+              readOnly: true,
+              rows: 10,
+              className: "hg-input",
+              style: { width: "100%", padding: 10, fontSize: 12, fontFamily: "monospace", borderRadius: 10, background: "var(--hg-surface-2)", boxSizing: "border-box" },
+              value: generatedPrompt
+            })
+          ),
+
+          tab === "import" && h("div", null,
+            diffItems.length === 0 ? h("div", null,
+              h("div", { style: { fontSize: 13.5, color: "var(--hg-text-2)", marginBottom: 12, lineHeight: 1.4 } },
+                "Paste the AI assistant's response below. HomeGym automatically isolates the routine JSON, validates the exercises, and presents every proposed change for your review."
+              ),
+              h("textarea", {
+                className: "hg-input",
+                rows: 8,
+                style: { width: "100%", padding: 10, fontSize: 13, borderRadius: 10, boxSizing: "border-box", marginBottom: 12 },
+                placeholder: "Paste response from Claude, ChatGPT, or Gemini here...",
+                value: rawAIResponse,
+                onChange: e => setRawAIResponse(e.target.value)
+              }),
+              parseError && h("div", {
+                style: { padding: "10px 14px", borderRadius: 10, background: "rgba(239, 68, 68, 0.12)", color: "#dc2626", fontSize: 13, marginBottom: 12 }
+              }, parseError),
+              h("button", {
+                type: "button",
+                className: "hg-btn-primary-hig",
+                style: { width: "100%", padding: "10px 16px", fontSize: 14 },
+                onClick: handleAnalyzeResponse
+              }, "🔍 Analyze AI Changes")
+            ) : h("div", null,
+              h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 } },
+                h("div", null,
+                  h("strong", { style: { fontSize: 14.5, color: "var(--hg-text)" } }, `${diffItems.length} Proposed Changes`),
+                  h("div", { style: { fontSize: 12.5, color: "var(--hg-text-2)" } }, "Check or uncheck items to cherry-pick what to apply")
+                ),
+                h("button", {
+                  type: "button",
+                  className: "hg-button secondary",
+                  style: { minHeight: 28, padding: "2px 10px", fontSize: 12 },
+                  onClick: () => setDiffItems([])
+                }, "Paste different response")
+              ),
+              h("div", { style: { marginBottom: 14 } },
+                h("label", { style: { display: "block", fontSize: 12.5, fontWeight: 600, color: "var(--hg-text)", marginBottom: 4 } }, "Version Milestone Label:"),
+                h("input", {
+                  type: "text",
+                  className: "hg-input",
+                  style: { width: "100%", padding: "6px 10px", fontSize: 13, borderRadius: 8, boxSizing: "border-box" },
+                  value: milestoneLabel,
+                  onChange: e => setMilestoneLabel(e.target.value)
+                })
+              ),
+              diffItems.map(item => {
+                let badgeClass = "swap";
+                let badgeLabel = "Swap";
+                if (item.type === "LOAD_CHANGE") { badgeClass = "load"; badgeLabel = "Load / Reps"; }
+                if (item.type === "ADDITION") { badgeClass = "new"; badgeLabel = "Added"; }
+                if (item.type === "REMOVAL") { badgeClass = "removal"; badgeLabel = "Removed"; }
+
+                return h("div", {
+                  key: item.id,
+                  className: "hg-diff-card " + (item.approved ? "" : "unchecked"),
+                  onClick: () => handleToggleDiff(item.id),
+                  style: { cursor: "pointer" }
+                },
+                  h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 } },
+                    h("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
+                      h("span", { className: `hg-diff-badge ${badgeClass}` }, badgeLabel),
+                      h("span", { style: { fontSize: 12.5, fontWeight: 600, color: "var(--hg-text-2)" } }, item.sessionName)
+                    ),
+                    h("input", {
+                      type: "checkbox",
+                      checked: !!item.approved,
+                      onChange: () => handleToggleDiff(item.id),
+                      style: { width: 18, height: 18, cursor: "pointer" },
+                      onClick: e => e.stopPropagation()
+                    })
+                  ),
+                  item.type === "SUBSTITUTION" && h("div", { style: { fontSize: 13.5, lineHeight: 1.4 } },
+                    h("div", { style: { color: "var(--hg-text-2)", textDecoration: "line-through" } },
+                      `Original: ${item.originalExercise.name} (${item.originalExercise.setsReps}${item.originalExercise.startValue ? ` @ ${item.originalExercise.startValue}kg` : ""})`
+                    ),
+                    h("div", { style: { color: "var(--hg-text)", fontWeight: 650, marginTop: 2 } },
+                      `Proposed: ${item.proposedExercise.name} (${item.proposedExercise.setsReps}${item.proposedExercise.startValue ? ` @ ${item.proposedExercise.startValue}kg` : ""})`
+                    )
+                  ),
+                  item.type === "LOAD_CHANGE" && h("div", { style: { fontSize: 13.5, lineHeight: 1.4 } },
+                    h("div", { style: { color: "var(--hg-text)", fontWeight: 600 } }, item.proposedExercise.name),
+                    h("div", { style: { fontSize: 13, color: "var(--hg-text-2)", marginTop: 2 } },
+                      `From: ${item.originalExercise.setsReps} @ ${item.originalExercise.startValue || 0}kg  ➜  To: ${item.proposedExercise.setsReps} @ ${item.proposedExercise.startValue || 0}kg`
+                    )
+                  ),
+                  item.type === "ADDITION" && h("div", { style: { fontSize: 13.5, color: "var(--hg-text)", fontWeight: 650 } },
+                    `+ ${item.proposedExercise.name} (${item.proposedExercise.setsReps}${item.proposedExercise.startValue ? ` @ ${item.proposedExercise.startValue}kg` : ""})`
+                  ),
+                  item.type === "REMOVAL" && h("div", { style: { fontSize: 13.5, color: "var(--hg-text-2)", textDecoration: "line-through" } },
+                    `- ${item.originalExercise.name}`
+                  ),
+                  item.clinicalReason && h("div", { style: { fontSize: 12, color: "var(--hg-text-2)", fontStyle: "italic", marginTop: 6 } },
+                    `“${item.clinicalReason}”`
+                  )
+                );
+              }),
+              h("div", { style: { display: "flex", gap: 10, marginTop: 16 } },
+                h("button", {
+                  type: "button",
+                  className: "hg-button secondary",
+                  style: { flex: 1, padding: 10 },
+                  onClick: onClose
+                }, "Cancel"),
+                h("button", {
+                  type: "button",
+                  className: "hg-btn-primary-hig",
+                  style: { flex: 2, padding: 10, fontSize: 14 },
+                  disabled: applying || approvedCount === 0,
+                  onClick: handleApplyChanges
+                }, applying ? "Applying..." : `Apply ${approvedCount} Approved Changes`)
+              )
+            )
+          ),
+
+          tab === "milestones" && h("div", null,
+            h("div", { style: { fontSize: 13.5, color: "var(--hg-text-2)", marginBottom: 14, lineHeight: 1.4 } },
+              "Whenever you apply AI changes, HomeGym creates a version snapshot. You can revert your active routine back to any previous milestone at any time with one tap. Historical workout logs and PR records are strictly preserved."
+            ),
+            loadingMilestones && h("div", { style: { textAlign: "center", padding: 20, color: "var(--hg-text-2)" } }, "Loading milestones..."),
+            !loadingMilestones && milestonesList.length === 0 && h("div", {
+              style: { textAlign: "center", padding: 24, background: "var(--hg-surface-2)", borderRadius: 14, color: "var(--hg-text-2)", fontSize: 13.5 }
+            }, "No version milestones saved yet. Milestones will appear here automatically when you apply AI changes."),
+            !loadingMilestones && milestonesList.map(m =>
+              h("div", { key: m.id, className: "hg-milestone-item" },
+                h("div", null,
+                  h("strong", { style: { fontSize: 14.5, color: "var(--hg-text)", display: "block" } }, m.label),
+                  h("div", { style: { fontSize: 12, color: "var(--hg-text-2)", marginTop: 2 } },
+                    `${new Date(m.createdAt).toLocaleDateString()} · ${m.programName || "Routine"} · ${m.sessions?.length || 0} training days`
+                  )
+                ),
+                h("div", { style: { display: "flex", gap: 8 } },
+                  h("button", {
+                    type: "button",
+                    className: "hg-btn-primary-hig",
+                    style: { padding: "4px 10px", fontSize: 12 },
+                    onClick: () => handleRevertMilestone(m)
+                  }, "Revert"),
+                  h("button", {
+                    type: "button",
+                    className: "hg-button secondary danger",
+                    style: { minHeight: 28, padding: "2px 8px", fontSize: 11.5 },
+                    onClick: () => handleDeleteMilestone(m.id)
+                  }, "Delete")
+                )
+              )
+            )
+          )
+        )
+      )
     );
   }
 

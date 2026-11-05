@@ -5,10 +5,11 @@
 (function () {
   const ALLOWED_EMAILS = ["ejcallender@gmail.com", "clncarr7@gmail.com"];
   const APP_SCRIPTS = [
-    "./notifications.js?v=2.5.11",
-    "./app.bundle.js?v=2.5.11",
-    "./app-redesign.js?v=2.5.11",
-    "./data-recovery-inspector.js?v=2.5.11",
+    "./notifications.js?v=2.5.12",
+    "./physio-engine.js?v=2.5.12",
+    "./app.bundle.js?v=2.5.12",
+    "./app-redesign.js?v=2.5.12",
+    "./data-recovery-inspector.js?v=2.5.12",
   ];
 
   let started = false;
@@ -18,6 +19,9 @@
     APP_SCRIPTS.reduce((chain, src) => chain.then(() => new Promise(resolve => {
       const el = document.createElement("script");
       el.src = src;
+      if (src.includes("physio-engine.js")) {
+        el.type = "module";
+      }
       el.async = false;
       el.onload = el.onerror = resolve;
       document.body.appendChild(el);
