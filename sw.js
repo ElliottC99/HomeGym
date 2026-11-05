@@ -1,6 +1,6 @@
 // Home Gym — offline shell and explicit update lifecycle.
 // Increment this value for every release.
-const CACHE_NAME = "homegym-shell-v2.5.7";
+const CACHE_NAME = "homegym-shell-v2.5.8";
 
 const REQUIRED_SHELL = [
   "./",
@@ -20,13 +20,15 @@ const REQUIRED_SHELL = [
 ];
 
 const OPTIONAL_SHELL = [
-  "https://unpkg.com/react@18/umd/react.production.min.js",
-  "https://unpkg.com/react-dom@18/umd/react-dom.production.min.js",
+  "https://unpkg.com/react@18.3.1/umd/react.production.min.js",
+  "https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js",
   "https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js",
   "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore-compat.js",
   "https://www.gstatic.com/firebasejs/10.13.0/firebase-database-compat.js",
   "https://www.gstatic.com/firebasejs/10.13.0/firebase-messaging-compat.js",
   "https://www.gstatic.com/firebasejs/10.13.0/firebase-auth-compat.js",
+  "https://cdnjs.cloudflare.com/ajax/libs/prop-types/15.8.1/prop-types.min.js",
+  "https://cdnjs.cloudflare.com/ajax/libs/recharts/2.1.9/Recharts.min.js",
 ];
 
 self.addEventListener("install", event => {
