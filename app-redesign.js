@@ -22,7 +22,7 @@
 
   const h = React.createElement;
   const { useState, useEffect, useCallback, useRef, useMemo } = React;
-  const APP_VERSION = "v2.5.12";
+  const APP_VERSION = "v2.5.13";
   const STORAGE_VERSION = "2.5.7";
 
   // --- v2.5.7 LocalStorage Preservation & Version Registration ---
@@ -5342,962 +5342,6 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
     );
   }
 
-const EXERCISE_SUGGESTIONS = [
-    { name: "Barbell Bench Press", setsReps: "4 × 6", equipmentType: "barbell", restNote: "90s", startValue: 40 },
-    { name: "Barbell Squat", setsReps: "4 × 6", equipmentType: "barbell", restNote: "90s", startValue: 50 },
-    { name: "Barbell RDL", setsReps: "4 × 8", equipmentType: "barbell", restNote: "90s", startValue: 45 },
-    { name: "Conventional Deadlift", setsReps: "3 × 5", equipmentType: "barbell", restNote: "2 mins", startValue: 60 },
-    { name: "Overhead Press (OHP)", setsReps: "3 × 8", equipmentType: "barbell", restNote: "90s", startValue: 30 },
-    { name: "Incline DB Press", setsReps: "4 × 8", equipmentType: "dumbbell", restNote: "90s", startValue: 20 },
-    { name: "Dumbbell Row", setsReps: "4 × 8", equipmentType: "dumbbell", restNote: "90s", startValue: 20 },
-    { name: "Pull-ups / Chin-ups", setsReps: "3 × 6–8", equipmentType: "bodyweight", restNote: "90s", startValue: "" },
-    { name: "Lateral Raise", setsReps: "3 × 12", equipmentType: "dumbbell", restNote: "60s", startValue: 8 },
-    { name: "Face Pull", setsReps: "3 × 15", equipmentType: "cable", restNote: "60s", startValue: 15 },
-    { name: "Bicep Curl", setsReps: "3 × 10", equipmentType: "dumbbell", restNote: "60s", startValue: 12 },
-    { name: "Tricep Pushdown", setsReps: "3 × 12", equipmentType: "cable", restNote: "60s", startValue: 20 },
-    { name: "Bulgarian Split Squat", setsReps: "3 × 8/leg", equipmentType: "dumbbell", restNote: "90s", startValue: 14 },
-    { name: "Leg Press", setsReps: "3 × 10", equipmentType: "machine", restNote: "90s", startValue: 80 },
-    { name: "Hamstring Curl", setsReps: "3 × 10", equipmentType: "machine", restNote: "90s", startValue: 35 },
-    { name: "Standing Calf Raise", setsReps: "4 × 12", equipmentType: "dumbbell", restNote: "60s", startValue: 20 },
-    { name: "Plank", setsReps: "3 × 45s", equipmentType: "bodyweight", restNote: "60s", startValue: "" }
-  ];
-
-  const PROGRAM_TEMPLATES = {
-    upper_lower: {
-      name: "Upper / Lower Hypertrophy",
-      description: "4-day split with progressive overload on primary compounds and paired antagonist supersets.",
-      frequency: "4 days/week",
-      sessions: [
-        {
-          id: "upper_a",
-          name: "Upper A",
-          day: "Mon",
-          type: "strength",
-          duration: "50 mins",
-          exercises: [
-            { name: "Barbell Bench Press", setsReps: "4 × 6", supersetGroup: "a", restNote: "90s after A2", startValue: "40", equipmentType: "barbell" },
-            { name: "Dumbbell Row", setsReps: "4 × 8", supersetGroup: "a", restNote: "90s after A2", startValue: "20", equipmentType: "dumbbell" },
-            { name: "Overhead Press (OHP)", setsReps: "3 × 8", supersetGroup: "b", restNote: "90s after B2", startValue: "30", equipmentType: "barbell" },
-            { name: "Pull-ups / Chin-ups", setsReps: "3 × 6–8", supersetGroup: "b", restNote: "90s after B2", startValue: "", equipmentType: "bodyweight" },
-            { name: "Lateral Raise", setsReps: "3 × 12", supersetGroup: "c", restNote: "60s after C2", startValue: "8", equipmentType: "dumbbell" },
-            { name: "Bicep Curl", setsReps: "3 × 10", supersetGroup: "c", restNote: "60s after C2", startValue: "12", equipmentType: "dumbbell" }
-          ]
-        },
-        {
-          id: "lower_a",
-          name: "Lower A",
-          day: "Tue",
-          type: "strength",
-          duration: "45 mins",
-          exercises: [
-            { name: "Barbell Squat", setsReps: "4 × 6", supersetGroup: "a", restNote: "90s after A2", startValue: "50", equipmentType: "barbell" },
-            { name: "Standing Calf Raise", setsReps: "4 × 12", supersetGroup: "a", restNote: "90s after A2", startValue: "20", equipmentType: "dumbbell" },
-            { name: "Barbell RDL", setsReps: "4 × 8", supersetGroup: "b", restNote: "90s after B2", startValue: "45", equipmentType: "barbell" },
-            { name: "Plank", setsReps: "3 × 45s", supersetGroup: "b", restNote: "60s after B2", startValue: "", equipmentType: "bodyweight" }
-          ]
-        },
-        {
-          id: "upper_b",
-          name: "Upper B",
-          day: "Thu",
-          type: "strength",
-          duration: "50 mins",
-          exercises: [
-            { name: "Incline DB Press", setsReps: "4 × 8", supersetGroup: "a", restNote: "90s after A2", startValue: "20", equipmentType: "dumbbell" },
-            { name: "Dumbbell Row", setsReps: "4 × 10", supersetGroup: "a", restNote: "90s after A2", startValue: "20", equipmentType: "dumbbell" },
-            { name: "Lateral Raise", setsReps: "3 × 12", supersetGroup: "b", restNote: "60s after B2", startValue: "8", equipmentType: "dumbbell" },
-            { name: "Face Pull", setsReps: "3 × 15", supersetGroup: "b", restNote: "60s after B2", startValue: "15", equipmentType: "cable" },
-            { name: "Tricep Pushdown", setsReps: "3 × 12", supersetGroup: "c", restNote: "60s after C2", startValue: "20", equipmentType: "cable" },
-            { name: "Bicep Curl", setsReps: "3 × 10", supersetGroup: "c", restNote: "60s after C2", startValue: "12", equipmentType: "dumbbell" }
-          ]
-        },
-        {
-          id: "lower_b",
-          name: "Lower B",
-          day: "Fri",
-          type: "strength",
-          duration: "50 mins",
-          exercises: [
-            { name: "Conventional Deadlift", setsReps: "3 × 5", supersetGroup: "solo", restNote: "2 mins", startValue: "60", equipmentType: "barbell" },
-            { name: "Bulgarian Split Squat", setsReps: "3 × 8/leg", supersetGroup: "a", restNote: "90s after A2", startValue: "14", equipmentType: "dumbbell" },
-            { name: "Hamstring Curl", setsReps: "3 × 10", supersetGroup: "a", restNote: "90s after A2", startValue: "35", equipmentType: "machine" },
-            { name: "Standing Calf Raise", setsReps: "3 × 12", supersetGroup: "solo", restNote: "60s", startValue: "25", equipmentType: "dumbbell" }
-          ]
-        }
-      ]
-    },
-    full_body: {
-      name: "3-Day Full Body",
-      description: "High-efficiency 3-day full body rotation focusing on fundamental compound movements.",
-      frequency: "3 days/week",
-      sessions: [
-        {
-          id: "fb_a",
-          name: "Full Body A",
-          day: "Mon",
-          type: "strength",
-          duration: "50 mins",
-          exercises: [
-            { name: "Barbell Squat", setsReps: "4 × 6", supersetGroup: "a", restNote: "90s after A2", startValue: "50", equipmentType: "barbell" },
-            { name: "Barbell Bench Press", setsReps: "4 × 6", supersetGroup: "a", restNote: "90s after A2", startValue: "40", equipmentType: "barbell" },
-            { name: "Dumbbell Row", setsReps: "3 × 8", supersetGroup: "b", restNote: "90s after B2", startValue: "20", equipmentType: "dumbbell" },
-            { name: "Lateral Raise", setsReps: "3 × 12", supersetGroup: "b", restNote: "60s after B2", startValue: "8", equipmentType: "dumbbell" }
-          ]
-        },
-        {
-          id: "fb_b",
-          name: "Full Body B",
-          day: "Wed",
-          type: "strength",
-          duration: "50 mins",
-          exercises: [
-            { name: "Barbell RDL", setsReps: "4 × 8", supersetGroup: "a", restNote: "90s after A2", startValue: "45", equipmentType: "barbell" },
-            { name: "Overhead Press (OHP)", setsReps: "3 × 8", supersetGroup: "a", restNote: "90s after A2", startValue: "30", equipmentType: "barbell" },
-            { name: "Pull-ups / Chin-ups", setsReps: "3 × 6–8", supersetGroup: "b", restNote: "90s after B2", startValue: "", equipmentType: "bodyweight" },
-            { name: "Tricep Pushdown", setsReps: "3 × 12", supersetGroup: "b", restNote: "60s after B2", startValue: "20", equipmentType: "cable" }
-          ]
-        },
-        {
-          id: "fb_c",
-          name: "Full Body C",
-          day: "Fri",
-          type: "strength",
-          duration: "50 mins",
-          exercises: [
-            { name: "Leg Press", setsReps: "3 × 10", supersetGroup: "a", restNote: "90s after A2", startValue: "80", equipmentType: "machine" },
-            { name: "Incline DB Press", setsReps: "3 × 8", supersetGroup: "a", restNote: "90s after A2", startValue: "20", equipmentType: "dumbbell" },
-            { name: "Bicep Curl", setsReps: "3 × 10", supersetGroup: "b", restNote: "60s after B2", startValue: "12", equipmentType: "dumbbell" },
-            { name: "Plank", setsReps: "3 × 45s", supersetGroup: "b", restNote: "60s after B2", startValue: "", equipmentType: "bodyweight" }
-          ]
-        }
-      ]
-    },
-    ppl: {
-      name: "Push / Pull / Legs",
-      description: "Classic hypertrophy split separating pushing, pulling, and leg muscles.",
-      frequency: "3 days/week",
-      sessions: [
-        {
-          id: "push",
-          name: "Push",
-          day: "Mon",
-          type: "strength",
-          duration: "45 mins",
-          exercises: [
-            { name: "Barbell Bench Press", setsReps: "4 × 6", supersetGroup: "a", restNote: "90s after A2", startValue: "40", equipmentType: "barbell" },
-            { name: "Incline DB Press", setsReps: "3 × 8", supersetGroup: "a", restNote: "90s after A2", startValue: "20", equipmentType: "dumbbell" },
-            { name: "Overhead Press (OHP)", setsReps: "3 × 8", supersetGroup: "b", restNote: "90s after B2", startValue: "30", equipmentType: "barbell" },
-            { name: "Lateral Raise", setsReps: "3 × 12", supersetGroup: "b", restNote: "60s after B2", startValue: "8", equipmentType: "dumbbell" },
-            { name: "Tricep Pushdown", setsReps: "3 × 12", supersetGroup: "solo", restNote: "60s", startValue: "20", equipmentType: "cable" }
-          ]
-        },
-        {
-          id: "pull",
-          name: "Pull",
-          day: "Wed",
-          type: "strength",
-          duration: "45 mins",
-          exercises: [
-            { name: "Dumbbell Row", setsReps: "4 × 8", supersetGroup: "a", restNote: "90s after A2", startValue: "20", equipmentType: "dumbbell" },
-            { name: "Pull-ups / Chin-ups", setsReps: "3 × 6–8", supersetGroup: "a", restNote: "90s after A2", startValue: "", equipmentType: "bodyweight" },
-            { name: "Face Pull", setsReps: "3 × 15", supersetGroup: "b", restNote: "60s after B2", startValue: "15", equipmentType: "cable" },
-            { name: "Bicep Curl", setsReps: "3 × 10", supersetGroup: "b", restNote: "60s after B2", startValue: "12", equipmentType: "dumbbell" }
-          ]
-        },
-        {
-          id: "legs",
-          name: "Legs",
-          day: "Fri",
-          type: "strength",
-          duration: "45 mins",
-          exercises: [
-            { name: "Barbell Squat", setsReps: "4 × 6", supersetGroup: "a", restNote: "90s after A2", startValue: "50", equipmentType: "barbell" },
-            { name: "Standing Calf Raise", setsReps: "4 × 12", supersetGroup: "a", restNote: "90s after A2", startValue: "20", equipmentType: "dumbbell" },
-            { name: "Barbell RDL", setsReps: "4 × 8", supersetGroup: "b", restNote: "90s after B2", startValue: "45", equipmentType: "barbell" },
-            { name: "Plank", setsReps: "3 × 45s", supersetGroup: "b", restNote: "60s after B2", startValue: "", equipmentType: "bodyweight" }
-          ]
-        }
-      ]
-    }
-  };
-
-  function slugify(t) {
-    return (t || "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
-  }
-
-  function decompileSessionExercises(session) {
-    if (!session || !Array.isArray(session.groups)) return [];
-    const list = [];
-    session.groups.forEach((g, gIdx) => {
-      const isSuperset = g.type === "superset" || (Array.isArray(g.exercises) && g.exercises.length > 1) || (g.label && g.label.toLowerCase().includes("superset"));
-      let groupLetter = "solo";
-      if (isSuperset) {
-        const match = g.label ? g.label.match(/Group\s+([A-Z])/i) : null;
-        if (match) groupLetter = match[1].toLowerCase();
-        else if (g.id && g.id.length === 1 && /[a-z]/i.test(g.id)) groupLetter = g.id.toLowerCase();
-        else {
-          const letters = ["a", "b", "c", "d", "e", "f"];
-          groupLetter = letters[gIdx % letters.length];
-        }
-      }
-      (g.exercises || []).forEach(ex => {
-        list.push({
-          id: ex.id || slugify(ex.name),
-          name: ex.name,
-          setsReps: ex.setsReps || "3 × 8–10",
-          restNote: ex.restNote || "90s",
-          startValue: ex.startValue != null ? String(ex.startValue) : "",
-          note: ex.note || "",
-          equipmentType: ex.equipmentType || (ex.name && ex.name.toLowerCase().includes("barbell") ? "barbell" : (ex.name && (ex.name.toLowerCase().includes("db") || ex.name.toLowerCase().includes("dumbbell"))) ? "dumbbell" : "bodyweight"),
-          supersetGroup: groupLetter
-        });
-      });
-    });
-    return list;
-  }
-
-  function compileSessionGroups(exercises) {
-    if (!Array.isArray(exercises)) return [];
-    const groups = [];
-    const groupMap = new Map();
-    let soloCount = 1;
-
-    for (const ex of exercises) {
-      const sg = (ex.supersetGroup || "solo").trim().toLowerCase();
-      const exObj = {
-        id: ex.id || slugify(ex.name),
-        name: ex.name,
-        setsReps: ex.setsReps || "3 × 8–10",
-        restNote: ex.restNote || "90s",
-        unit: "kg",
-        startValue: ex.startValue && !isNaN(Number(ex.startValue)) ? Number(ex.startValue) : null,
-        startLabel: ex.startValue && !isNaN(Number(ex.startValue)) ? (ex.startValue + "kg") : "Bodyweight",
-        note: ex.note || "",
-        equipmentType: ex.equipmentType || "barbell"
-      };
-
-      if (sg !== "solo") {
-        const letter = sg.toUpperCase();
-        if (!groupMap.has(letter)) {
-          const grp = {
-            id: letter.toLowerCase(),
-            label: "Group " + letter + " · Superset",
-            type: "superset",
-            exercises: []
-          };
-          groupMap.set(letter, grp);
-          groups.push(grp);
-        }
-        const grp = groupMap.get(letter);
-        const subIdx = grp.exercises.length + 1;
-        if (!ex.restNote || ex.restNote === "90s") {
-          exObj.restNote = subIdx > 1 ? ("90s after " + letter + subIdx) : "—";
-        }
-        grp.exercises.push(exObj);
-      } else {
-        const grpId = "solo_" + (soloCount++);
-        groups.push({
-          id: grpId,
-          label: "Exercise · Straight Set",
-          type: "straight",
-          exercises: [exObj]
-        });
-      }
-    }
-    return groups;
-  }
-
-  function ProgramWizardModal({ personId, data, updateData, showToast, initialProgram, mode, onClose }) {
-    const isEdit = mode === "edit" || Boolean(initialProgram);
-    const [step, setStep] = useState(1);
-    const [programId] = useState(() => initialProgram?.id || initialProgram?.programId || ("prog_" + Date.now()));
-    const [name, setName] = useState(() => initialProgram?.programName || initialProgram?.name || "");
-    const [description, setDescription] = useState(() => initialProgram?.goals || initialProgram?.description || "");
-    const [frequency, setFrequency] = useState(() => initialProgram?.frequency || (initialProgram?.sessions ? (initialProgram.sessions.length + " days/week") : "4 days/week"));
-    const [startDate, setStartDate] = useState(() => initialProgram?.startDate || (I.j && I.W ? I.j(I.W()) : "2026-09-14"));
-
-    const [sessions, setSessions] = useState(() => {
-      if (initialProgram?.sessions && Array.isArray(initialProgram.sessions) && initialProgram.sessions.length > 0) {
-        return initialProgram.sessions.map((s, sIdx) => ({
-          id: s.id || ("s_" + sIdx + "_" + Date.now()),
-          name: s.name || ("Session " + (sIdx + 1)),
-          day: s.day || ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][sIdx % 7],
-          type: s.type || "strength",
-          duration: s.duration || "45–60 mins",
-          targetKm: s.targetKm || null,
-          exercises: decompileSessionExercises(s)
-        }));
-      }
-      return JSON.parse(JSON.stringify(PROGRAM_TEMPLATES.upper_lower.sessions));
-    });
-
-    const [activeSessionIdx, setActiveSessionIdx] = useState(0);
-
-    // Exercise form state
-    const [exName, setExName] = useState("");
-    const [exSetsReps, setExSetsReps] = useState("3 × 8–10");
-    const [exRest, setExRest] = useState("90s");
-    const [exWeight, setExWeight] = useState("");
-    const [exSuperset, setExSuperset] = useState("a");
-    const [exEquipment, setExEquipment] = useState("barbell");
-    const [exNote, setExNote] = useState("");
-    const [saving, setSaving] = useState(false);
-
-    function applyTemplate(key) {
-      const tmpl = PROGRAM_TEMPLATES[key];
-      if (!tmpl) return;
-      if (!name) setName(tmpl.name);
-      if (!description) setDescription(tmpl.description);
-      setFrequency(tmpl.frequency);
-      setSessions(JSON.parse(JSON.stringify(tmpl.sessions)));
-      setActiveSessionIdx(0);
-      showToast("Loaded " + tmpl.name + " template");
-    }
-
-    function addSession() {
-      const days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-      const usedDays = new Set(sessions.map(s => s.day));
-      const nextDay = days.find(d => !usedDays.has(d)) || "Sat";
-      const newSession = {
-        id: "s_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6),
-        name: "Session " + (sessions.length + 1),
-        day: nextDay,
-        type: "strength",
-        duration: "45–60 mins",
-        exercises: []
-      };
-      setSessions(prev => [...prev, newSession]);
-      showToast("Added workout day");
-    }
-
-    function updateSession(idx, updater) {
-      setSessions(prev => prev.map((s, i) => i === idx ? updater(s) : s));
-    }
-
-    function removeSession(idx) {
-      if (sessions.length <= 1) {
-        showToast("Program must have at least 1 session day");
-        return;
-      }
-      setSessions(prev => prev.filter((_, i) => i !== idx));
-      if (activeSessionIdx >= sessions.length - 1) {
-        setActiveSessionIdx(Math.max(0, sessions.length - 2));
-      }
-    }
-
-    function moveSession(idx, dir) {
-      const target = idx + dir;
-      if (target < 0 || target >= sessions.length) return;
-      setSessions(prev => {
-        const copy = [...prev];
-        const temp = copy[idx];
-        copy[idx] = copy[target];
-        copy[target] = temp;
-        return copy;
-      });
-    }
-
-    const currentSession = sessions[activeSessionIdx] || sessions[0];
-
-    function addExercise() {
-      if (!exName.trim()) {
-        showToast("Please enter an exercise name");
-        return;
-      }
-      const newEx = {
-        id: slugify(exName),
-        name: exName.trim(),
-        setsReps: exSetsReps.trim() || "3 × 8–10",
-        restNote: exRest.trim() || "90s",
-        startValue: exWeight.trim() || "",
-        supersetGroup: exSuperset,
-        equipmentType: exEquipment,
-        note: exNote.trim()
-      };
-      updateSession(activeSessionIdx, s => ({
-        ...s,
-        exercises: [...(s.exercises || []), newEx]
-      }));
-      setExName("");
-      setExWeight("");
-      setExNote("");
-      showToast("Added " + newEx.name + " to " + (currentSession?.name || "session"));
-    }
-
-    function removeExercise(exIdx) {
-      updateSession(activeSessionIdx, s => ({
-        ...s,
-        exercises: (s.exercises || []).filter((_, i) => i !== exIdx)
-      }));
-    }
-
-    function moveExercise(exIdx, dir) {
-      const target = exIdx + dir;
-      const exList = currentSession?.exercises || [];
-      if (target < 0 || target >= exList.length) return;
-      updateSession(activeSessionIdx, s => {
-        const copy = [...(s.exercises || [])];
-        const temp = copy[exIdx];
-        copy[exIdx] = copy[target];
-        copy[target] = temp;
-        return { ...s, exercises: copy };
-      });
-    }
-
-    function pickSuggestion(sug) {
-      setExName(sug.name);
-      setExSetsReps(sug.setsReps);
-      setExEquipment(sug.equipmentType);
-      setExRest(sug.restNote);
-      setExWeight(sug.startValue ? String(sug.startValue) : "");
-    }
-
-    async function handleSave() {
-      if (!name.trim()) {
-        showToast("Please enter a Program Name in Step 1");
-        setStep(1);
-        return;
-      }
-      if (!sessions.length) {
-        showToast("Program must contain at least 1 session day");
-        setStep(2);
-        return;
-      }
-
-      setSaving(true);
-      try {
-        const compiledSessions = sessions.map(s => {
-          if (s.type !== "strength") return s;
-          return {
-            id: s.id || slugify(s.name) || ("s_" + Date.now()),
-            name: s.name,
-            day: s.day,
-            type: "strength",
-            duration: s.duration || "45–60 mins",
-            groups: compileSessionGroups(s.exercises || [])
-          };
-        });
-
-        const fullProgram = {
-          id: programId,
-          programId: programId,
-          name: name.trim(),
-          description: description.trim(),
-          frequency: frequency || (compiledSessions.length + " days/week"),
-          startDate: startDate || (I.j && I.W ? I.j(I.W()) : "2026-09-14"),
-          sessions: compiledSessions,
-          weekOverrides: {},
-          updatedAt: Date.now()
-        };
-
-        // Save atomically to Firestore subcollection: users/{userId}/programs/{programId}
-        await GymCloudEngine.saveProgramToSubcollection(personId, fullProgram);
-
-        // Save to active_program/current
-        await GymCloudEngine.saveActiveProgram(personId, fullProgram);
-
-        // Update active profile state
-        updateData(personId, cur => {
-          const next = {
-            ...cur,
-            startDate: fullProgram.startDate,
-            sessions: fullProgram.sessions,
-            goals: fullProgram.description || cur.goals,
-            programId: fullProgram.id,
-            programName: fullProgram.name
-          };
-          try {
-            localStorage.setItem("data:" + personId, JSON.stringify(next));
-          } catch (e) {}
-          return next;
-        });
-
-        showToast("Program '" + fullProgram.name + "' saved to Firestore & set active!");
-        onClose();
-      } catch (err) {
-        console.error("Save program error:", err);
-        showToast("Error saving program: " + (err?.message || "Unknown error"));
-      } finally {
-        setSaving(false);
-      }
-    }
-
-    return h("div", { className: "hg-modal-backdrop", onClick: onClose },
-      h("div", {
-        className: "hg-modal hg-modal-wizard",
-        role: "dialog",
-        "aria-modal": true,
-        onClick: e => e.stopPropagation()
-      },
-        // Modal Header
-        h("div", { className: "hg-modal-header" },
-          h("div", null,
-            h("div", { className: "hg-section-label" }, isEdit ? "EDIT WORKOUT PROGRAM" : "PROGRAM CREATION WIZARD"),
-            h("h2", { className: "hg-modal-title" }, isEdit ? (name || "Edit Program") : "Build Workout Program")
-          ),
-          h("button", {
-            type: "button",
-            className: "hg-icon-button",
-            "aria-label": "Close",
-            onClick: onClose
-          }, "✕")
-        ),
-
-        // Stepper Header
-        h("div", { className: "hg-wizard-steps" },
-          h("div", {
-            className: "hg-wizard-step-item " + (step === 1 ? "active" : (step > 1 ? "completed" : "")),
-            onClick: () => setStep(1)
-          },
-            h("div", { className: "hg-wizard-step-num" }, step > 1 ? "✓" : "1"),
-            h("span", { className: "hg-wizard-step-title" }, "1. Program Meta")
-          ),
-          h("div", {
-            className: "hg-wizard-step-item " + (step === 2 ? "active" : (step > 2 ? "completed" : "")),
-            onClick: () => {
-              if (!name.trim()) { showToast("Enter program name first"); return; }
-              setStep(2);
-            }
-          },
-            h("div", { className: "hg-wizard-step-num" }, step > 2 ? "✓" : "2"),
-            h("span", { className: "hg-wizard-step-title" }, "2. Days & Sessions")
-          ),
-          h("div", {
-            className: "hg-wizard-step-item " + (step === 3 ? "active" : ""),
-            onClick: () => {
-              if (!name.trim()) { showToast("Enter program name first"); return; }
-              if (!sessions.length) { showToast("Add at least 1 session day"); return; }
-              setStep(3);
-            }
-          },
-            h("div", { className: "hg-wizard-step-num" }, "3"),
-            h("span", { className: "hg-wizard-step-title" }, "3. Exercises & Supersets")
-          )
-        ),
-
-        // Wizard Body
-        h("div", { className: "hg-wizard-body" },
-          // STEP 1: Program Meta
-          step === 1 && h("div", { className: "hg-wizard-step-content" },
-            h("div", { className: "hg-card-title", style: { marginBottom: 6 } }, "Program Details"),
-            h("div", { className: "hg-card-copy", style: { marginBottom: 18 } },
-              "Set your routine's name, primary goals or focus, and target weekly frequency."
-            ),
-
-            h("div", { className: "hg-form-group" },
-              h("label", { className: "hg-label", htmlFor: "hg-prog-name" }, "Program Name *"),
-              h("input", {
-                id: "hg-prog-name",
-                className: "hg-input",
-                placeholder: "e.g. Upper / Lower Hypertrophy, 3-Day Full Body",
-                value: name,
-                onChange: e => setName(e.target.value)
-              })
-            ),
-
-            h("div", { className: "hg-form-group" },
-              h("label", { className: "hg-label", htmlFor: "hg-prog-desc" }, "Program Focus / Notes"),
-              h("textarea", {
-                id: "hg-prog-desc",
-                className: "hg-textarea",
-                placeholder: "e.g. Progressive overload on compound lifts with paired supersets for time efficiency.",
-                value: description,
-                onChange: e => setDescription(e.target.value)
-              })
-            ),
-
-            h("div", { className: "hg-form-row" },
-              h("div", { className: "hg-form-group" },
-                h("label", { className: "hg-label", htmlFor: "hg-prog-freq" }, "Weekly Frequency"),
-                h("select", {
-                  id: "hg-prog-freq",
-                  className: "hg-select",
-                  value: frequency,
-                  onChange: e => setFrequency(e.target.value)
-                },
-                  h("option", { value: "2 days/week" }, "2 days/week"),
-                  h("option", { value: "3 days/week" }, "3 days/week"),
-                  h("option", { value: "4 days/week" }, "4 days/week"),
-                  h("option", { value: "5 days/week" }, "5 days/week"),
-                  h("option", { value: "6 days/week" }, "6 days/week")
-                )
-              ),
-              h("div", { className: "hg-form-group" },
-                h("label", { className: "hg-label", htmlFor: "hg-prog-start" }, "Start Week / Date"),
-                h("input", {
-                  id: "hg-prog-start",
-                  type: "date",
-                  className: "hg-input",
-                  value: startDate,
-                  onChange: e => setStartDate(e.target.value)
-                })
-              )
-            ),
-
-            !isEdit && h("div", { style: { marginTop: 24 } },
-              h("div", { className: "hg-section-label" }, "OR START WITH A PROVEN TEMPLATE"),
-              h("div", { className: "hg-template-grid" },
-                h("button", {
-                  type: "button",
-                  className: "hg-template-btn",
-                  onClick: () => applyTemplate("upper_lower")
-                },
-                  h("div", { className: "hg-template-btn-title" }, "4-Day Upper / Lower"),
-                  h("div", { className: "hg-template-btn-copy" }, "4 strength sessions with paired antagonist supersets.")
-                ),
-                h("button", {
-                  type: "button",
-                  className: "hg-template-btn",
-                  onClick: () => applyTemplate("full_body")
-                },
-                  h("div", { className: "hg-template-btn-title" }, "3-Day Full Body"),
-                  h("div", { className: "hg-template-btn-copy" }, "High-frequency compound movement rotation.")
-                ),
-                h("button", {
-                  type: "button",
-                  className: "hg-template-btn",
-                  onClick: () => applyTemplate("ppl")
-                },
-                  h("div", { className: "hg-template-btn-title" }, "Push / Pull / Legs"),
-                  h("div", { className: "hg-template-btn-copy" }, "Classic 3-day body-part targeted hypertrophy.")
-                )
-              )
-            )
-          ),
-
-          // STEP 2: Days & Sessions
-          step === 2 && h("div", { className: "hg-wizard-step-content" },
-            h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 } },
-              h("div", null,
-                h("div", { className: "hg-card-title" }, "Workout Days & Sessions"),
-                h("div", { className: "hg-card-copy" }, "Add, rename, or reorder the days in your weekly rotation.")
-              ),
-              h("button", {
-                type: "button",
-                className: "hg-button secondary",
-                onClick: addSession
-              }, "+ Add Day")
-            ),
-
-            h("div", { className: "hg-session-cards-list" },
-              sessions.map((sess, idx) => h("div", { key: sess.id || idx, className: "hg-session-card-edit" },
-                h("div", { className: "hg-session-card-edit-header" },
-                  h("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
-                    h("span", { className: "hg-chip" }, sess.day || "Day"),
-                    h("strong", null, sess.name || ("Session " + (idx + 1)))
-                  ),
-                  h("div", { style: { display: "flex", alignItems: "center", gap: 4 } },
-                    h("button", {
-                      type: "button",
-                      className: "hg-icon-button",
-                      title: "Move Up",
-                      disabled: idx === 0,
-                      onClick: () => moveSession(idx, -1)
-                    }, "↑"),
-                    h("button", {
-                      type: "button",
-                      className: "hg-icon-button",
-                      title: "Move Down",
-                      disabled: idx === sessions.length - 1,
-                      onClick: () => moveSession(idx, 1)
-                    }, "↓"),
-                    h("button", {
-                      type: "button",
-                      className: "hg-icon-button danger",
-                      title: "Delete Day",
-                      onClick: () => removeSession(idx)
-                    }, "🗑")
-                  )
-                ),
-                h("div", { className: "hg-form-row", style: { marginTop: 10 } },
-                  h("div", { className: "hg-form-group" },
-                    h("label", { className: "hg-label" }, "Day of Week"),
-                    h("select", {
-                      className: "hg-select",
-                      value: sess.day,
-                      onChange: e => updateSession(idx, s => ({ ...s, day: e.target.value }))
-                    },
-                      ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map(d =>
-                        h("option", { key: d, value: d }, d)
-                      )
-                    )
-                  ),
-                  h("div", { className: "hg-form-group" },
-                    h("label", { className: "hg-label" }, "Session Title"),
-                    h("input", {
-                      className: "hg-input",
-                      placeholder: "e.g. Push A, Legs B, Upper Power",
-                      value: sess.name,
-                      onChange: e => updateSession(idx, s => ({ ...s, name: e.target.value }))
-                    })
-                  ),
-                  h("div", { className: "hg-form-group" },
-                    h("label", { className: "hg-label" }, "Type"),
-                    h("select", {
-                      className: "hg-select",
-                      value: sess.type || "strength",
-                      onChange: e => updateSession(idx, s => ({ ...s, type: e.target.value }))
-                    },
-                      h("option", { value: "strength" }, "Strength Workout"),
-                      h("option", { value: "run" }, "Cardio / Run")
-                    )
-                  ),
-                  h("div", { className: "hg-form-group" },
-                    h("label", { className: "hg-label" }, "Duration"),
-                    h("input", {
-                      className: "hg-input",
-                      placeholder: "e.g. 45–60 mins",
-                      value: sess.duration || "45–60 mins",
-                      onChange: e => updateSession(idx, s => ({ ...s, duration: e.target.value }))
-                    })
-                  )
-                ),
-                h("div", { style: { marginTop: 8, fontSize: 13, color: "var(--text-muted)" } },
-                  (sess.exercises || []).length + " exercises configured for this day."
-                )
-              ))
-            )
-          ),
-
-          // STEP 3: Exercise & Superset Builder
-          step === 3 && h("div", { className: "hg-wizard-step-content" },
-            h("div", { className: "hg-card-title" }, "Exercise & Superset Builder"),
-            h("div", { className: "hg-card-copy", style: { marginBottom: 14 } },
-              "Select a session tab, add exercises, and assign superset groupings (A1/A2, B1/B2) for paired antagonist circuits."
-            ),
-
-            // Session Tabs
-            h("div", { className: "hg-wizard-tab-bar" },
-              sessions.map((s, sIdx) => h("button", {
-                key: s.id || sIdx,
-                type: "button",
-                className: "hg-wizard-tab-btn " + (activeSessionIdx === sIdx ? "active" : ""),
-                onClick: () => setActiveSessionIdx(sIdx)
-              }, (s.name || ("Day " + (sIdx + 1))) + " (" + (s.day || "") + ")"))
-            ),
-
-            // Active Session Exercises List
-            h("div", { style: { marginTop: 14 } },
-              h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 } },
-                h("div", { className: "hg-section-label" },
-                  (currentSession?.name || "Session") + " EXERCISES (" + ((currentSession?.exercises || []).length) + ")"
-                ),
-                h("span", { style: { fontSize: 12, color: "var(--text-muted)" } },
-                  "Drag or use arrows to reorder"
-                )
-              ),
-
-              (!currentSession?.exercises || currentSession.exercises.length === 0)
-                ? h("div", { className: "hg-wizard-empty-box" },
-                    "No exercises added to this session yet. Choose from popular exercises below or use the custom form."
-                  )
-                : h("div", { className: "hg-wizard-exercise-list" },
-                    currentSession.exercises.map((ex, exIdx) => {
-                      const sg = (ex.supersetGroup || "solo").toLowerCase();
-                      const isSuperset = sg !== "solo";
-                      const badgeClass = isSuperset ? ("hg-superset-badge group-" + sg) : "hg-superset-badge solo";
-                      const badgeText = isSuperset ? ("GROUP " + sg.toUpperCase() + " · SUPERSET") : "SOLO · STRAIGHT SET";
-
-                      return h("div", { key: ex.id || exIdx, className: "hg-wizard-exercise-item" },
-                        h("div", { className: "hg-wizard-exercise-info" },
-                          h("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 4 } },
-                            h("span", { className: badgeClass }, badgeText),
-                            h("strong", { style: { fontSize: 15 } }, ex.name)
-                          ),
-                          h("div", { style: { fontSize: 13, color: "var(--text-muted)" } },
-                            ex.setsReps + " · " + (ex.startValue ? (ex.startValue + "kg") : "Bodyweight") + " · rest " + (ex.restNote || "—") + (ex.equipmentType ? (" · " + ex.equipmentType) : "")
-                          ),
-                          ex.note && h("div", { style: { fontSize: 12, color: "var(--text-muted)", fontStyle: "italic", marginTop: 2 } },
-                            "Note: " + ex.note
-                          )
-                        ),
-                        h("div", { className: "hg-wizard-exercise-actions" },
-                          h("button", {
-                            type: "button",
-                            className: "hg-icon-button",
-                            title: "Move Up",
-                            disabled: exIdx === 0,
-                            onClick: () => moveExercise(exIdx, -1)
-                          }, "↑"),
-                          h("button", {
-                            type: "button",
-                            className: "hg-icon-button",
-                            title: "Move Down",
-                            disabled: exIdx === currentSession.exercises.length - 1,
-                            onClick: () => moveExercise(exIdx, 1)
-                          }, "↓"),
-                          h("button", {
-                            type: "button",
-                            className: "hg-icon-button danger",
-                            title: "Remove",
-                            onClick: () => removeExercise(exIdx)
-                          }, "🗑")
-                        )
-                      );
-                    })
-                  )
-            ),
-
-            // Quick Pick Exercise Bank
-            h("div", { style: { marginTop: 20, paddingTop: 16, borderTop: "1px solid var(--border)" } },
-              h("div", { className: "hg-section-label", style: { marginBottom: 8 } }, "QUICK PICK POPULAR EXERCISES"),
-              h("div", { className: "hg-wizard-quick-picks" },
-                EXERCISE_SUGGESTIONS.map((sug, sIdx) => h("button", {
-                  key: sIdx,
-                  type: "button",
-                  className: "hg-quick-pick-chip",
-                  onClick: () => pickSuggestion(sug)
-                }, "+ " + sug.name))
-              )
-            ),
-
-            // Add Exercise Form
-            h("div", { className: "hg-wizard-add-form", style: { marginTop: 16 } },
-              h("div", { className: "hg-card-title", style: { fontSize: 14, marginBottom: 10 } },
-                "Add Exercise to " + (currentSession?.name || "Current Session")
-              ),
-              h("div", { className: "hg-form-row" },
-                h("div", { className: "hg-form-group", style: { flex: 2 } },
-                  h("label", { className: "hg-label", htmlFor: "hg-ex-name-input" }, "Exercise Name *"),
-                  h("input", {
-                    id: "hg-ex-name-input",
-                    className: "hg-input",
-                    placeholder: "e.g. Barbell Bench Press, Pull-ups",
-                    value: exName,
-                    onChange: e => setExName(e.target.value)
-                  })
-                ),
-                h("div", { className: "hg-form-group" },
-                  h("label", { className: "hg-label", htmlFor: "hg-ex-sets-reps" }, "Sets × Reps"),
-                  h("input", {
-                    id: "hg-ex-sets-reps",
-                    className: "hg-input",
-                    placeholder: "4 × 6 or 3 × 8–10",
-                    value: exSetsReps,
-                    onChange: e => setExSetsReps(e.target.value)
-                  })
-                ),
-                h("div", { className: "hg-form-group" },
-                  h("label", { className: "hg-label", htmlFor: "hg-ex-weight" }, "Start Weight (kg)"),
-                  h("input", {
-                    id: "hg-ex-weight",
-                    type: "number",
-                    step: "0.5",
-                    className: "hg-input",
-                    placeholder: "e.g. 40 (or blank)",
-                    value: exWeight,
-                    onChange: e => setExWeight(e.target.value)
-                  })
-                )
-              ),
-
-              h("div", { className: "hg-form-row", style: { marginTop: 8 } },
-                h("div", { className: "hg-form-group" },
-                  h("label", { className: "hg-label", htmlFor: "hg-ex-superset" }, "Superset Assignment"),
-                  h("select", {
-                    id: "hg-ex-superset",
-                    className: "hg-select",
-                    value: exSuperset,
-                    onChange: e => setExSuperset(e.target.value)
-                  },
-                    h("option", { value: "solo" }, "Solo (Straight Set)"),
-                    h("option", { value: "a" }, "Group A (A1 / A2 Superset)"),
-                    h("option", { value: "b" }, "Group B (B1 / B2 Superset)"),
-                    h("option", { value: "c" }, "Group C (C1 / C2 Superset)"),
-                    h("option", { value: "d" }, "Group D (D1 / D2 Superset)")
-                  )
-                ),
-                h("div", { className: "hg-form-group" },
-                  h("label", { className: "hg-label", htmlFor: "hg-ex-rest" }, "Rest Note"),
-                  h("input", {
-                    id: "hg-ex-rest",
-                    className: "hg-input",
-                    placeholder: "e.g. 90s, 2 mins, 60s",
-                    value: exRest,
-                    onChange: e => setExRest(e.target.value)
-                  })
-                ),
-                h("div", { className: "hg-form-group" },
-                  h("label", { className: "hg-label", htmlFor: "hg-ex-equip" }, "Equipment"),
-                  h("select", {
-                    id: "hg-ex-equip",
-                    className: "hg-select",
-                    value: exEquipment,
-                    onChange: e => setExEquipment(e.target.value)
-                  },
-                    h("option", { value: "barbell" }, "Barbell"),
-                    h("option", { value: "dumbbell" }, "Dumbbell"),
-                    h("option", { value: "cable" }, "Cable"),
-                    h("option", { value: "machine" }, "Machine"),
-                    h("option", { value: "bodyweight" }, "Bodyweight")
-                  )
-                )
-              ),
-
-              h("div", { className: "hg-form-group", style: { marginTop: 8 } },
-                h("label", { className: "hg-label", htmlFor: "hg-ex-cues" }, "Technique Cues / Notes (Optional)"),
-                h("input", {
-                  id: "hg-ex-cues",
-                  className: "hg-input",
-                  placeholder: "e.g. Retract scapula, pause 1s at bottom",
-                  value: exNote,
-                  onChange: e => setExNote(e.target.value)
-                })
-              ),
-
-              h("button", {
-                type: "button",
-                className: "hg-button secondary",
-                style: { marginTop: 10, width: "100%" },
-                onClick: addExercise
-              }, "+ Add Exercise to " + (currentSession?.name || "Session"))
-            )
-          )
-        ),
-
-        // Modal Footer
-        h("div", { className: "hg-modal-footer" },
-          step > 1 && h("button", {
-            type: "button",
-            className: "hg-button secondary",
-            onClick: () => setStep(step - 1)
-          }, "← Back"),
-
-          h("div", { style: { display: "flex", gap: 10 } },
-            h("button", {
-              type: "button",
-              className: "hg-button secondary",
-              onClick: onClose
-            }, "Cancel"),
-
-            step < 3 && h("button", {
-              type: "button",
-              className: "hg-button primary",
-              onClick: () => {
-                if (step === 1 && !name.trim()) {
-                  showToast("Please enter a Program Name");
-                  return;
-                }
-                if (step === 2 && !sessions.length) {
-                  showToast("Add at least 1 session day");
-                  return;
-                }
-                setStep(step + 1);
-              }
-            }, "Next Step →"),
-
-            step === 3 && h("button", {
-              type: "button",
-              className: "hg-button primary",
-              disabled: saving,
-              onClick: handleSave
-            }, saving ? "Saving Program…" : "Save Program to Firestore & Set Active ✓")
-          )
-        )
-      )
-    );
-  }
-
   // =========================================================================
   // Data Exporter & Backup Engine (schemaVersion: 3 with health tracking stores)
   // =========================================================================
@@ -6859,10 +5903,8 @@ const EXERCISE_SUGGESTIONS = [
     const [isNewExercise, setIsNewExercise] = useState(false);
     const [deletingExercise, setDeletingExercise] = useState(null);
     const [pendingRestoreData, setPendingRestoreData] = useState(null);
-    const [resetModalOpen, setResetModalOpen] = useState(false);
     const [equipmentOpen, setEquipmentOpen] = useState(false);
     const [advancedOpen, setAdvancedOpen] = useState(false);
-    const [wizardState, setWizardState] = useState({ open: false, initialProgram: null, mode: "create" });
     const [savedPrograms, setSavedPrograms] = useState([]);
     const [physioModalOpen, setPhysioModalOpen] = useState(false);
 
@@ -7051,33 +6093,6 @@ const EXERCISE_SUGGESTIONS = [
       }
     }
 
-    function handleConfirmReset() {
-      const defaultProg = I.K?.[personId]?.sessions;
-      if (!defaultProg) {
-        showToast("No default program found for " + meta.label);
-        return;
-      }
-      updateData(personId, cur => {
-        const next = {
-          ...cur,
-          sessions: defaultProg,
-          programName: "Default 4-Day Plan",
-          updatedAt: Date.now()
-        };
-        safeStorageSet(`plateplan_v1:${personId}`, JSON.stringify({
-          sessions: defaultProg,
-          startDate: cur.startDate,
-          goals: cur.goals,
-          updatedAt: Date.now()
-        }));
-        safeStorageSet(`data:${personId}`, JSON.stringify(next));
-        GymCloudEngine.savePlatePlanState(personId, defaultProg, cur.startDate, cur.goals);
-        return next;
-      });
-      showToast("Reset to default program");
-      setResetModalOpen(false);
-    }
-
     function handleExportPlanOnly() {
       setOverflowMenuOpen(false);
       const payload = {
@@ -7090,19 +6105,6 @@ const EXERCISE_SUGGESTIONS = [
       };
       downloadFile(payload, `training-plan-${personId}-${payload.exportedAt}.json`);
       showToast("Exported plan definition");
-    }
-
-    function handleDownloadReminders() {
-      setOverflowMenuOpen(false);
-      try {
-        if (I.at && I.rt) {
-          const ics = I.at(store, 9);
-          I.rt(ics, `training-reminders-${personId}.ics`);
-          showToast("Downloaded workout calendar reminders (.ics)");
-        }
-      } catch (e) {
-        showToast("Calendar generator unavailable");
-      }
     }
 
     return h("div", { className: "hg-plan-container" },
@@ -7177,14 +6179,6 @@ const EXERCISE_SUGGESTIONS = [
                 fileInputRef.current?.click();
               }
             }, "📤 Restore from backup…"),
-            h("button", {
-              type: "button",
-              className: "hg-menu-item danger",
-              onClick: () => {
-                setOverflowMenuOpen(false);
-                setResetModalOpen(true);
-              }
-            }, "🔄 Reset to default program…"),
 
             h("div", { className: "hg-menu-divider" }),
 
@@ -7193,19 +6187,6 @@ const EXERCISE_SUGGESTIONS = [
               className: "hg-menu-item",
               onClick: handleExportPlanOnly
             }, "📋 Export plan only (.json)"),
-            h("button", {
-              type: "button",
-              className: "hg-menu-item",
-              onClick: handleDownloadReminders
-            }, "🗓 Download reminders (.ics)"),
-            h("button", {
-              type: "button",
-              className: "hg-menu-item",
-              onClick: () => {
-                setOverflowMenuOpen(false);
-                setWizardState({ open: true, initialProgram: null, mode: "create" });
-              }
-            }, "🧙 Program creation wizard"),
             h("button", {
               type: "button",
               className: "hg-menu-item",
@@ -7499,28 +6480,6 @@ const EXERCISE_SUGGESTIONS = [
         )
       ),
 
-      // Destructive Confirmation: Reset to Default Program Alert
-      resetModalOpen && h("div", { className: "hg-hig-modal-backdrop" },
-        h("div", { className: "hg-hig-alert" },
-          h("h3", { className: "hg-alert-title" }, "Reset to Default Program?"),
-          h("p", { className: "hg-alert-copy" },
-            `Reset ${meta.label}'s workout routine to the default 4-day training plan? Logged session history and health records are strictly preserved and will not be lost.`
-          ),
-          h("div", { className: "hg-alert-actions" },
-            h("button", {
-              type: "button",
-              className: "hg-alert-btn",
-              onClick: () => setResetModalOpen(false)
-            }, "Cancel"),
-            h("button", {
-              type: "button",
-              className: "hg-alert-btn danger",
-              onClick: handleConfirmReset
-            }, "Reset Program")
-          )
-        )
-      ),
-
       // Destructive Confirmation: Delete Exercise Alert
       deletingExercise && h("div", { className: "hg-hig-modal-backdrop" },
         h("div", { className: "hg-hig-alert" },
@@ -7543,20 +6502,6 @@ const EXERCISE_SUGGESTIONS = [
         )
       ),
 
-      // Program Wizard Modal
-      wizardState.open && h(ProgramWizardModal, {
-        personId,
-        data,
-        updateData,
-        showToast,
-        initialProgram: wizardState.initialProgram,
-        mode: wizardState.mode,
-        onClose: () => {
-          setWizardState({ open: false, initialProgram: null, mode: "create" });
-          loadSaved();
-        }
-      }),
-
       // Physio & AI Routine Assistant Modal
       physioModalOpen && h(PhysioAIAssistantModal, {
         personId,
@@ -7571,6 +6516,7 @@ const EXERCISE_SUGGESTIONS = [
 
   function PhysioAIAssistantModal({ personId, data, meta, updateData, showToast, onClose }) {
     const [tab, setTab] = useState("export"); // "export" | "import" | "milestones"
+    const [exportFormat, setExportFormat] = useState("prompt"); // "prompt" | "json"
     const [physioNotes, setPhysioNotes] = useState("");
     const [rawAIResponse, setRawAIResponse] = useState("");
     const [diffItems, setDiffItems] = useState([]);
@@ -7578,6 +6524,7 @@ const EXERCISE_SUGGESTIONS = [
     const [milestoneLabel, setMilestoneLabel] = useState("");
     const [parseError, setParseError] = useState(null);
     const [copied, setCopied] = useState(false);
+    const [copiedJson, setCopiedJson] = useState(false);
     const [milestonesList, setMilestonesList] = useState([]);
     const [loadingMilestones, setLoadingMilestones] = useState(false);
     const [applying, setApplying] = useState(false);
@@ -7607,6 +6554,16 @@ const EXERCISE_SUGGESTIONS = [
       return engine.buildClinicalPrompt(data, meta?.label || personId, physioNotes);
     }, [data, meta, physioNotes, engine]);
 
+    const enrichedJSON = useMemo(() => {
+      if (!engine?.buildEnrichedRoutineJSON) return null;
+      return engine.buildEnrichedRoutineJSON(data, meta?.label || personId);
+    }, [data, meta, personId, engine]);
+
+    const formattedJSONString = useMemo(() => {
+      if (!enrichedJSON) return "";
+      return JSON.stringify(enrichedJSON, null, 2);
+    }, [enrichedJSON]);
+
     async function handleCopyPrompt() {
       if (!generatedPrompt) return;
       try {
@@ -7617,6 +6574,26 @@ const EXERCISE_SUGGESTIONS = [
       } catch (e) {
         showToast("Failed to copy automatically; please select and copy the text.");
       }
+    }
+
+    async function handleCopyJSON() {
+      if (!formattedJSONString) return;
+      try {
+        await navigator.clipboard.writeText(formattedJSONString);
+        setCopiedJson(true);
+        showToast("Routine JSON copied to clipboard!");
+        setTimeout(() => setCopiedJson(false), 2500);
+      } catch (e) {
+        showToast("Failed to copy JSON.");
+      }
+    }
+
+    function handleDownloadJSON() {
+      if (!enrichedJSON) return;
+      const athleteSlug = (meta?.label || personId || "workout").toLowerCase().replace(/[^a-z0-9]+/g, "-");
+      const dateStr = new Date().toISOString().slice(0, 10);
+      downloadFile(enrichedJSON, `homegym-routine-${athleteSlug}-${dateStr}.json`);
+      showToast("Downloaded routine JSON file!");
     }
 
     function handleAnalyzeResponse() {
@@ -7784,33 +6761,93 @@ const EXERCISE_SUGGESTIONS = [
 
         h("div", { className: "hg-physio-body" },
           tab === "export" && h("div", null,
-            h("div", { style: { fontSize: 13.5, color: "var(--hg-text-2)", marginBottom: 12, lineHeight: 1.4 } },
-              "Export your active split, current weights, and home gym equipment into a clinical prompt bundle. Paste it into Claude, ChatGPT, or Gemini alongside your physio's advice."
+            h("div", { style: { fontSize: 13.5, color: "var(--hg-text-2)", marginBottom: 10, lineHeight: 1.4 } },
+              "Export your routine with permanent exercise IDs, current working weights, and latest logged reps so ChatGPT or Claude can update your program without breaking history or PR tracking."
             ),
+            h("div", {
+              style: {
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                padding: "8px 12px",
+                borderRadius: 8,
+                background: "rgba(37, 99, 235, 0.08)",
+                border: "1px solid rgba(37, 99, 235, 0.2)",
+                fontSize: 12.5,
+                color: "var(--hg-text)",
+                marginBottom: 12
+              }
+            },
+              h("span", null, "🔒"),
+              h("span", null, h("strong", null, "Exercise ID Continuity: "), "Each exercise includes its unique ID and latest performance stats. AI models will preserve these IDs so your progress charts remain unbroken.")
+            ),
+
             h("label", { style: { display: "block", fontSize: 13, fontWeight: 600, color: "var(--hg-text)", marginBottom: 6 } }, "Physiotherapist Advice / Injury Directives (optional):"),
             h("textarea", {
               className: "hg-input",
               rows: 3,
-              style: { width: "100%", padding: 10, fontSize: 13.5, borderRadius: 10, resize: "vertical", boxSizing: "border-box", marginBottom: 14 },
+              style: { width: "100%", padding: 10, fontSize: 13.5, borderRadius: 10, resize: "vertical", boxSizing: "border-box", marginBottom: 12 },
               placeholder: "e.g., Avoid back squats below parallel due to patellar tendinopathy. Substitute with heel-elevated goblet squats and reduce hamstring volume by 20%...",
               value: physioNotes,
               onChange: e => setPhysioNotes(e.target.value)
             }),
-            h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 } },
-              h("span", { style: { fontSize: 13, fontWeight: 600, color: "var(--hg-text)" } }, "Generated AI Clinical Prompt:"),
-              h("button", {
-                type: "button",
-                className: "hg-btn-primary-hig",
-                style: { padding: "6px 14px", fontSize: 13 },
-                onClick: handleCopyPrompt
-              }, copied ? "✓ Copied to clipboard!" : "📋 Copy Prompt to Clipboard")
+
+            // Format switcher & download bar
+            h("div", { style: { display: "flex", flexWrap: "wrap", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 10 } },
+              h("div", { style: { display: "flex", gap: 6 } },
+                h("button", {
+                  type: "button",
+                  className: "hg-btn-secondary",
+                  style: {
+                    padding: "4px 10px",
+                    fontSize: 12,
+                    borderRadius: 6,
+                    background: exportFormat === "prompt" ? "var(--hg-accent)" : "var(--hg-surface-2)",
+                    color: exportFormat === "prompt" ? "#fff" : "var(--hg-text)"
+                  },
+                  onClick: () => setExportFormat("prompt")
+                }, "Prompt View"),
+                h("button", {
+                  type: "button",
+                  className: "hg-btn-secondary",
+                  style: {
+                    padding: "4px 10px",
+                    fontSize: 12,
+                    borderRadius: 6,
+                    background: exportFormat === "json" ? "var(--hg-accent)" : "var(--hg-surface-2)",
+                    color: exportFormat === "json" ? "#fff" : "var(--hg-text)"
+                  },
+                  onClick: () => setExportFormat("json")
+                }, "JSON View (.json)")
+              ),
+              h("div", { style: { display: "flex", gap: 6 } },
+                h("button", {
+                  type: "button",
+                  className: "hg-btn-secondary",
+                  style: { padding: "5px 10px", fontSize: 12 },
+                  onClick: handleDownloadJSON
+                }, "⬇️ Download JSON"),
+                h("button", {
+                  type: "button",
+                  className: "hg-btn-secondary",
+                  style: { padding: "5px 10px", fontSize: 12 },
+                  onClick: handleCopyJSON
+                }, copiedJson ? "✓ Copied JSON" : "📋 Copy JSON"),
+                h("button", {
+                  type: "button",
+                  className: "hg-btn-primary-hig",
+                  style: { padding: "5px 12px", fontSize: 12 },
+                  onClick: handleCopyPrompt
+                }, copied ? "✓ Copied Prompt" : "📋 Copy Clinical Prompt")
+              )
             ),
+
             h("textarea", {
               readOnly: true,
               rows: 10,
               className: "hg-input",
               style: { width: "100%", padding: 10, fontSize: 12, fontFamily: "monospace", borderRadius: 10, background: "var(--hg-surface-2)", boxSizing: "border-box" },
-              value: generatedPrompt
+              value: exportFormat === "json" ? formattedJSONString : generatedPrompt
             })
           ),
 
@@ -7969,24 +7006,15 @@ const EXERCISE_SUGGESTIONS = [
   function SettingsModal({ personId, store, pin, syncStatus, queueCount = 0, updateData, onSaveKey, onClose, showToast }) {
     const [theme, setTheme] = useState(getTheme());
     const [key, setKey] = useState(pin || window.HOUSEHOLD_PIN_DEFAULT || "");
-    const [elliottStart, setElliottStart] = useState(store?.elliott?.startDate || "2026-09-07");
-    const [chloeStart, setChloeStart] = useState(store?.chloe?.startDate || "2026-09-07");
     const [reminderHour, setReminderHour] = useState(() => storageGet(`hg_reminderhour_${personId}`, 9));
     const [enabling, setEnabling] = useState(false);
     const [restoring, setRestoring] = useState(false);
     const [recovering, setRecovering] = useState(false);
-    const [deadLetters, setDeadLetters] = useState(() => PlatePlanSyncEngine.getDeadLetterQueue());
     const backupFileInputRef = useRef(null);
 
     function chooseTheme(value) {
       setTheme(value);
       applyTheme(value);
-    }
-
-    function saveDates() {
-      updateData("elliott", data => ({ ...data, startDate: elliottStart }));
-      updateData("chloe", data => ({ ...data, startDate: chloeStart }));
-      showToast("Program dates updated");
     }
 
     async function enableNotifications() {
@@ -8080,34 +7108,10 @@ const EXERCISE_SUGGESTIONS = [
             )
           )
         ),
-        !firestoreEnabled() && h("div", { className: "hg-setting-section" },
+        h("div", { className: "hg-setting-section" },
           h("h3", null, "Cloud sync"),
           h("p", null,
-            `${syncStatus === "synced" ? "Cloud synced." : syncStatus === "connecting" ? "Connecting…" : syncStatus === "offline" ? "Offline mode active." : "Local only."} Data syncs between your phones through the shared household key. Firestore sync is switched off.`
-          )
-        ),
-        firestoreEnabled() && h("div", { className: "hg-setting-section" },
-          h("h3", null, "Cloud-First Architecture & Automated Sync"),
-          h("p", null,
-            `${syncStatus === "synced" ? "Cloud Synced." : syncStatus === "connecting" ? "Connecting to Firestore…" : syncStatus === "offline" ? "Offline mode active." : "Local cache."} HomeGym ${APP_VERSION} two-way cloud sync engine automatically replicates exercise history and health metrics (bodyweight, sleep, readiness) to Firestore.`
-          ),
-          h("div", { style: { marginTop: 10, padding: "12px 14px", background: "rgba(255,255,255,0.03)", border: "1px solid var(--border)", borderRadius: 8, fontSize: 13 } },
-            h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 } },
-              h("span", null, "Offline Mutation Queue:"),
-              h("strong", { style: { color: queueCount > 0 ? "#f59e0b" : "#10b981" } }, queueCount > 0 ? `${queueCount} pending offline write(s)` : "Clean (0 pending)")
-            ),
-            h(Button, {
-              style: { width: "100%" },
-              onClick: async () => {
-                showToast("Executing Two-Way Cloud Sync with Firestore…");
-                await PlatePlanSyncEngine.processOfflineQueue();
-                const res = await PlatePlanSyncEngine.syncPlatePlanWithFirestore(personId, showToast);
-                if (res) {
-                  updateData(personId, () => res);
-                  showToast("Two-way cloud sync complete!");
-                }
-              }
-            }, "Sync Now with Firestore")
+            `${syncStatus === "synced" ? "Cloud synced." : syncStatus === "connecting" ? "Connecting…" : syncStatus === "offline" ? "Offline mode active." : "Local only."} Data automatically syncs between your devices through Google Sign-In and the shared household key.`
           )
         ),
         h("div", { className: "hg-setting-section" },
@@ -8136,18 +7140,6 @@ const EXERCISE_SUGGESTIONS = [
               style: { display: "none" },
               onChange: handleRestoreFileChange
             })
-          ),
-          deadLetters.length > 0 && h("div", { style: { marginTop: 12, padding: "10px 12px", background: "rgba(239, 68, 68, 0.08)", border: "1px solid rgba(239, 68, 68, 0.25)", borderRadius: 8, fontSize: 12.5 } },
-            h("div", { style: { color: "#ef4444", fontWeight: 600, marginBottom: 4 } }, `Dead-Letter Queue: ${deadLetters.length} unprocessable mutation(s)`),
-            h("div", { style: { color: "var(--text-muted)", marginBottom: 8 } }, "Mutations that failed 3 times or had invalid schema were moved here to prevent offline queue deadlock."),
-            h(Button, {
-              style: { fontSize: 12, padding: "4px 10px" },
-              onClick: () => {
-                PlatePlanSyncEngine.clearDeadLetterQueue();
-                setDeadLetters([]);
-                showToast("Dead-letter queue cleared");
-              }
-            }, "Clear Dead-Letter Queue")
           )
         ),
         h("div", { className: "hg-setting-section" },
@@ -8170,14 +7162,6 @@ const EXERCISE_SUGGESTIONS = [
               },
             }, "Copy key")
           )
-        ),
-        h("div", { className: "hg-setting-section" },
-          h("h3", null, "Program start dates"),
-          h("div", { className: "hg-fields" },
-            h(Field, { label: "Elliott" }, h("input", { className: "hg-input", type: "date", value: elliottStart, onChange: event => setElliottStart(event.target.value) })),
-            h(Field, { label: "Chloe" }, h("input", { className: "hg-input", type: "date", value: chloeStart, onChange: event => setChloeStart(event.target.value) }))
-          ),
-          h("div", { className: "hg-actions" }, h(Button, { onClick: saveDates }, "Save dates"))
         ),
         h("div", { className: "hg-setting-section" },
           h("h3", null, "Workout reminder"),

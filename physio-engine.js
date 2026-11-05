@@ -14,15 +14,183 @@ export const HG_PHYSIO_ENGINE = {
   ],
 
   /**
-   * Build a rich, clinical prompt bundle for external AI assistants.
+   * Safe string slugifier for canonical exercise & session IDs.
    */
-  buildClinicalPrompt(profileData, athleteName = "Elliott", physioNotes = "") {
-    const sessions = Array.isArray(profileData?.sessions) ? profileData.sessions : [];
+  slugify(text) {
+    return (text || "")
+      .toString()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "");
+  },
+
+  /**
+   * Query athlete logs to extract the latest performance data for an exercise
+   * (latest weights, sets, reps, last logged date, feeling, and historical PR max).
+   */
+  getExerciseLatestStats(profileData, exerciseId, exerciseName) {
+    const logs = Array.isArray(profileData?.logs) ? profileData.logs : [];
+    const idTarget = exerciseId ? String(exerciseId).trim().toLowerCase() : "";
+    const nameTarget = exerciseName ? String(exerciseName).trim().toLowerCase() : "";
+
+    const matchedLogs = logs.filter(log => {
+      if (!log || log.type === "run") return false;
+      const logExId = (log.exerciseId || log.id || "").toString().trim().toLowerCase();
+      const logExName = (log.exerciseName || log.name || "").toString().trim().toLowerCase();
+      if (idTarget && logExId === idTarget) return true;
+      if (nameTarget && (logExName === nameTarget || logExId === nameTarget)) return true;
+      return false;
+    });
+
+    if (matchedLogs.length === 0) {
+      return null;
+    }
+
+    // Sort by date desc, then timestamp desc
+    matchedLogs.sort((a, b) => {
+      const dateA = a.date || "";
+      const dateB = b.date || "";
+      if (dateA !== dateB) return dateB.localeCompare(dateA);
+      return (b.timestamp || 0) - (a.timestamp || 0);
+    });
+
+    const latest = matchedLogs[0];
+    let maxWeight = 0;
+    matchedLogs.forEach(l => {
+      if (Array.isArray(l.sets)) {
+        l.sets.forEach(s => {
+          const w = Number(s.weight);
+          if (!isNaN(w) && w > maxWeight) maxWeight = w;
+        });
+      } else {
+        const w = Number(l.weight);
+        if (!isNaN(w) && w > maxWeight) maxWeight = w;
+      }
+    });
+
+    let setsCount = 1;
+    let repsDesc = "";
+    let weightVal = latest.weight != null ? Number(latest.weight) : null;
+
+    if (Array.isArray(latest.sets) && latest.sets.length > 0) {
+      setsCount = latest.sets.length;
+      const repsList = latest.sets.map(s => s.reps).filter(r => r != null);
+      repsDesc = repsList.join(", ");
+      const maxInLatest = Math.max(...latest.sets.map(s => Number(s.weight) || 0));
+      if (weightVal == null || isNaN(weightVal) || weightVal === 0) {
+        weightVal = maxInLatest > 0 ? maxInLatest : null;
+      }
+    } else {
+      setsCount = latest.sets != null ? Number(latest.sets) : 1;
+      repsDesc = latest.reps != null ? String(latest.reps) : "";
+    }
+
+    const weightStr = weightVal != null && !isNaN(weightVal) && weightVal > 0 ? ` @ ${weightVal}kg` : " (Bodyweight)";
+    const summary = `${setsCount} × ${repsDesc || "reps"}${weightStr} (${latest.date || "recent"})`;
+
+    return {
+      lastLoggedDate: latest.date || null,
+      lastLoggedWeight: weightVal,
+      lastLoggedSets: setsCount,
+      lastLoggedReps: repsDesc || null,
+      lastLoggedRpe: latest.rpe ?? null,
+      lastLoggedFeeling: latest.feeling || null,
+      maxHistoricalWeight: maxWeight > 0 ? maxWeight : null,
+      summary
+    };
+  },
+
+  /**
+   * Build an enriched JSON representation of the active routine with permanent exercise IDs
+   * and latest workout performance stats attached to each exercise.
+   */
+  buildEnrichedRoutineJSON(profileData, athleteName = "Elliott") {
+    const sessions = Array.isArray(profileData?.sessions)
+      ? profileData.sessions
+      : (Array.isArray(profileData?.active_program?.sessions) ? profileData.active_program.sessions : []);
     const equipment = (Array.isArray(profileData?.equipment) && profileData.equipment.length > 0)
       ? profileData.equipment
       : this.DEFAULT_EQUIPMENT;
-    const splitName = profileData?.programName || "Active Training Routine";
-    const dateStr = new Date().toISOString().slice(0, 10);
+    const programName = profileData?.programName || profileData?.active_program?.name || "Active Training Routine";
+
+    const enrichedSessions = sessions.map((session, sIdx) => {
+      const sessionId = session.id || this.slugify(session.name) || `session_${sIdx + 1}`;
+      const sessionName = session.name || `Session ${sIdx + 1}`;
+      const day = session.day || "";
+
+      let groups = [];
+      if (Array.isArray(session.groups) && session.groups.length > 0) {
+        groups = session.groups.map(group => {
+          const exercises = (Array.isArray(group.exercises) ? group.exercises : []).map(ex => {
+            const exId = ex.id || this.slugify(ex.name);
+            const stats = this.getExerciseLatestStats(profileData, exId, ex.name);
+            return {
+              id: exId,
+              name: ex.name,
+              equipmentType: ex.equipmentType || "barbell",
+              setsReps: ex.setsReps || "3 × 8–10",
+              startValue: ex.startValue != null && !isNaN(Number(ex.startValue)) ? Number(ex.startValue) : null,
+              unit: ex.unit || "kg",
+              restNote: ex.restNote || "90s",
+              note: ex.note || "",
+              latestPerformance: stats
+            };
+          });
+          return {
+            label: group.label || "Main Exercises",
+            type: group.type || "straight",
+            exercises
+          };
+        });
+      } else if (Array.isArray(session.exercises)) {
+        const exercises = session.exercises.map(ex => {
+          const exId = ex.id || this.slugify(ex.name);
+          const stats = this.getExerciseLatestStats(profileData, exId, ex.name);
+          return {
+            id: exId,
+            name: ex.name,
+            equipmentType: ex.equipmentType || "barbell",
+            setsReps: ex.setsReps || "3 × 8–10",
+            startValue: ex.startValue != null && !isNaN(Number(ex.startValue)) ? Number(ex.startValue) : null,
+            unit: ex.unit || "kg",
+            restNote: ex.restNote || "90s",
+            note: ex.note || "",
+            latestPerformance: stats
+          };
+        });
+        groups = [{
+          label: "Main Exercises",
+          type: "straight",
+          exercises
+        }];
+      }
+
+      return {
+        id: sessionId,
+        name: sessionName,
+        day,
+        groups
+      };
+    });
+
+    return {
+      schema: "homegym-routine-v1",
+      athlete: athleteName,
+      programName,
+      exportedAt: new Date().toISOString(),
+      equipment,
+      sessions: enrichedSessions
+    };
+  },
+
+  /**
+   * Build a rich, clinical prompt bundle for external AI assistants.
+   */
+  buildClinicalPrompt(profileData, athleteName = "Elliott", physioNotes = "") {
+    const enriched = this.buildEnrichedRoutineJSON(profileData, athleteName);
+    const dateStr = enriched.exportedAt.slice(0, 10);
+    const sessions = enriched.sessions;
+    const splitName = enriched.programName;
 
     let markdown = `# Clinical Workout Routine Consultation\n\n`;
     markdown += `**Athlete:** ${athleteName}\n`;
@@ -35,7 +203,7 @@ export const HG_PHYSIO_ENGINE = {
     }
 
     markdown += `## Available Equipment\n`;
-    equipment.forEach(item => {
+    enriched.equipment.forEach(item => {
       markdown += `- ${item}\n`;
     });
     if (!profileData?.equipment || profileData.equipment.length === 0) {
@@ -49,60 +217,30 @@ export const HG_PHYSIO_ENGINE = {
       const day = session.day ? ` (${session.day})` : "";
       markdown += `### ${sessionTitle}${day}\n`;
 
-      const groups = Array.isArray(session.groups) ? session.groups : [];
-      if (groups.length === 0 && Array.isArray(session.exercises)) {
-        session.exercises.forEach(ex => {
+      session.groups.forEach(group => {
+        if (group.label) markdown += `*${group.label}:*\n`;
+        group.exercises.forEach(ex => {
           const load = ex.startValue ? ` @ ${ex.startValue}${ex.unit || "kg"}` : "";
           const sr = ex.setsReps ? ` (${ex.setsReps}${load})` : "";
           const note = ex.note ? ` — Note: ${ex.note}` : "";
-          markdown += `- **${ex.name}**${sr}${note}\n`;
+          const stats = ex.latestPerformance;
+          const statsStr = stats ? `\n    - Latest Logged: ${stats.summary}${stats.maxHistoricalWeight ? ` | PR Max: ${stats.maxHistoricalWeight}kg` : ""}` : "";
+          markdown += `- **${ex.name}**${sr} [id: \`${ex.id}\`]${note}${statsStr}\n`;
         });
-      } else {
-        groups.forEach(group => {
-          if (group.label) markdown += `*${group.label}:*\n`;
-          const exList = Array.isArray(group.exercises) ? group.exercises : [];
-          exList.forEach(ex => {
-            const load = ex.startValue ? ` @ ${ex.startValue}${ex.unit || "kg"}` : "";
-            const sr = ex.setsReps ? ` (${ex.setsReps}${load})` : "";
-            const note = ex.note ? ` — Note: ${ex.note}` : "";
-            markdown += `- **${ex.name}**${sr}${note}\n`;
-          });
-        });
-      }
+      });
       markdown += `\n`;
     });
 
     markdown += `## Instructions for AI Assistant\n`;
-    markdown += `1. **Clinical Reasoning:** Explain the clinical rationale for any recommended exercise substitutions, loading reductions, or volume tweaks based on the physiotherapist guidance above.\n`;
-    markdown += `2. **Equipment Check:** Ensure all recommended exercises strictly use the athlete's available equipment listed above.\n`;
-    markdown += `3. **Output Format:** You MUST end your response with a single valid \`\`\`json code block containing the complete updated 'sessions' array matching HomeGym's structure:\n\n`;
+    markdown += `1. **PRESERVE EXERCISE IDs (MANDATORY)**: Every exercise in this program has a unique, permanent identifier (e.g. "id": "bench" or "id": "barbell_bench_press"). When adjusting sets, reps, load, rest times, or tempo cues for an existing exercise, you MUST preserve its exact \`id\`. DO NOT change, rename, or omit existing exercise IDs. HomeGym uses this exact ID to link historical workout logs, progression graphs, and personal records.\n`;
+    markdown += `2. **SUBSTITUTIONS & NEW EXERCISES**: Only generate a new snake_case \`id\` (e.g. "id": "goblet_squat") when clinically substituting an exercise or adding a brand new movement.\n`;
+    markdown += `3. **Clinical Reasoning:** Explain the clinical rationale for any recommended exercise substitutions, loading reductions, or volume tweaks based on the physiotherapist guidance above.\n`;
+    markdown += `4. **Equipment Check:** Ensure all recommended exercises strictly use the athlete's available equipment listed above.\n`;
+    markdown += `5. **Output Format:** You MUST end your response with a single valid \`\`\`json code block containing the complete updated 'sessions' array matching HomeGym's structure:\n\n`;
+
     markdown += `\`\`\`json\n`;
-    markdown += `{\n`;
-    markdown += `  "programName": "${splitName} (Adapted)",\n`;
-    markdown += `  "sessions": [\n`;
-    markdown += `    {\n`;
-    markdown += `      "id": "session_id",\n`;
-    markdown += `      "name": "Session Name",\n`;
-    markdown += `      "day": "Monday",\n`;
-    markdown += `      "groups": [\n`;
-    markdown += `        {\n`;
-    markdown += `          "label": "Group Label",\n`;
-    markdown += `          "exercises": [\n`;
-    markdown += `            {\n`;
-    markdown += `              "id": "exercise_id",\n`;
-    markdown += `              "name": "Exercise Name",\n`;
-    markdown += `              "setsReps": "3 x 10",\n`;
-    markdown += `              "startValue": 50,\n`;
-    markdown += `              "unit": "kg",\n`;
-    markdown += `              "note": "Clinical note or tempo cue"\n`;
-    markdown += `            }\n`;
-    markdown += `          ]\n`;
-    markdown += `        }\n`;
-    markdown += `      ]\n`;
-    markdown += `    }\n`;
-    markdown += `  ]\n`;
-    markdown += `}\n`;
-    markdown += `\`\`\`\n`;
+    markdown += JSON.stringify({ programName: `${splitName} (Adapted)`, sessions: enriched.sessions }, null, 2);
+    markdown += `\n\`\`\`\n`;
 
     return markdown;
   },
@@ -204,6 +342,10 @@ export const HG_PHYSIO_ENGINE = {
           match = currById.get(String(propEx.id));
         } else if (currByName.has(propNameNorm)) {
           match = currByName.get(propNameNorm);
+          // Preserve canonical exercise ID if proposed exercise omitted or altered it
+          if (match.id && (!propEx.id || propEx.id !== match.id)) {
+            propEx.id = match.id;
+          }
         } else {
           // If at the same index in the session and names differ, consider it a substitution
           const currAtIdx = currExercises[idx];
@@ -317,10 +459,13 @@ export const HG_PHYSIO_ENGINE = {
           g.exercises = g.exercises.map(ex => {
             const isMatch = (origId && ex.id === origId) || ((ex.name || "").trim().toLowerCase() === origNameNorm);
             if (!isMatch) return ex;
+            const targetId = diff.type === "SUBSTITUTION"
+              ? (diff.proposedExercise?.id || this.slugify(diff.proposedExercise?.name) || `ex_${Date.now()}`)
+              : (ex.id || diff.proposedExercise?.id || `ex_${Date.now()}`);
             return {
               ...ex,
               ...diff.proposedExercise,
-              id: ex.id || diff.proposedExercise.id || `ex_${Date.now()}`
+              id: targetId
             };
           });
         });

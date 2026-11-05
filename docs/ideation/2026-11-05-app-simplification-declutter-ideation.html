@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HomeGym Feature Simplification & Decluttering Audit</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --surface: #1e293b;
+      --surface-2: #334155;
+      --border: #475569;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --accent: #38bdf8;
+      --accent-glow: rgba(56, 189, 248, 0.2);
+      --danger: #f87171;
+      --warning: #fbbf24;
+      --success: #4ade80;
+      --purple: #c084fc;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      padding: 32px 20px;
+    }
+    .container { max-width: 1040px; margin: 0 auto; }
+    header {
+      margin-bottom: 32px;
+      padding-bottom: 24px;
+      border-bottom: 1px solid var(--border);
+    }
+    .badge {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 9999px;
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 12px;
+    }
+    .badge-audit { background: rgba(248, 113, 113, 0.2); color: var(--danger); border: 1px solid var(--danger); }
+    .badge-rec { background: rgba(74, 222, 128, 0.2); color: var(--success); border: 1px solid var(--success); }
+    h1 { font-size: 32px; font-weight: 800; letter-spacing: -0.03em; margin-bottom: 8px; }
+    p.lead { font-size: 16px; color: var(--text-muted); max-width: 800px; }
+
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 20px; margin-bottom: 32px; }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 24px;
+      position: relative;
+      transition: transform 0.15s ease, border-color 0.15s ease;
+    }
+    .card:hover { transform: translateY(-2px); border-color: var(--accent); }
+    .card-title { font-size: 18px; font-weight: 700; margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between; }
+    .pill {
+      font-size: 11px;
+      font-weight: 700;
+      padding: 3px 8px;
+      border-radius: 6px;
+      text-transform: uppercase;
+    }
+    .pill-remove { background: rgba(248, 113, 113, 0.2); color: var(--danger); }
+    .pill-streamline { background: rgba(251, 191, 36, 0.2); color: var(--warning); }
+    .pill-keep { background: rgba(74, 222, 128, 0.2); color: var(--success); }
+
+    .problem { color: var(--danger); font-size: 13.5px; margin-bottom: 12px; font-weight: 500; }
+    .solution { color: var(--text-muted); font-size: 13.5px; margin-bottom: 14px; }
+    .impact {
+      background: var(--surface-2);
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-size: 12.5px;
+      color: var(--text);
+    }
+    .impact strong { color: var(--accent); }
+
+    .section-title {
+      font-size: 22px;
+      font-weight: 700;
+      margin: 40px 0 16px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .section-title span { color: var(--text-muted); font-size: 14px; font-weight: 400; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+      background: var(--surface);
+      border-radius: 12px;
+      overflow: hidden;
+      font-size: 13.5px;
+    }
+    th, td { padding: 12px 16px; text-align: left; border-bottom: 1px solid var(--border); }
+    th { background: var(--surface-2); color: var(--text); font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; }
+    tr:last-child td { border-bottom: none; }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: rgba(0,0,0,0.3); padding: 2px 6px; border-radius: 4px; font-size: 12px; color: var(--accent); }
+
+    .verdict-box {
+      background: linear-gradient(135deg, rgba(56, 189, 248, 0.1), rgba(192, 132, 252, 0.1));
+      border: 1px solid var(--accent);
+      border-radius: 16px;
+      padding: 24px;
+      margin-top: 36px;
+    }
+    .verdict-box h3 { font-size: 20px; font-weight: 700; color: var(--accent); margin-bottom: 10px; }
+    .verdict-box p { font-size: 14.5px; color: var(--text); line-height: 1.6; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="badge badge-audit">Diagnostics & Optimization Audit (ce-debug + ce-optimize + ce-ideate)</div>
+      <h1>HomeGym Architecture & UX Decluttering</h1>
+      <p class="lead">Grounded audit of redundant features, dead telemetry, and over-engineered legacy mechanics that add cognitive friction to daily training.</p>
+    </header>
+
+    <div class="section-title">
+      1. Diagnostic Findings: Redundant & Obsolete Mechanics
+      <span>(Identified via ce-debug)</span>
+    </div>
+
+    <div class="grid">
+      <!-- Item 1: Start/Finish Dates -->
+      <div class="card">
+        <div class="card-title">
+          <span>Programme Start/Finish Dates</span>
+          <span class="pill pill-remove">Purge</span>
+        </div>
+        <div class="problem">
+          🚨 <strong>The Issue:</strong> <code>startDate</code> calculates a rigid <code>(days / 7) % 9</code> week modulo from an ancient hardcoded date. When deload was globally disabled, this date math became completely dead in calculation logic, yet SettingsModal still prompts users to type dates.
+        </div>
+        <div class="solution">
+          💡 <strong>Remedy:</strong> Remove the "Program start dates" section in SettingsModal. Decouple routines from calendar start dates; workouts are naturally sequenced by Day of Week (Monday, Tuesday, etc.) or Rolling Session Index.
+        </div>
+        <div class="impact">
+          <strong>Outcome:</strong> Eliminates confusing date inputs, eliminates dead <code>Re(startDate)</code> date math, and prevents artificial "Week 7 of 9" desync.
+        </div>
+      </div>
+
+      <!-- Item 2: Developer Telemetry in Settings -->
+      <div class="card">
+        <div class="card-title">
+          <span>Dead-Letter Queue in Settings</span>
+          <span class="pill pill-remove">Purge</span>
+        </div>
+        <div class="problem">
+          🚨 <strong>The Issue:</strong> SettingsModal displays developer-internal telemetry: <em>"Dead-Letter Queue: 0 unprocessable mutations"</em> and <em>"Clear Dead-Letter Queue"</em>. Users have no reason to see database retry queues in a personal gym tracker.
+        </div>
+        <div class="solution">
+          💡 <strong>Remedy:</strong> Move offline retry/error handling strictly into background error logging. Strip the dead-letter UI and manual sync buttons from user-facing Settings.
+        </div>
+        <div class="impact">
+          <strong>Outcome:</strong> Clean Apple HIG Settings sheet focusing on user preferences (Theme, Household Key, Workout Reminders, Backup Export).
+        </div>
+      </div>
+
+      <!-- Item 3: Program Creation Wizard -->
+      <div class="card">
+        <div class="card-title">
+          <span>Program Creation Wizard Modal</span>
+          <span class="pill pill-remove">Purge</span>
+        </div>
+        <div class="problem">
+          🚨 <strong>The Issue:</strong> <code>ProgramWizardModal</code> is a 600-line multi-step wizard generating legacy rigid 4-block ladders. It is completely superseded by the direct Plan table editor and the new <strong>Physio & AI Assistant</strong>.
+        </div>
+        <div class="solution">
+          💡 <strong>Remedy:</strong> Remove <code>ProgramWizardModal</code> from PlanView overflow menu. Direct plan editing + AI Routine Assistant handle 100% of routine creation and adaptation.
+        </div>
+        <div class="impact">
+          <strong>Outcome:</strong> Cuts ~600 lines of dead modal code, removes UI clutter from Plan tab, and establishes a single canonical routine evolution path.
+        </div>
+      </div>
+
+      <!-- Item 4: Parallel Dual-Sync (PlatePlan vs ActiveProgram) -->
+      <div class="card">
+        <div class="card-title">
+          <span>Dual Sync (plateplan vs active_program)</span>
+          <span class="pill pill-streamline">Consolidate</span>
+        </div>
+        <div class="problem">
+          🚨 <strong>The Issue:</strong> Every routine edit writes identical payloads to two separate RTDB paths: <code>gym_users/${userId}/active_program/current</code> AND <code>gym_users/${userId}/plateplan/current</code>, plus duplicate localStorage keys.
+        </div>
+        <div class="solution">
+          💡 <strong>Remedy:</strong> Unify on <code>gym_users/${userId}/active_program/current</code> as the sole canonical routine path. Read/write to one key, eliminating race conditions.
+        </div>
+        <div class="impact">
+          <strong>Outcome:</strong> Halves cloud database write traffic, eliminates sync desynchronization, and simplifies state hydration.
+        </div>
+      </div>
+
+      <!-- Item 5: Calendar (.ics) Reminders -->
+      <div class="card">
+        <div class="card-title">
+          <span>Calendar Reminders (.ics) Export</span>
+          <span class="pill pill-remove">Purge</span>
+        </div>
+        <div class="problem">
+          🚨 <strong>The Issue:</strong> In the Plan tab overflow menu, "Download reminders (.ics)" generates a static calendar file based on the deprecated 9-week schedule that quickly goes stale.
+        </div>
+        <div class="solution">
+          💡 <strong>Remedy:</strong> Remove <code>handleDownloadReminders</code>. Real push notifications (already built into HomeGym via <code>notifications.js</code>) handle actual daily workout reminders cleanly.
+        </div>
+        <div class="impact">
+          <strong>Outcome:</strong> Removes dead menu item and prevents broken calendar imports into Apple/Google Calendar.
+        </div>
+      </div>
+
+      <!-- Item 6: "Reset to Default Program" Danger Button -->
+      <div class="card">
+        <div class="card-title">
+          <span>Reset to Default Program Button</span>
+          <span class="pill pill-remove">Purge</span>
+        </div>
+        <div class="problem">
+          🚨 <strong>The Issue:</strong> Plan tab overflow has a red "🔄 Reset to default program…" button that replaces current tailored routines with hardcoded default exercises from 2024 (<code>I.K</code>).
+        </div>
+        <div class="solution">
+          💡 <strong>Remedy:</strong> Remove this destructive reset button. Users already have <strong>Version Milestones</strong> with safe one-tap rollback to restore verified baseline routines.
+        </div>
+        <div class="impact">
+          <strong>Outcome:</strong> Eliminates catastrophic accidental reset risk and cleans up overflow menu.
+        </div>
+      </div>
+    </div>
+
+    <div class="section-title">
+      2. Optimization Matrix: Code & Cognitive Overhead
+      <span>(ce-optimize Analysis)</span>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Feature Component</th>
+          <th>Current Status</th>
+          <th>Cognitive Cost</th>
+          <th>Code / Bundle Weight</th>
+          <th>Proposed Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Programme Start Dates</strong></td>
+          <td>Dead calculation; manual date input in Settings</td>
+          <td>High (users wonder what date to pick)</td>
+          <td>~80 lines across Settings & App</td>
+          <td><span class="pill pill-remove">Delete</span></td>
+        </tr>
+        <tr>
+          <td><strong>Dead-Letter Queue UI</strong></td>
+          <td>Internal queue debugger exposed in Settings</td>
+          <td>Medium (looks like an error condition)</td>
+          <td>~65 lines in SettingsModal</td>
+          <td><span class="pill pill-remove">Delete</span></td>
+        </tr>
+        <tr>
+          <td><strong>Program Wizard Modal</strong></td>
+          <td>5-step wizard with outdated template picker</td>
+          <td>High (overlaps with Plan Editor & AI)</td>
+          <td>~620 lines in app-redesign.js</td>
+          <td><span class="pill pill-remove">Delete</span></td>
+        </tr>
+        <tr>
+          <td><strong>.ics Calendar Export</strong></td>
+          <td>Generates stale 9-week iCal entries</td>
+          <td>Low (hidden in overflow)</td>
+          <td>~40 lines + bundle dependencies</td>
+          <td><span class="pill pill-remove">Delete</span></td>
+        </tr>
+        <tr>
+          <td><strong>Reset to Default Program</strong></td>
+          <td>Replaces active split with 2024 hardcoded split</td>
+          <td>High (destructive accident risk)</td>
+          <td>~45 lines in PlanView</td>
+          <td><span class="pill pill-remove">Delete</span></td>
+        </tr>
+        <tr>
+          <td><strong>Dual PlatePlan Sync</strong></td>
+          <td>Writes duplicate data to two RTDB paths</td>
+          <td>Zero UI cost (background waste)</td>
+          <td>~180 lines in sync engine</td>
+          <td><span class="pill pill-streamline">Consolidate</span></td>
+        </tr>
+        <tr>
+          <td><strong>Readiness & Health Logs</strong></td>
+          <td>Daily sleep/soreness 1-5 check-in on Today</td>
+          <td>Very low (clean, optional card)</td>
+          <td>Well-integrated with Metrics</td>
+          <td><span class="pill pill-keep">Keep</span></td>
+        </tr>
+        <tr>
+          <td><strong>Physio & AI Assistant</strong></td>
+          <td>Clinical bundle export + diff review + milestones</td>
+          <td>Low (purpose-built, high value)</td>
+          <td>Modular & tested</td>
+          <td><span class="pill pill-keep">Keep</span></td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="verdict-box">
+      <h3>Recommended Action Plan: "Lean HomeGym" Simplification Sprint</h3>
+      <p>
+        By eliminating these 5 redundant features (Program Start Dates, Dead-Letter UI, Program Wizard Modal, .ics Exporter, and Reset to 2024 Default), we will remove <strong>~850+ lines of clutter</strong>, simplify the Settings sheet to 4 essential options (Appearance, Household Key, Push Reminders, Backup Export), and eliminate the cognitive burden of meaningless program calendar dates.
+      </p>
+    </div>
+  </div>
+</body>
+</html>

@@ -1,6 +1,6 @@
 {
   "name": "Home Gym Log",
-  "description": "Strength training tracker HomeGym v2.5.12 with Physio & AI Routine Assistant, clinical prompt generator, interactive checkbox diff, program version milestones, and cloud sync",
+  "description": "Strength training tracker HomeGym v2.5.13: Lean HomeGym release with permanent Exercise ID continuity, latest performance JSON export for AI/physio, version milestones, and cloud sync",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

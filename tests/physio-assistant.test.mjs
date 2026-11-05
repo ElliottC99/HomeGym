@@ -225,3 +225,87 @@ test("U4: Milestone snapshot creation and rollback", () => {
   assert.equal(revertedSessions[0].id, "day1_push");
   assert.equal(revertedSessions[1].id, "day2_legs");
 });
+
+test("U5: getExerciseLatestStats extracts latest weight, sets, reps, and PR data", () => {
+  const profileWithLogs = {
+    ...sampleProfile,
+    logs: [
+      { id: "log_1", type: "exercise", exerciseId: "bench", exerciseName: "Barbell Bench Press", date: "2026-10-20", weight: 70, sets: 3, reps: 8, timestamp: 100 },
+      { id: "log_2", type: "exercise", exerciseId: "bench", exerciseName: "Barbell Bench Press", date: "2026-11-03", weight: 75, sets: 4, reps: 6, rpe: 8, timestamp: 200 }
+    ]
+  };
+
+  const stats = HG_PHYSIO_ENGINE.getExerciseLatestStats(profileWithLogs, "bench", "Barbell Bench Press");
+  assert.ok(stats);
+  assert.equal(stats.lastLoggedDate, "2026-11-03");
+  assert.equal(stats.lastLoggedWeight, 75);
+  assert.equal(stats.lastLoggedSets, 4);
+  assert.equal(stats.lastLoggedReps, "6");
+  assert.equal(stats.lastLoggedRpe, 8);
+  assert.equal(stats.maxHistoricalWeight, 75);
+  assert.ok(stats.summary.includes("4 × 6 @ 75kg"));
+});
+
+test("U6: buildEnrichedRoutineJSON includes exercise IDs and latest stats", () => {
+  const profileWithLogs = {
+    ...sampleProfile,
+    logs: [
+      { id: "log_1", type: "exercise", exerciseId: "bench", date: "2026-11-04", weight: 77.5, sets: 3, reps: 5, timestamp: 300 }
+    ]
+  };
+
+  const json = HG_PHYSIO_ENGINE.buildEnrichedRoutineJSON(profileWithLogs, "Elliott");
+  assert.equal(json.schema, "homegym-routine-v1");
+  assert.equal(json.athlete, "Elliott");
+  assert.equal(json.sessions.length, 2);
+
+  const benchEx = json.sessions[0].groups[0].exercises[0];
+  assert.equal(benchEx.id, "bench");
+  assert.equal(benchEx.name, "Barbell Bench Press");
+  assert.ok(benchEx.latestPerformance);
+  assert.equal(benchEx.latestPerformance.lastLoggedWeight, 77.5);
+});
+
+test("U7: computeRoutineDiff and applyDiffToRoutine strictly preserve exercise IDs", () => {
+  const currentSessions = [
+    {
+      id: "day1",
+      name: "Day 1",
+      groups: [
+        {
+          label: "Chest",
+          exercises: [
+            { id: "barbell_bench_press", name: "Barbell Bench Press", setsReps: "3 x 8", startValue: 70 }
+          ]
+        }
+      ]
+    }
+  ];
+
+  // AI returns updated routine without an id or with mismatched id, but same exercise name
+  const proposedSessions = [
+    {
+      id: "day1",
+      name: "Day 1",
+      groups: [
+        {
+          label: "Chest",
+          exercises: [
+            { name: "Barbell Bench Press", setsReps: "4 x 6", startValue: 72.5 }
+          ]
+        }
+      ]
+    }
+  ];
+
+  const diffs = HG_PHYSIO_ENGINE.computeRoutineDiff(currentSessions, proposedSessions);
+  assert.equal(diffs.length, 1);
+  assert.equal(diffs[0].type, "LOAD_CHANGE");
+  // Check that canonical ID is kept in the diff
+  assert.equal(diffs[0].proposedExercise.id, "barbell_bench_press");
+
+  const merged = HG_PHYSIO_ENGINE.applyDiffToRoutine(currentSessions, diffs);
+  assert.equal(merged[0].groups[0].exercises[0].id, "barbell_bench_press", "Exercise ID must stay identical");
+  assert.equal(merged[0].groups[0].exercises[0].setsReps, "4 x 6");
+  assert.equal(merged[0].groups[0].exercises[0].startValue, 72.5);
+});
