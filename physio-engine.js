@@ -771,6 +771,35 @@ export const HG_PHYSIO_ENGINE = {
       throw new Error("Invalid milestone snapshot: missing sessions array.");
     }
     return JSON.parse(JSON.stringify(snapshot.sessions));
+  },
+
+  /**
+   * Determine if a remote program update should overwrite the local program profile
+   * using Last-Write-Wins (LWW) comparison.
+   * Prevents stale cloud snapshots from overwriting fresh local routine changes.
+   */
+  shouldAcceptRemoteProgram(localProfile, remoteProgram) {
+    if (!remoteProgram || typeof remoteProgram !== "object") return false;
+    const remoteSessions = remoteProgram.sessions;
+    const hasRemoteSessions = (Array.isArray(remoteSessions) && remoteSessions.length > 0) ||
+      (remoteSessions && typeof remoteSessions === "object" && Object.keys(remoteSessions).length > 0);
+    if (!hasRemoteSessions) return false;
+
+    // If local has no sessions or no profile, remote always initializes it
+    const localSessions = localProfile?.sessions;
+    const hasLocalSessions = Array.isArray(localSessions) && localSessions.length > 0;
+    if (!hasLocalSessions) return true;
+
+    // Local uses the routine-specific clock only: profile.updatedAt is bumped by
+    // log/health updates and must not make a stale routine look newer.
+    const localTime = Number(localProfile?.programUpdatedAt || 0);
+    // Remote active_program nodes only hold the routine, so updatedAt is a valid fallback,
+    // but an explicit programUpdatedAt (even 0 from a legacy write) takes precedence.
+    const remoteTime = remoteProgram.programUpdatedAt != null
+      ? Number(remoteProgram.programUpdatedAt) || 0
+      : Number(remoteProgram.updatedAt || 0);
+
+    return remoteTime > localTime;
   }
 };
 

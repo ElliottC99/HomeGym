@@ -22,7 +22,7 @@
 
   const h = React.createElement;
   const { useState, useEffect, useCallback, useRef, useMemo } = React;
-  const APP_VERSION = "v2.5.17";
+  const APP_VERSION = "v2.5.18";
   const STORAGE_VERSION = "2.5.7";
 
   // --- v2.5.7 LocalStorage Preservation & Version Registration ---
@@ -815,6 +815,29 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
     };
   }
 
+  // Routine LWW clock. Local profiles use programUpdatedAt only (profile.updatedAt is
+  // bumped by log/health updates and must not make a stale routine look newer).
+  // Remote active_program nodes only hold the routine, so their updatedAt is a fallback.
+  function getProgramTime(obj, isRemote) {
+    if (!obj) return 0;
+    if (obj.programUpdatedAt != null) return Number(obj.programUpdatedAt) || 0;
+    return isRemote ? (Number(obj.updatedAt) || 0) : 0;
+  }
+
+  function shouldAcceptRemoteProgram(localProfile, remoteProgram) {
+    if (window.HG_PHYSIO_ENGINE?.shouldAcceptRemoteProgram) {
+      return window.HG_PHYSIO_ENGINE.shouldAcceptRemoteProgram(localProfile, remoteProgram);
+    }
+    if (!remoteProgram || typeof remoteProgram !== "object") return false;
+    const remoteSessions = remoteProgram.sessions;
+    const hasRemoteSessions = (Array.isArray(remoteSessions) && remoteSessions.length > 0) ||
+      (remoteSessions && typeof remoteSessions === "object" && Object.keys(remoteSessions).length > 0);
+    if (!hasRemoteSessions) return false;
+    const hasLocalSessions = Array.isArray(localProfile?.sessions) && localProfile.sessions.length > 0;
+    if (!hasLocalSessions) return true;
+    return getProgramTime(remoteProgram, true) > getProgramTime(localProfile, false);
+  }
+
   const PlatePlanSyncEngine = {
     getFirestore() {
       if (!firestoreEnabled()) return null;
@@ -1315,6 +1338,10 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
         sessions: cleanSessions,
         weekOverrides: programData.weekOverrides || {},
         equipment: programData.equipment || null,
+        // Routine LWW clock: only bumped when the routine itself is edited (apply/revert/activate).
+        // Incidental saves (e.g. logging a set) carry the existing clock so a stale device
+        // can never make its old routine look newer than another device's edit.
+        programUpdatedAt: Number(programData.programUpdatedAt || 0),
         updatedAt: Date.now()
       };
 
@@ -1324,7 +1351,7 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
       // 1. Immediately cache locally
       try {
         const currentProfile = loadDecoupledProfile(profileId);
-        const next = { ...currentProfile, ...payload, updatedAt: Date.now() };
+        const next = { ...currentProfile, ...payload, updatedAt: Math.max(Number(currentProfile.updatedAt || 0), payload.updatedAt) };
         savePlatePlanV1Local(profileId, next);
         I.Ee(profileId, next);
       } catch (e) {}
@@ -1579,14 +1606,18 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
           if (val) {
             const normalized = normalizeRemoteProgram(val);
             const local = loadDecoupledProfile(userId);
-            if (Array.isArray(normalized.sessions) && normalized.sessions.length > 0) {
+            if (shouldAcceptRemoteProgram(local, normalized)) {
               const merged = {
                 ...local,
                 ...normalized,
+                programUpdatedAt: getProgramTime(normalized, true),
                 logs: local.logs || []
               };
               savePlatePlanV1Local(userId, merged);
               I.Ee(userId, merged);
+            } else if (getProgramTime(local, false) > getProgramTime(normalized, true) && Array.isArray(local.sessions) && local.sessions.length > 0) {
+              console.info(`[PlatePlan RTDB Boot Pull] Local routine for ${userId} is newer; pushing local to RTDB.`);
+              await this.saveActiveProgram(userId, local, { skipQueue: true }).catch(() => {});
             }
           }
         } catch (e) {
@@ -1833,18 +1864,20 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
         let finalProgram = localProfile;
         const remoteProgObj = remotePlateplan || remoteActiveProg;
         if (remoteProgObj) {
-          const remoteProgTime = Number(remoteProgObj.updatedAt || 0);
-          const localProgTime = Number(localProfile.updatedAt || 0);
+          const remoteProgTime = getProgramTime(remoteProgObj, true);
+          const localProgTime = getProgramTime(localProfile, false);
           if (remoteProgTime > localProgTime) {
             finalProgram = {
               ...localProfile,
+              programName: remoteProgObj.programName || remoteProgObj.name || localProfile.programName,
               startDate: remoteProgObj.startDate || localProfile.startDate,
               goals: remoteProgObj.goals || localProfile.goals,
               resumeNote: remoteProgObj.resumeNote || localProfile.resumeNote,
               sessions: Array.isArray(remoteProgObj.sessions) && remoteProgObj.sessions.length ? remoteProgObj.sessions : localProfile.sessions,
               weekOverrides: remoteProgObj.weekOverrides || localProfile.weekOverrides,
               equipment: remoteProgObj.equipment || localProfile.equipment,
-              updatedAt: remoteProgTime
+              programUpdatedAt: remoteProgTime,
+              updatedAt: Math.max(remoteProgTime, Number(localProfile.updatedAt || 0))
             };
             hydratedToLocal++;
           } else if (localProgTime > remoteProgTime && localProfile.sessions?.length) {
@@ -2695,6 +2728,10 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
           readiness: health.readinessLogs
         },
         equipment: source.equipment || userPpv1?.equipment || null,
+        programName: source.programName || perUserPpv1?.programName || userPpv1?.programName || undefined,
+        programId: source.programId || perUserPpv1?.programId || userPpv1?.programId || undefined,
+        // Routine-specific LWW clock (independent of log/health updates that bump updatedAt)
+        programUpdatedAt: Number(source.programUpdatedAt || perUserPpv1?.programUpdatedAt || userPpv1?.programUpdatedAt || 0),
         updatedAt: typeof source.updatedAt === "number" ? source.updatedAt : 0,
       };
     } catch (e) {
@@ -6547,8 +6584,9 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
                     className: "hg-button secondary",
                     style: { minHeight: 28, padding: "2px 8px", fontSize: 11.5 },
                     onClick: async () => {
-                      await GymCloudEngine.saveActiveProgram(personId, prog);
-                      updateData(personId, c => ({ ...c, sessions: prog.sessions, programName: prog.name, programId: prog.id }));
+                      const activated = { ...prog, programName: prog.name, programId: prog.id, programUpdatedAt: Date.now() };
+                      await GymCloudEngine.saveActiveProgram(personId, activated);
+                      updateData(personId, c => ({ ...c, sessions: prog.sessions, programName: prog.name, programId: prog.id, programUpdatedAt: activated.programUpdatedAt }));
                       showToast("Activated program: " + prog.name);
                     }
                   }, "Activate"),
@@ -6814,13 +6852,25 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
         await GymCloudEngine.saveProgramMilestone(personId, snapshot);
 
         const updatedSessions = engine.applyDiffToRoutine(data.sessions || [], diffItems, proposedSessions);
-
-        updateData(personId, cur => ({
-          ...cur,
+        const now = Date.now();
+        const updatedProfile = {
+          ...data,
           sessions: updatedSessions,
-          programName: proposedProgramName || cur.programName || "Active Routine",
-          updatedAt: Date.now()
-        }));
+          programName: proposedProgramName || data.programName || "Active Routine",
+          programUpdatedAt: now,
+          updatedAt: now
+        };
+
+        // 1. Immediately cache locally
+        savePlatePlanV1Local(personId, updatedProfile);
+        I.Ee(personId, updatedProfile);
+        syncLegacyStorage(personId, updatedProfile);
+
+        // 2. Await cloud save to RTDB & Firestore so remote has the update before modal closes
+        await GymCloudEngine.saveActiveProgram(personId, updatedProfile);
+
+        // 3. Update React in-memory store
+        updateData(personId, () => updatedProfile);
 
         showToast(`Applied ${approvedCount} updates & saved milestone snapshot!`);
         onClose();
@@ -6841,13 +6891,22 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
         await GymCloudEngine.saveProgramMilestone(personId, preRevertSnapshot);
 
         const restoredSessions = engine.restoreFromMilestoneSnapshot(milestone);
-
-        updateData(personId, cur => ({
-          ...cur,
+        const now = Date.now();
+        const updatedProfile = {
+          ...data,
           sessions: restoredSessions,
-          programName: milestone.programName || cur.programName || "Active Routine",
-          updatedAt: Date.now()
-        }));
+          programName: milestone.programName || data.programName || "Active Routine",
+          programUpdatedAt: now,
+          updatedAt: now
+        };
+
+        savePlatePlanV1Local(personId, updatedProfile);
+        I.Ee(personId, updatedProfile);
+        syncLegacyStorage(personId, updatedProfile);
+
+        await GymCloudEngine.saveActiveProgram(personId, updatedProfile);
+
+        updateData(personId, () => updatedProfile);
 
         showToast(`Reverted routine to "${milestone.label}".`);
         onClose();
@@ -7637,6 +7696,9 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
           }
           if (subCollection === "active_program") {
             const normalized = normalizeRemoteProgram(remoteData);
+            if (!shouldAcceptRemoteProgram(currentProfile, normalized)) {
+              return current;
+            }
             // Decoupled: Updating active program MUST NEVER overwrite exercise history
             const next = {
               ...currentProfile,
@@ -7647,7 +7709,8 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
               sessions: Array.isArray(normalized.sessions) && normalized.sessions.length ? normalized.sessions : currentProfile.sessions,
               weekOverrides: normalized.weekOverrides || currentProfile.weekOverrides,
               equipment: normalized.equipment || currentProfile.equipment,
-              updatedAt: Date.now()
+              programUpdatedAt: getProgramTime(normalized, true),
+              updatedAt: Math.max(Number(currentProfile.updatedAt || 0), Date.now())
             };
             savePlatePlanV1Local(id, next);
             I.Ee(id, next);

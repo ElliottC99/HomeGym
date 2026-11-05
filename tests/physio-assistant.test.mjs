@@ -551,3 +551,72 @@ test("U13: Cloud payload sanitization strips undefined properties to prevent RTD
   assert.equal("note" in sanitized.sessions[0].groups[0].exercises[0], false, "Undefined note should be removed");
   assert.equal(sanitized.name, "Phase 1: Back Rehab");
 });
+
+test("U14: LWW timestamp comparison prevents stale cloud snapshot from overwriting newer local routine", () => {
+  const localProfile = {
+    programUpdatedAt: 1730000000000,
+    updatedAt: 1730000000000,
+    sessions: [{ id: "session_new", name: "New Plan", groups: [] }]
+  };
+
+  const staleRemote = {
+    programUpdatedAt: 1729000000000,
+    updatedAt: 1735000000000, // incidental re-save by a stale device: fresh updatedAt, old routine clock
+    sessions: [{ id: "session_old", name: "Old Plan", groups: [] }]
+  };
+
+  const newerRemote = {
+    programUpdatedAt: 1731000000000,
+    updatedAt: 1731000000000,
+    sessions: [{ id: "session_freshest", name: "Freshest Plan", groups: [] }]
+  };
+
+  const legacyZeroClockRemote = {
+    programUpdatedAt: 0,
+    updatedAt: 1735000000000,
+    sessions: [{ id: "session_legacy", name: "Legacy Plan", groups: [] }]
+  };
+
+  const emptyLocal = { updatedAt: 0, sessions: [] };
+
+  // 1. Stale routine must be rejected even if its write-time updatedAt is fresh
+  assert.equal(
+    HG_PHYSIO_ENGINE.shouldAcceptRemoteProgram(localProfile, staleRemote),
+    false,
+    "Stale cloud routine must not overwrite newer local routine"
+  );
+
+  // 2. Newer remote routine must be accepted
+  assert.equal(
+    HG_PHYSIO_ENGINE.shouldAcceptRemoteProgram(localProfile, newerRemote),
+    true,
+    "Newer remote routine should update local profile"
+  );
+
+  // 3. Explicit 0 routine clock (legacy re-save) must not overwrite a timestamped local routine
+  assert.equal(
+    HG_PHYSIO_ENGINE.shouldAcceptRemoteProgram(localProfile, legacyZeroClockRemote),
+    false,
+    "Zero-clock remote must not overwrite timestamped local routine"
+  );
+
+  // 4. Remote initializes empty local profile
+  assert.equal(
+    HG_PHYSIO_ENGINE.shouldAcceptRemoteProgram(emptyLocal, staleRemote),
+    true,
+    "Remote should initialize an empty local profile"
+  );
+
+  // 5. Phone scenario: incoming logs bumped profile.updatedAt past the laptop's edit time,
+  //    but the phone's routine clock is older, so the laptop's routine must still win.
+  const phoneProfile = {
+    programUpdatedAt: 1729000000000,
+    updatedAt: 1739000000000,
+    sessions: [{ id: "session_old", name: "Old Plan", groups: [] }]
+  };
+  assert.equal(
+    HG_PHYSIO_ENGINE.shouldAcceptRemoteProgram(phoneProfile, newerRemote),
+    true,
+    "Log-driven updatedAt bumps must not block a newer routine from another device"
+  );
+});
