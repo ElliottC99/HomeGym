@@ -47,3 +47,21 @@ test("Firestore stays disabled until a database exists", () => {
 test("household pin default is configured for automated sync", () => {
   assert.match(read("firebase-config.js"), /HOUSEHOLD_PIN_DEFAULT = "[a-f0-9]{32}"/);
 });
+
+test("all GymCloudEngine invocations in app-redesign.js correspond to declared methods", () => {
+  const code = read("app-redesign.js");
+  const calls = [...code.matchAll(/GymCloudEngine\.([a-zA-Z0-9_]+)/g)].map(m => m[1]);
+  const uniqueCalls = [...new Set(calls)];
+  assert.ok(uniqueCalls.length > 5);
+
+  const engineDefMatch = code.match(/const PlatePlanSyncEngine = \{([\s\S]*?)\n  \};\n\n  const GymCloudEngine/);
+  assert.ok(engineDefMatch, "PlatePlanSyncEngine definition block found");
+  const engineDef = engineDefMatch[1];
+
+  for (const method of uniqueCalls) {
+    const isDeclared = new RegExp(`${method}\\s*\\([^)]*\\)\\s*\\{`).test(engineDef);
+    assert.ok(isDeclared, `GymCloudEngine.${method} must be declared`);
+  }
+  // Also verify savePlatePlanState is implemented as a safe proxy
+  assert.ok(new RegExp(`savePlatePlanState\\s*\\([^)]*\\)\\s*\\{`).test(engineDef), "savePlatePlanState must be implemented");
+});

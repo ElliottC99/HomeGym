@@ -22,7 +22,7 @@
 
   const h = React.createElement;
   const { useState, useEffect, useCallback, useRef, useMemo } = React;
-  const APP_VERSION = "v2.5.14";
+  const APP_VERSION = "v2.5.15";
   const STORAGE_VERSION = "2.5.7";
 
   // --- v2.5.7 LocalStorage Preservation & Version Registration ---
@@ -1233,6 +1233,16 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
 
     async deleteSleepLog(profileId, logId, options = {}) {
       return this.deleteMetricEntry(profileId, "sleep", logId, options);
+    },
+
+    async savePlatePlanState(profileId, sessions, startDate = "", goals = "", options = {}) {
+      if (!profileId) return;
+      return this.saveActiveProgram(profileId, {
+        sessions,
+        startDate,
+        goals,
+        updatedAt: Date.now()
+      }, options);
     },
 
     async saveActiveProgram(profileId, programData, options = {}) {
@@ -5949,16 +5959,11 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
           if (idx !== activeSessionIdx && s.id !== activeSession?.id) return s;
           return updatedSession;
         });
-        const next = { ...cur, sessions: nextSessions, updatedAt: Date.now() };
-        safeStorageSet(`plateplan_v1:${personId}`, JSON.stringify({
+        return {
+          ...cur,
           sessions: nextSessions,
-          startDate: cur.startDate,
-          goals: cur.goals,
           updatedAt: Date.now()
-        }));
-        safeStorageSet(`data:${personId}`, JSON.stringify(next));
-        GymCloudEngine.savePlatePlanState(personId, nextSessions, cur.startDate, cur.goals);
-        return next;
+        };
       });
     }
 
@@ -6691,24 +6696,12 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
 
         const updatedSessions = engine.applyDiffToRoutine(data.sessions || [], diffItems);
 
-        updateData(personId, cur => {
-          const next = {
-            ...cur,
-            sessions: updatedSessions,
-            programName: proposedProgramName || cur.programName || "Active Routine",
-            updatedAt: Date.now()
-          };
-          safeStorageSet(`plateplan_v1:${personId}`, JSON.stringify({
-            sessions: updatedSessions,
-            startDate: cur.startDate,
-            goals: cur.goals,
-            updatedAt: Date.now()
-          }));
-          safeStorageSet(`data:${personId}`, JSON.stringify(next));
-          GymCloudEngine.savePlatePlanState(personId, updatedSessions, cur.startDate, cur.goals);
-          GymCloudEngine.saveActiveProgram(personId, next);
-          return next;
-        });
+        updateData(personId, cur => ({
+          ...cur,
+          sessions: updatedSessions,
+          programName: proposedProgramName || cur.programName || "Active Routine",
+          updatedAt: Date.now()
+        }));
 
         showToast(`Applied ${approvedCount} updates & saved milestone snapshot!`);
         onClose();
@@ -6730,24 +6723,12 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
 
         const restoredSessions = engine.restoreFromMilestoneSnapshot(milestone);
 
-        updateData(personId, cur => {
-          const next = {
-            ...cur,
-            sessions: restoredSessions,
-            programName: milestone.programName || cur.programName || "Active Routine",
-            updatedAt: Date.now()
-          };
-          safeStorageSet(`plateplan_v1:${personId}`, JSON.stringify({
-            sessions: restoredSessions,
-            startDate: cur.startDate,
-            goals: cur.goals,
-            updatedAt: Date.now()
-          }));
-          safeStorageSet(`data:${personId}`, JSON.stringify(next));
-          GymCloudEngine.savePlatePlanState(personId, restoredSessions, cur.startDate, cur.goals);
-          GymCloudEngine.saveActiveProgram(personId, next);
-          return next;
-        });
+        updateData(personId, cur => ({
+          ...cur,
+          sessions: restoredSessions,
+          programName: milestone.programName || cur.programName || "Active Routine",
+          updatedAt: Date.now()
+        }));
 
         showToast(`Reverted routine to "${milestone.label}".`);
         onClose();
