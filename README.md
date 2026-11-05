@@ -44,6 +44,7 @@ Full session plans transcribed from your workout doc (not just a lift list): war
 - `manifest.json` — tells Android how to install it (name, icon, colors)
 - `sw.js` — service worker, caches the app so it opens offline, and handles push notifications
 - `firebase-config.js` — sync configuration (the shared cloud database connection)
+- `auth-gate.js` — Google sign-in screen; loads the app only for the two allowed accounts
 - `notifications.js` — registers a device to receive push notifications (needs one-time setup, see `PUSH_SETUP.md`)
 - `icon-*.png` — home screen icons
 
@@ -66,7 +67,7 @@ These files need to be deployed together, at the same folder level (don't nest t
 
 ## Worth knowing
 
-- **Enable Firebase Anonymous Authentication before applying the included rules.** In Firebase Console, open Authentication → Sign-in method and enable Google, then add your GitHub Pages domain under Authentication → Settings → Authorized domains. Access is limited to the two emails listed in database.rules.json and auth-gate.js. Then run `firebase deploy --only database --project homegym-745d1` from this folder. The app will continue working locally if authentication or sync is unavailable.
+- **Enable Firebase Google sign-in before applying the included rules.** In Firebase Console, open Authentication → Sign-in method and enable Google, then add your GitHub Pages domain under Authentication → Settings → Authorized domains. Access is limited to the two emails listed in database.rules.json and auth-gate.js. Then run `firebase deploy --only database --project homegym-745d1` from this folder. The app will continue working locally if authentication or sync is unavailable.
 - **Offline still works.** If either phone loses signal mid-session, logging still works from local storage and catches up with the other phone once back online.
 - **Back it up anyway.** Sync isn't a substitute for a backup — a bad restore or a bug could still affect both copies at once since they're the same data. Use "Export full backup (.json)" in the Plan tab occasionally (email it to yourself, save to a drive).
 - **Updating the app later.** Re-upload changed files to the same GitHub repo (overwrite) and bump `CACHE_NAME` in `sw.js` by one so the service worker fetches the new version instead of serving the cached one. Your data (local and synced) isn't affected by an app update — it lives separately from the app files.
