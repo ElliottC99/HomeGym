@@ -22,7 +22,7 @@
 
   const h = React.createElement;
   const { useState, useEffect, useCallback, useRef, useMemo } = React;
-  const APP_VERSION = "v2.5.7";
+  const APP_VERSION = "v2.5.8";
   const STORAGE_VERSION = "2.5.7";
 
   // --- v2.5.7 LocalStorage Preservation & Version Registration ---
