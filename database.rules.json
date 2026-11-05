@@ -4,20 +4,20 @@
     ".write": false,
     "gym_users": {
       "$profileId": {
-        ".read": "auth != null",
-        ".write": "auth != null"
+        ".read": "auth != null && auth.token.email_verified === true && (auth.token.email === 'ejcallender@gmail.com' || auth.token.email === 'clncarr7@gmail.com')",
+        ".write": "auth != null && auth.token.email_verified === true && (auth.token.email === 'ejcallender@gmail.com' || auth.token.email === 'clncarr7@gmail.com')"
       }
     },
     "users": {
       "$userId": {
-        ".read": "auth != null",
-        ".write": "auth != null"
+        ".read": "auth != null && auth.token.email_verified === true && (auth.token.email === 'ejcallender@gmail.com' || auth.token.email === 'clncarr7@gmail.com')",
+        ".write": "auth != null && auth.token.email_verified === true && (auth.token.email === 'ejcallender@gmail.com' || auth.token.email === 'clncarr7@gmail.com')"
       }
     },
     "households": {
       "$householdKey": {
-        ".read": "auth != null",
-        ".write": "auth != null"
+        ".read": "auth != null && auth.token.email_verified === true && (auth.token.email === 'ejcallender@gmail.com' || auth.token.email === 'clncarr7@gmail.com')",
+        ".write": "auth != null && auth.token.email_verified === true && (auth.token.email === 'ejcallender@gmail.com' || auth.token.email === 'clncarr7@gmail.com')"
       }
     }
   }

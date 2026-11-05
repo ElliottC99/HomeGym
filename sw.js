@@ -12,6 +12,7 @@ const REQUIRED_SHELL = [
   "./app-redesign.css",
   "./firebase-config.js",
   "./notifications.js",
+  "./auth-gate.js",
   "./icon-192.png",
   "./icon-512.png",
   "./icon-192-maskable.png",

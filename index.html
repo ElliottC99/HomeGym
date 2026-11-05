@@ -74,51 +74,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-messaging-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-auth-compat.js"></script>
   <script src="./firebase-config.js?v=2.5.7"></script>
-  <script>
-    // Sign in anonymously before the app starts so Realtime Database rules that
-    // require auth are satisfied. Never blocks startup for long: offline or
-    // failed sign-in falls through after a short timeout and the app runs
-    // from local storage as before.
-    (function () {
-      const scripts = [
-        "./notifications.js?v=2.5.7",
-        "./app.bundle.js?v=2.5.7",
-        "./app-redesign.js?v=2.5.7",
-        "./data-recovery-inspector.js?v=2.5.7",
-      ];
-      function loadAll() {
-        scripts.reduce((chain, src) => chain.then(() => new Promise(resolve => {
-          const el = document.createElement("script");
-          el.src = src;
-          el.async = false;
-          el.onload = el.onerror = resolve;
-          document.body.appendChild(el);
-        })), Promise.resolve());
-      }
-      let auth = null;
-      try {
-        if (window.firebase && window.firebase.auth && window.FIREBASE_CONFIG) {
-          if (!window.firebase.apps.length) window.firebase.initializeApp(window.FIREBASE_CONFIG);
-          auth = window.firebase.auth();
-        }
-      } catch (err) {
-        console.warn("Firebase auth unavailable:", err && err.message);
-      }
-      if (!auth) return loadAll();
-      const timeout = new Promise(resolve => setTimeout(resolve, 4000));
-      const ready = new Promise(resolve => {
-        const off = auth.onAuthStateChanged(user => {
-          off();
-          if (user) return resolve();
-          auth.signInAnonymously().then(resolve, err => {
-            console.warn("Anonymous sign-in failed:", err && err.message);
-            resolve();
-          });
-        });
-      });
-      Promise.race([ready, timeout]).then(loadAll);
-    })();
-  </script>
+  <script src="./auth-gate.js?v=2.5.7"></script>
 
   <script>
     if ("serviceWorker" in navigator) {
