@@ -22,7 +22,7 @@
 
   const h = React.createElement;
   const { useState, useEffect, useCallback, useRef, useMemo } = React;
-  const APP_VERSION = "v2.5.8";
+  const APP_VERSION = "v2.5.9";
   const STORAGE_VERSION = "2.5.7";
 
   // --- v2.5.7 LocalStorage Preservation & Version Registration ---
@@ -706,7 +706,13 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
     }
   }
 
+  // Firestore sync is opt-in (window.HG_ENABLE_FIRESTORE, see firebase-config.js).
+  // The project has no Firestore database, so while disabled the Firestore
+  // writes, listeners and offline mutation queue are skipped instead of failing.
+  const firestoreEnabled = () => window.HG_ENABLE_FIRESTORE === true;
+
   function getOfflineQueue() {
+    if (!firestoreEnabled()) return [];
     try {
       const raw = localStorage.getItem(QUEUE_STORAGE_KEY);
       return raw ? JSON.parse(raw) : [];
@@ -748,6 +754,7 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
   }
 
   function enqueueOfflineMutation(userId, type, payload) {
+    if (!firestoreEnabled()) return null;
     const queue = getOfflineQueue();
     const mutation = {
       id: "mut_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7),
@@ -765,6 +772,7 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
 
   const PlatePlanSyncEngine = {
     getFirestore() {
+      if (!firestoreEnabled()) return null;
       try {
         if (window.firebase && window.firebase.firestore) {
           if (!window.firebase.apps || !window.firebase.apps.length) {
@@ -7537,7 +7545,13 @@ const EXERCISE_SUGGESTIONS = [
             )
           )
         ),
-        h("div", { className: "hg-setting-section" },
+        !firestoreEnabled() && h("div", { className: "hg-setting-section" },
+          h("h3", null, "Cloud sync"),
+          h("p", null,
+            `${syncStatus === "synced" ? "Cloud synced." : syncStatus === "connecting" ? "Connecting…" : syncStatus === "offline" ? "Offline mode active." : "Local only."} Data syncs between your phones through the shared household key. Firestore sync is switched off.`
+          )
+        ),
+        firestoreEnabled() && h("div", { className: "hg-setting-section" },
           h("h3", null, "Cloud-First Architecture & Automated Sync"),
           h("p", null,
             `${syncStatus === "synced" ? "Cloud Synced." : syncStatus === "connecting" ? "Connecting to Firestore…" : syncStatus === "offline" ? "Offline mode active." : "Local cache."} HomeGym ${APP_VERSION} two-way cloud sync engine automatically replicates exercise history and health metrics (bodyweight, sleep, readiness) to Firestore.`

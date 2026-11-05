@@ -11,3 +11,6 @@ window.FIREBASE_CONFIG = {
   appId: "1:146875542389:web:f39616b321a9718bd3813c",
 };
 window.HOUSEHOLD_PIN_DEFAULT = "";
+// Firestore sync stays off until a Firestore database exists in the project
+// (none does today) and its rules are deployed. Realtime Database is the live backend.
+window.HG_ENABLE_FIRESTORE = false;
