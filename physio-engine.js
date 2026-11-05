@@ -423,6 +423,24 @@ export const HG_PHYSIO_ENGINE = {
       throw new Error("Invalid routine schema: parsed JSON must contain a 'sessions' array.");
     }
 
+    // Defensive normalization: ensure session type and exercise setsReps / startValue are populated
+    parsed.sessions = parsed.sessions.map(s => {
+      const type = s.type || (s.targetKm ? "run" : "strength");
+      const groups = Array.isArray(s.groups) ? s.groups.map(g => ({
+        ...g,
+        exercises: Array.isArray(g.exercises) ? g.exercises.map(ex => ({
+          ...ex,
+          setsReps: ex.setsReps || ex.currentSetsReps || (ex.sets && ex.reps ? `${ex.sets} × ${ex.reps}` : "3 × 10"),
+          startValue: ex.startValue != null ? ex.startValue : (ex.currentWeight != null ? ex.currentWeight : null)
+        })) : []
+      })) : [];
+      return {
+        ...s,
+        type,
+        groups
+      };
+    });
+
     return parsed;
   },
 
@@ -645,13 +663,24 @@ export const HG_PHYSIO_ENGINE = {
           });
         }
 
+        // Normalize groups and exercises to preserve setsReps and weights
+        const normalizedGroups = groups.map(g => ({
+          ...g,
+          exercises: (g.exercises || []).map(ex => ({
+            ...ex,
+            setsReps: ex.setsReps || ex.currentSetsReps || (ex.sets && ex.reps ? `${ex.sets} × ${ex.reps}` : "3 × 10"),
+            startValue: ex.startValue != null ? ex.startValue : (ex.currentWeight != null ? ex.currentWeight : null)
+          }))
+        }));
+
         return {
           ...currSess,
           ...propSess,
           id: sId,
+          type: propSess.type || currSess.type || (propSess.targetKm ? "run" : "strength"),
           name: propSess.name || currSess.name,
           day: propSess.day || currSess.day,
-          groups
+          groups: normalizedGroups
         };
       });
 
@@ -679,9 +708,13 @@ export const HG_PHYSIO_ENGINE = {
             const targetId = diff.type === "SUBSTITUTION"
               ? (diff.proposedExercise?.id || this.slugify(diff.proposedExercise?.name) || `ex_${Date.now()}`)
               : (ex.id || diff.proposedExercise?.id || `ex_${Date.now()}`);
+            const mergedSetsReps = diff.proposedExercise?.setsReps || diff.proposedExercise?.currentSetsReps || ex.setsReps;
+            const mergedStartValue = diff.proposedExercise?.startValue != null ? diff.proposedExercise.startValue : (diff.proposedExercise?.currentWeight != null ? diff.proposedExercise.currentWeight : ex.startValue);
             return {
               ...ex,
               ...diff.proposedExercise,
+              setsReps: mergedSetsReps,
+              startValue: mergedStartValue,
               id: targetId
             };
           });
@@ -695,7 +728,9 @@ export const HG_PHYSIO_ENGINE = {
         if (!Array.isArray(targetGroup.exercises)) targetGroup.exercises = [];
         targetGroup.exercises.push({
           ...diff.proposedExercise,
-          id: diff.proposedExercise.id || `ex_${Date.now()}`
+          setsReps: diff.proposedExercise?.setsReps || diff.proposedExercise?.currentSetsReps || "3 × 10",
+          startValue: diff.proposedExercise?.startValue != null ? diff.proposedExercise.startValue : (diff.proposedExercise?.currentWeight != null ? diff.proposedExercise.currentWeight : null),
+          id: diff.proposedExercise?.id || `ex_${Date.now()}`
         });
       } else if (diff.type === "REMOVAL") {
         const origNameNorm = (diff.originalExercise?.name || "").trim().toLowerCase();

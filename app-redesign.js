@@ -22,7 +22,7 @@
 
   const h = React.createElement;
   const { useState, useEffect, useCallback, useRef, useMemo } = React;
-  const APP_VERSION = "v2.5.16";
+  const APP_VERSION = "v2.5.17";
   const STORAGE_VERSION = "2.5.7";
 
   // --- v2.5.7 LocalStorage Preservation & Version Registration ---
@@ -612,7 +612,7 @@
 
   function parsePrescription(text) {
     const values = String(text || "").match(/\d+(?:\.\d+)?/g) || [];
-    return { sets: values[0] || "", reps: values[1] || "" };
+    return { sets: values[0] || "3", reps: values[1] || "10" };
   }
 
   function rpeToFeeling(rpe) {
@@ -768,6 +768,51 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
     saveOfflineQueue(queue);
     console.log(`[PlatePlan Offline Queue] Enqueued ${type} for ${userId} (${queue.length} pending mutations)`);
     return mutation;
+  }
+
+  function normalizeRemoteProgram(remote) {
+    if (!remote || typeof remote !== "object") return remote;
+    const rawSessions = remote.sessions;
+    let sessions = [];
+    if (Array.isArray(rawSessions)) {
+      sessions = rawSessions;
+    } else if (rawSessions && typeof rawSessions === "object") {
+      sessions = Object.keys(rawSessions).sort((a, b) => Number(a) - Number(b)).map(k => rawSessions[k]);
+    }
+
+    const cleanSessions = sessions.filter(Boolean).map(s => {
+      let groups = [];
+      if (Array.isArray(s.groups)) groups = s.groups;
+      else if (s.groups && typeof s.groups === "object") {
+        groups = Object.keys(s.groups).sort((a, b) => Number(a) - Number(b)).map(k => s.groups[k]);
+      }
+      return {
+        ...s,
+        type: s.type || (s.targetKm ? "run" : "strength"),
+        groups: groups.filter(Boolean).map(g => {
+          let exercises = [];
+          if (Array.isArray(g.exercises)) exercises = g.exercises;
+          else if (g.exercises && typeof g.exercises === "object") {
+            exercises = Object.keys(g.exercises).sort((a, b) => Number(a) - Number(b)).map(k => g.exercises[k]);
+          }
+          return {
+            ...g,
+            exercises: exercises.filter(Boolean).map(ex => ({
+              ...ex,
+              setsReps: ex.setsReps || ex.currentSetsReps || "3 × 10",
+              startValue: ex.startValue != null ? ex.startValue : (ex.currentWeight != null ? ex.currentWeight : null)
+            }))
+          };
+        })
+      };
+    });
+
+    return {
+      ...remote,
+      name: remote.name || remote.programName || "Active Routine",
+      programName: remote.name || remote.programName || "Active Routine",
+      sessions: cleanSessions
+    };
   }
 
   const PlatePlanSyncEngine = {
@@ -1247,17 +1292,34 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
 
     async saveActiveProgram(profileId, programData, options = {}) {
       if (!profileId || !programData) return;
-      const payload = {
+      const cleanSessions = (Array.isArray(programData.sessions) ? programData.sessions : []).map(s => ({
+        ...s,
+        type: s.type || (s.targetKm ? "run" : "strength"),
+        groups: (Array.isArray(s.groups) ? s.groups : []).map(g => ({
+          ...g,
+          exercises: (Array.isArray(g.exercises) ? g.exercises : []).map(ex => ({
+            ...ex,
+            setsReps: ex.setsReps || ex.currentSetsReps || "3 × 10",
+            startValue: ex.startValue != null ? ex.startValue : (ex.currentWeight != null ? ex.currentWeight : null)
+          }))
+        }))
+      }));
+
+      const rawPayload = {
         programId: programData.programId || "current",
         name: programData.programName || programData.name || "Active Routine",
+        programName: programData.programName || programData.name || "Active Routine",
         startDate: programData.startDate || "",
         goals: programData.goals || "",
         resumeNote: programData.resumeNote || "",
-        sessions: programData.sessions || [],
+        sessions: cleanSessions,
         weekOverrides: programData.weekOverrides || {},
         equipment: programData.equipment || null,
         updatedAt: Date.now()
       };
+
+      // Strip all undefined properties to prevent fatal Firebase RTDB rejection
+      const payload = JSON.parse(JSON.stringify(rawPayload));
 
       // 1. Immediately cache locally
       try {
@@ -1298,7 +1360,13 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
         try {
           await rtdb.ref(`gym_users/${profileId}/active_program/current`).set(payload);
           await rtdb.ref(`gym_users/${profileId}/plateplan/current`).set(payload).catch(() => {});
-        } catch (e) {}
+          const pin = (window.HG_INTERNALS?.qe ? window.HG_INTERNALS.qe() : null) || window.HOUSEHOLD_PIN_DEFAULT || "";
+          if (pin) {
+            await rtdb.ref(`households/${pin}/${profileId}`).set(payload).catch(() => {});
+          }
+        } catch (e) {
+          console.warn("[PlatePlan RTDB saveActiveProgram]", e?.message);
+        }
       }
 
       return payload;
@@ -1502,8 +1570,32 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
         return loadDecoupledProfile(userId);
       }
 
+      // RTDB Boot Pull: Retrieve latest active program and sync to local store
+      const rtdb = this.getRTDB();
+      if (rtdb) {
+        try {
+          const progSnap = await rtdb.ref(`gym_users/${userId}/active_program/current`).once("value");
+          const val = progSnap.val();
+          if (val) {
+            const normalized = normalizeRemoteProgram(val);
+            const local = loadDecoupledProfile(userId);
+            if (Array.isArray(normalized.sessions) && normalized.sessions.length > 0) {
+              const merged = {
+                ...local,
+                ...normalized,
+                logs: local.logs || []
+              };
+              savePlatePlanV1Local(userId, merged);
+              I.Ee(userId, merged);
+            }
+          }
+        } catch (e) {
+          console.warn("[PlatePlan RTDB Boot Pull]", e?.message);
+        }
+      }
+
       const fs = this.getFirestore();
-      if (!fs) return null;
+      if (!fs) return loadDecoupledProfile(userId);
 
       try {
         // 1. Process any pending offline mutations first
@@ -2082,11 +2174,25 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
             const val = snap.val();
             if (val) {
               if (navigator.onLine) onStatusChange?.("synced");
-              onRemoteUpdate?.("active_program", val);
+              onRemoteUpdate?.("active_program", normalizeRemoteProgram(val));
             }
           };
           progRef.on("value", onProg);
           unsubscribers.push(() => progRef.off("value", onProg));
+
+          const pin = (window.HG_INTERNALS?.qe ? window.HG_INTERNALS.qe() : null) || window.HOUSEHOLD_PIN_DEFAULT || "";
+          if (pin) {
+            const houseRef = rtdb.ref(`households/${pin}/${profileId}`);
+            const onHouse = snap => {
+              const val = snap.val();
+              if (val) {
+                if (navigator.onLine) onStatusChange?.("synced");
+                onRemoteUpdate?.("active_program", normalizeRemoteProgram(val));
+              }
+            };
+            houseRef.on("value", onHouse);
+            unsubscribers.push(() => houseRef.off("value", onHouse));
+          }
         } catch (e) {
           console.warn("RTDB subscribe exception:", e?.message);
         }
@@ -2895,7 +3001,9 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
   }
 
   function flattenExercises(session) {
-    if (!session || session.type !== "strength") return [];
+    if (!session) return [];
+    const type = session.type || (session.targetKm ? "run" : "strength");
+    if (type !== "strength") return [];
     return (session.groups || []).flatMap(group =>
       (group.exercises || []).map(exercise => ({ exercise, groupLabel: group.label }))
     );
@@ -2903,7 +3011,9 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
 
   function findExercise(data, sessionId, exerciseId) {
     const session = data.sessions.find(item => item.id === sessionId);
-    if (!session || session.type !== "strength") return null;
+    if (!session) return null;
+    const type = session.type || (session.targetKm ? "run" : "strength");
+    if (type !== "strength") return null;
     for (const group of session.groups || []) {
       const exercise = (group.exercises || []).find(item => item.id === exerciseId);
       if (exercise) return { session, group, exercise };
@@ -3226,7 +3336,9 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
     }, [exercise.id, sameDay]);
 
     function save() {
-      if (!sets || !reps) {
+      const finalSets = sets || prescribed.sets || "3";
+      const finalReps = reps || prescribed.reps || "10";
+      if (!finalSets || !finalReps) {
         showToast("Add sets and reps first");
         return;
       }
@@ -3239,8 +3351,8 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
         normalizedName: normalizeExerciseName(exercise.name),
         date,
         weight: I.Ae(weight),
-        sets: Number.parseInt(sets, 10),
-        reps: Number.parseInt(reps, 10),
+        sets: Number.parseInt(finalSets, 10),
+        reps: Number.parseInt(finalReps, 10),
         completed: true,
         feeling,
         rpe: sameDay?.rpe ?? null,
@@ -3413,12 +3525,14 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
     const session = data.sessions.find(item => item.id === active.sessionId);
     const weekInfo = I.Re ? I.Re(data.startDate) : {};
     const exercises = flattenExercises(session);
+    const hasWarmup = Array.isArray(session?.warmup) && session.warmup.length > 0;
+    const hasCooldown = Array.isArray(session?.cooldown) && session.cooldown.length > 0;
     const steps = session?.type === "run"
       ? [{ type: "run", key: "run" }, { type: "complete", key: "complete" }]
       : [
-          { type: "warmup", key: "warmup" },
+          ...(hasWarmup ? [{ type: "warmup", key: "warmup" }] : []),
           ...exercises.map((item, index) => ({ type: "exercise", key: `exercise:${item.exercise.id}:${index}`, item })),
-          { type: "cooldown", key: "cooldown" },
+          ...(hasCooldown ? [{ type: "cooldown", key: "cooldown" }] : []),
           { type: "complete", key: "complete" },
         ];
     const stepIndex = Math.min(active.step || 0, Math.max(steps.length - 1, 0));
@@ -3600,7 +3714,8 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
       ),
       sessions.map(session => {
         const status = I.Fe(data, session, today, today);
-        const count = session.type === "run" ? 1 : flattenExercises(session).length;
+        const sessionType = session.type || (session.targetKm ? "run" : "strength");
+        const count = sessionType === "run" ? 1 : flattenExercises(session).length;
         const isActive = active?.sessionId === session.id;
         return h("div", { className: "hg-card", key: session.id },
           h("div", { className: `hg-pill ${status === "done" ? "success" : status === "partial" ? "danger" : ""}` },
@@ -3609,14 +3724,14 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
           h("div", { className: "hg-card-title", style: { marginTop: 11 } }, session.name),
           h("div", { className: "hg-card-copy" }, session.duration),
           h("div", { className: "hg-meta" },
-            h("span", null, session.type === "run" ? `Target ${session.targetKm}km` : `${count} exercises`),
-            session.type === "strength" && h("span", null, `${session.groups?.length || 0} groups`)
+            h("span", null, sessionType === "run" ? `Target ${session.targetKm}km` : `${count} exercises`),
+            sessionType === "strength" && h("span", null, `${session.groups?.length || 0} groups`)
           ),
           session.notes && h("details", { style: { marginTop: 10 } },
             h("summary", { className: "hg-link-button", style: { cursor: "pointer", display: "inline-flex" } }, "Session notes"),
             h("div", { className: "hg-callout", style: { marginTop: 4 } }, session.notes)
           ),
-          session.type === "strength" && h("details", { style: { marginTop: 10 } },
+          sessionType === "strength" && h("details", { style: { marginTop: 10 } },
             h("summary", { className: "hg-link-button", style: { cursor: "pointer", display: "inline-flex" } }, "Exercises & Recommended Weights"),
             h("div", { className: "hg-callout", style: { marginTop: 4, display: "grid", gap: 6 } },
               flattenExercises(session).map(({ exercise }) => {
@@ -7521,15 +7636,17 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
             return { ...current, [id]: next };
           }
           if (subCollection === "active_program") {
+            const normalized = normalizeRemoteProgram(remoteData);
             // Decoupled: Updating active program MUST NEVER overwrite exercise history
             const next = {
               ...currentProfile,
-              startDate: remoteData.startDate || currentProfile.startDate,
-              goals: remoteData.goals || currentProfile.goals,
-              resumeNote: remoteData.resumeNote || currentProfile.resumeNote,
-              sessions: Array.isArray(remoteData.sessions) && remoteData.sessions.length ? remoteData.sessions : currentProfile.sessions,
-              weekOverrides: remoteData.weekOverrides || currentProfile.weekOverrides,
-              equipment: remoteData.equipment || currentProfile.equipment,
+              programName: normalized.name || normalized.programName || currentProfile.programName || "Active Routine",
+              startDate: normalized.startDate || currentProfile.startDate,
+              goals: normalized.goals || currentProfile.goals,
+              resumeNote: normalized.resumeNote || currentProfile.resumeNote,
+              sessions: Array.isArray(normalized.sessions) && normalized.sessions.length ? normalized.sessions : currentProfile.sessions,
+              weekOverrides: normalized.weekOverrides || currentProfile.weekOverrides,
+              equipment: normalized.equipment || currentProfile.equipment,
               updatedAt: Date.now()
             };
             savePlatePlanV1Local(id, next);
@@ -7629,7 +7746,8 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
         const profile = (store && store[personId]) || loadDecoupledProfile(personId);
         const status = I.Fe ? I.Fe(profile, session, I.W(), I.W()) : "not_started";
         const currentLogs = Array.isArray(profile?.logs) ? profile.logs : [];
-        const firstIncomplete = session.type === "strength"
+        const sType = session.type || (session.targetKm ? "run" : "strength");
+        const firstIncomplete = sType === "strength"
           ? flattenExercises(session).findIndex(({ exercise }) =>
               !currentLogs.some(log => log.sessionId === session.id && log.exerciseId === exercise.id && log.date === I.W())
             )

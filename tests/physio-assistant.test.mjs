@@ -449,3 +449,105 @@ test("U10: applyDiffToRoutine preserves proposed group structure and session day
   assert.equal(updated[0].groups[1].label, "Superset A");
   assert.equal(updated[0].groups[1].exercises[0].id, "rdl");
 });
+
+test("U11: extractRoutineFromText normalizes session type and currentSetsReps to setsReps", () => {
+  const rawJSON = JSON.stringify({
+    sessions: [
+      {
+        id: "e_lower",
+        name: "Lower Body & Physio",
+        day: "Mon",
+        groups: [
+          {
+            label: "Physio Flow",
+            exercises: [
+              {
+                id: "physio_catcow",
+                name: "Cat-Cow",
+                currentSetsReps: "1 × 10",
+                startValue: null
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  });
+
+  const extracted = HG_PHYSIO_ENGINE.extractRoutineFromText(rawJSON);
+  assert.equal(extracted.sessions[0].type, "strength", "Session type must default to strength");
+  assert.equal(extracted.sessions[0].groups[0].exercises[0].setsReps, "1 × 10", "setsReps must be populated from currentSetsReps");
+});
+
+test("U12: applyDiffToRoutine ensures applied sessions carry type='strength' and exercises have setsReps", () => {
+  const currentSessions = [
+    {
+      id: "e_lower",
+      name: "Lower Body",
+      type: "strength",
+      day: "Tue",
+      groups: []
+    }
+  ];
+
+  const proposedSessions = [
+    {
+      id: "e_lower",
+      name: "Lower Body & Physio",
+      day: "Mon",
+      groups: [
+        {
+          label: "Physio Flow",
+          exercises: [
+            {
+              id: "physio_catcow",
+              name: "Cat-Cow",
+              currentSetsReps: "1 × 10",
+              startValue: null
+            }
+          ]
+        }
+      ]
+    }
+  ];
+
+  const diffs = HG_PHYSIO_ENGINE.computeRoutineDiff(currentSessions, proposedSessions);
+  const updated = HG_PHYSIO_ENGINE.applyDiffToRoutine(currentSessions, diffs, proposedSessions);
+
+  assert.equal(updated[0].type, "strength");
+  assert.equal(updated[0].groups[0].exercises[0].setsReps, "1 × 10");
+});
+
+test("U13: Cloud payload sanitization strips undefined properties to prevent RTDB fatal exceptions", () => {
+  const payloadWithUndefined = {
+    programId: "current",
+    name: "Phase 1: Back Rehab",
+    sessions: [
+      {
+        id: "e_lower",
+        name: "Lower Body",
+        type: undefined,
+        groups: [
+          {
+            label: "Physio Flow",
+            exercises: [
+              {
+                id: "catcow",
+                name: "Cat-Cow",
+                setsReps: "1 × 10",
+                startValue: undefined,
+                note: undefined
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  };
+
+  const sanitized = JSON.parse(JSON.stringify(payloadWithUndefined));
+  assert.equal("type" in sanitized.sessions[0], false, "Undefined type should be removed");
+  assert.equal("startValue" in sanitized.sessions[0].groups[0].exercises[0], false, "Undefined startValue should be removed");
+  assert.equal("note" in sanitized.sessions[0].groups[0].exercises[0], false, "Undefined note should be removed");
+  assert.equal(sanitized.name, "Phase 1: Back Rehab");
+});
