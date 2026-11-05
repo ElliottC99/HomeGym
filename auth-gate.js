@@ -5,10 +5,10 @@
 (function () {
   const ALLOWED_EMAILS = ["ejcallender@gmail.com", "clncarr7@gmail.com"];
   const APP_SCRIPTS = [
-    "./notifications.js?v=2.5.10",
-    "./app.bundle.js?v=2.5.10",
-    "./app-redesign.js?v=2.5.10",
-    "./data-recovery-inspector.js?v=2.5.10",
+    "./notifications.js?v=2.5.11",
+    "./app.bundle.js?v=2.5.11",
+    "./app-redesign.js?v=2.5.11",
+    "./data-recovery-inspector.js?v=2.5.11",
   ];
 
   let started = false;

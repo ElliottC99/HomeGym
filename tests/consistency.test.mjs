@@ -43,3 +43,7 @@ test("auth allow-list matches the database rules", () => {
 test("Firestore stays disabled until a database exists", () => {
   assert.match(read("firebase-config.js"), /HG_ENABLE_FIRESTORE = false/);
 });
+
+test("household pin default is configured for automated sync", () => {
+  assert.match(read("firebase-config.js"), /HOUSEHOLD_PIN_DEFAULT = "[a-f0-9]{32}"/);
+});

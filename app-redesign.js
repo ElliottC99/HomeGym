@@ -22,7 +22,7 @@
 
   const h = React.createElement;
   const { useState, useEffect, useCallback, useRef, useMemo } = React;
-  const APP_VERSION = "v2.5.10";
+  const APP_VERSION = "v2.5.11";
   const STORAGE_VERSION = "2.5.7";
 
   // --- v2.5.7 LocalStorage Preservation & Version Registration ---
@@ -7460,12 +7460,13 @@ const EXERCISE_SUGGESTIONS = [
 
   function SettingsModal({ personId, store, pin, syncStatus, queueCount = 0, updateData, onSaveKey, onClose, showToast }) {
     const [theme, setTheme] = useState(getTheme());
-    const [key, setKey] = useState(pin || "");
+    const [key, setKey] = useState(pin || window.HOUSEHOLD_PIN_DEFAULT || "");
     const [elliottStart, setElliottStart] = useState(store?.elliott?.startDate || "2026-09-07");
     const [chloeStart, setChloeStart] = useState(store?.chloe?.startDate || "2026-09-07");
     const [reminderHour, setReminderHour] = useState(() => storageGet(`hg_reminderhour_${personId}`, 9));
     const [enabling, setEnabling] = useState(false);
     const [restoring, setRestoring] = useState(false);
+    const [recovering, setRecovering] = useState(false);
     const [deadLetters, setDeadLetters] = useState(() => PlatePlanSyncEngine.getDeadLetterQueue());
     const backupFileInputRef = useRef(null);
 
@@ -7526,6 +7527,32 @@ const EXERCISE_SUGGESTIONS = [
       };
       reader.readAsText(file);
       e.target.value = "";
+    }
+
+    async function handleRunRecovery() {
+      setRecovering(true);
+      showToast("Scanning storage & cloud for historical data…");
+      try {
+        const res = await runLegacyDataRecoveryAndMigration();
+        const eLogs = res?.elliott?.logs?.length || 0;
+        const eWeights = res?.elliott?.weights?.length || 0;
+        const eSleep = res?.elliott?.sleep?.length || 0;
+        const eReadiness = res?.elliott?.readiness?.length || 0;
+        const cLogs = res?.chloe?.logs?.length || 0;
+        const cWeights = res?.chloe?.weights?.length || 0;
+        const totalLogs = eLogs + cLogs;
+        const totalWeights = eWeights + cWeights;
+        const totalHealth = eSleep + eReadiness;
+
+        updateData("elliott", () => loadDecoupledProfile("elliott"));
+        updateData("chloe", () => loadDecoupledProfile("chloe"));
+
+        showToast(`Recovery complete: found ${totalLogs} workout logs, ${totalWeights} weight entries, ${totalHealth} health records!`);
+      } catch (err) {
+        showToast("Recovery error: " + (err && err.message));
+      } finally {
+        setRecovering(false);
+      }
     }
 
     return h("div", { className: "hg-modal-wrap", onClick: onClose },
@@ -7589,6 +7616,11 @@ const EXERCISE_SUGGESTIONS = [
               disabled: restoring,
               onClick: () => backupFileInputRef.current?.click()
             }, restoring ? "Restoring…" : "Restore from Backup"),
+            h(Button, {
+              id: "hg-recover-data-btn",
+              disabled: recovering,
+              onClick: handleRunRecovery
+            }, recovering ? "Scanning & Recovering…" : "🔍 Scan & Recover Device History"),
             h("input", {
               ref: backupFileInputRef,
               type: "file",
@@ -7613,7 +7645,7 @@ const EXERCISE_SUGGESTIONS = [
         h("div", { className: "hg-setting-section" },
           h("h3", null, "Household sync key"),
           h("p", null,
-            `${syncStatus === "synced" ? "Synced." : syncStatus === "connecting" ? "Connecting…" : "Local only."} Use the same private key on both phones. It is no longer published with the app.`
+            `${syncStatus === "synced" ? "Synced." : syncStatus === "connecting" ? "Connecting…" : "Local only."} Protected by Google Sign-In (Elliott & Chloe). This household key is automatically shared across your devices.`
           ),
           h("div", { className: "hg-key-row" },
             h("input", { className: "hg-input", type: "text", value: key, onChange: event => setKey(event.target.value.trim()), placeholder: "Enter or generate a private key" }),
@@ -7752,7 +7784,14 @@ const EXERCISE_SUGGESTIONS = [
     const [view, setView] = useState("today");
     const [settingsOpen, setSettingsOpen] = useState(false);
     const [toast, setToast] = useState("");
-    const [pin, setPin] = useState(I.qe());
+    const [pin, setPin] = useState(() => {
+      const existing = I.qe();
+      if (!existing && window.HOUSEHOLD_PIN_DEFAULT) {
+        I.Je(window.HOUSEHOLD_PIN_DEFAULT);
+        return window.HOUSEHOLD_PIN_DEFAULT;
+      }
+      return existing;
+    });
     const [syncStatus, setSyncStatus] = useState(pin ? "connecting" : "local-only");
     const [authEpoch, setAuthEpoch] = useState(0);
     const [active, setActiveState] = useState(() => loadActive(getInitialActiveProfile()));
