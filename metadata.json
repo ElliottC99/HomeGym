@@ -1,6 +1,6 @@
 {
   "name": "Home Gym Log",
-  "description": "Strength training tracker HomeGym v2.5.15: Lean HomeGym release with reliable AI routine adaptation import, persistent Exercise ID continuity, and cloud sync",
+  "description": "Strength training tracker HomeGym v2.5.16: Lean HomeGym release with reliable AI routine adaptation import, group structure preservation, and cloud sync",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

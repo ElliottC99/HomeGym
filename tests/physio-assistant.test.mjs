@@ -343,3 +343,109 @@ test("U8: RDL baseline 43kg is updated to latest logged 50kg in JSON export", ()
   assert.equal(rdlEx.baselineWeight, 43, "baselineWeight retains 43kg initial starting point");
   assert.equal(rdlEx.latestPerformance.lastLoggedWeight, 50);
 });
+
+test("U9: Warmup additions at start of session do not trigger false substitutions for compound lifts", () => {
+  const currentSessions = [
+    {
+      id: "e_lower",
+      name: "Lower Body",
+      day: "Tuesday",
+      groups: [
+        {
+          label: "Superset A",
+          exercises: [
+            { id: "rdl", name: "Barbell RDL", setsReps: "3 × 8", startValue: 50, unit: "kg" },
+            { id: "reverse_lunge", name: "DB reverse lunge", setsReps: "3 × 10", startValue: 14.5, unit: "kg" }
+          ]
+        }
+      ]
+    }
+  ];
+
+  // Proposed has warmups at index 0 and 1, followed by Barbell RDL
+  const proposedSessions = [
+    {
+      id: "e_lower",
+      name: "Lower Body & Physio",
+      day: "Monday",
+      groups: [
+        {
+          label: "Physio Flow",
+          exercises: [
+            { id: "physio_catcow", name: "Cat-Cow", setsReps: "1 × 10", startValue: null },
+            { id: "physio_childspose", name: "Child's Posture", setsReps: "1 × 30 sec", startValue: null }
+          ]
+        },
+        {
+          label: "Superset A",
+          exercises: [
+            { id: "rdl", name: "Barbell RDL", setsReps: "3 × 8", startValue: 50, unit: "kg" },
+            { id: "reverse_lunge", name: "DB reverse lunge", setsReps: "3 × 10", startValue: 14.5, unit: "kg" }
+          ]
+        }
+      ]
+    }
+  ];
+
+  const diffs = HG_PHYSIO_ENGINE.computeRoutineDiff(currentSessions, proposedSessions);
+  // There should be NO substitution for Barbell RDL or DB reverse lunge!
+  const substitutions = diffs.filter(d => d.type === "SUBSTITUTION");
+  assert.equal(substitutions.length, 0, "No false substitutions should be detected");
+
+  const additions = diffs.filter(d => d.type === "ADDITION");
+  assert.equal(additions.length, 2, "Both warmups should be detected as ADDITION");
+  assert.equal(additions[0].proposedExercise.name, "Cat-Cow");
+  assert.equal(additions[1].proposedExercise.name, "Child's Posture");
+});
+
+test("U10: applyDiffToRoutine preserves proposed group structure and session day/name", () => {
+  const currentSessions = [
+    {
+      id: "e_lower",
+      name: "Lower Body",
+      day: "Tuesday",
+      groups: [
+        {
+          label: "Superset A",
+          exercises: [
+            { id: "rdl", name: "Barbell RDL", setsReps: "3 × 8", startValue: 50, unit: "kg" }
+          ]
+        }
+      ]
+    }
+  ];
+
+  const proposedSessions = [
+    {
+      id: "e_lower",
+      name: "Lower Body & Physio",
+      day: "Monday",
+      groups: [
+        {
+          label: "Physio Flow",
+          exercises: [
+            { id: "physio_catcow", name: "Cat-Cow", setsReps: "1 × 10", startValue: null }
+          ]
+        },
+        {
+          label: "Superset A",
+          exercises: [
+            { id: "rdl", name: "Barbell RDL", setsReps: "3 × 8", startValue: 50, unit: "kg" }
+          ]
+        }
+      ]
+    }
+  ];
+
+  const diffs = HG_PHYSIO_ENGINE.computeRoutineDiff(currentSessions, proposedSessions);
+  const updated = HG_PHYSIO_ENGINE.applyDiffToRoutine(currentSessions, diffs, proposedSessions);
+
+  assert.equal(updated.length, 1);
+  assert.equal(updated[0].name, "Lower Body & Physio");
+  assert.equal(updated[0].day, "Monday");
+  assert.equal(updated[0].groups.length, 2);
+  assert.equal(updated[0].groups[0].label, "Physio Flow");
+  assert.equal(updated[0].groups[0].exercises[0].name, "Cat-Cow");
+  assert.equal(updated[0].groups[1].label, "Superset A");
+  assert.equal(updated[0].groups[1].exercises[0].id, "rdl");
+});

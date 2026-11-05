@@ -470,12 +470,6 @@ export const HG_PHYSIO_ENGINE = {
           if (match.id && (!propEx.id || propEx.id !== match.id)) {
             propEx.id = match.id;
           }
-        } else {
-          // If at the same index in the session and names differ, consider it a substitution
-          const currAtIdx = currExercises[idx];
-          if (currAtIdx && !matchedCurrIds.has(currAtIdx.id || currAtIdx.name)) {
-            match = currAtIdx;
-          }
         }
 
         if (match) {
@@ -483,7 +477,7 @@ export const HG_PHYSIO_ENGINE = {
           const matchNameNorm = (match.name || "").trim().toLowerCase();
 
           if (matchNameNorm !== propNameNorm) {
-            // Exercise Substitution
+            // Exercise Substitution (matched by canonical ID but with changed exercise name)
             diffs.push({
               id: `diff_${diffCounter++}`,
               sessionId,
@@ -496,8 +490,10 @@ export const HG_PHYSIO_ENGINE = {
             });
           } else {
             // Same exercise: check load / setsReps changes
+            const propSr = propEx.setsReps || propEx.currentSetsReps;
+            const matchSr = match.setsReps || match.currentSetsReps;
             const loadChanged = Number(match.startValue) !== Number(propEx.startValue) && propEx.startValue != null;
-            const srChanged = match.setsReps !== propEx.setsReps && propEx.setsReps != null;
+            const srChanged = matchSr !== propSr && propSr != null;
             if (loadChanged || srChanged) {
               diffs.push({
                 id: `diff_${diffCounter++}`,
@@ -563,8 +559,105 @@ export const HG_PHYSIO_ENGINE = {
 
   /**
    * Merge user-approved diff items into the active routine.
+   * If proposedSessions is provided, adopts proposed session/group structures
+   * while respecting approvals/rejections and preserving canonical IDs.
    */
-  applyDiffToRoutine(currentSessions = [], diffItems = []) {
+  applyDiffToRoutine(currentSessions = [], diffItems = [], proposedSessions = null) {
+    if (!Array.isArray(currentSessions)) return [];
+    if (!Array.isArray(diffItems)) return currentSessions;
+
+    if (Array.isArray(proposedSessions) && proposedSessions.length > 0) {
+      // Build lookup of unapproved diffs by session and exercise
+      const unapprovedAdditions = new Set();
+      const unapprovedSubstitutions = new Map();
+      const unapprovedLoadChanges = new Map();
+      const unapprovedRemovals = [];
+
+      diffItems.forEach(d => {
+        if (d.approved) return;
+        const sId = d.sessionId;
+        const pKey = d.proposedExercise ? (d.proposedExercise.id || (d.proposedExercise.name || "").trim().toLowerCase()) : null;
+        if (d.type === "ADDITION" && pKey) {
+          unapprovedAdditions.add(`${sId}::${pKey}`);
+        } else if (d.type === "SUBSTITUTION" && pKey && d.originalExercise) {
+          unapprovedSubstitutions.set(`${sId}::${pKey}`, d.originalExercise);
+        } else if (d.type === "LOAD_CHANGE" && pKey && d.originalExercise) {
+          unapprovedLoadChanges.set(`${sId}::${pKey}`, d.originalExercise);
+        } else if (d.type === "REMOVAL" && d.originalExercise) {
+          unapprovedRemovals.push({ sessionId: sId, origEx: d.originalExercise });
+        }
+      });
+
+      const nextSessions = proposedSessions.map(propSess => {
+        const sId = propSess.id;
+        const currSess = currentSessions.find(cs => cs.id === sId) || {};
+        const groups = (propSess.groups || []).map(group => {
+          const exercises = [];
+          (group.exercises || []).forEach(ex => {
+            const exIdKey = ex.id ? `${sId}::${ex.id}` : null;
+            const exNameKey = ex.name ? `${sId}::${ex.name.trim().toLowerCase()}` : null;
+
+            if ((exIdKey && unapprovedAdditions.has(exIdKey)) || (exNameKey && unapprovedAdditions.has(exNameKey))) {
+              // Rejected addition: omit
+              return;
+            }
+            if (exIdKey && unapprovedSubstitutions.has(exIdKey)) {
+              exercises.push(JSON.parse(JSON.stringify(unapprovedSubstitutions.get(exIdKey))));
+              return;
+            }
+            if (exNameKey && unapprovedSubstitutions.has(exNameKey)) {
+              exercises.push(JSON.parse(JSON.stringify(unapprovedSubstitutions.get(exNameKey))));
+              return;
+            }
+            if (exIdKey && unapprovedLoadChanges.has(exIdKey)) {
+              const orig = unapprovedLoadChanges.get(exIdKey);
+              exercises.push({
+                ...ex,
+                startValue: orig.startValue,
+                setsReps: orig.setsReps || orig.currentSetsReps || ex.setsReps
+              });
+              return;
+            }
+            if (exNameKey && unapprovedLoadChanges.has(exNameKey)) {
+              const orig = unapprovedLoadChanges.get(exNameKey);
+              exercises.push({
+                ...ex,
+                startValue: orig.startValue,
+                setsReps: orig.setsReps || orig.currentSetsReps || ex.setsReps
+              });
+              return;
+            }
+            exercises.push(JSON.parse(JSON.stringify(ex)));
+          });
+          return {
+            ...group,
+            exercises
+          };
+        }).filter(g => (g.exercises || []).length > 0);
+
+        const sessionRemovals = unapprovedRemovals.filter(r => r.sessionId === sId);
+        if (sessionRemovals.length > 0) {
+          if (groups.length === 0) {
+            groups.push({ label: "Restored Exercises", exercises: [] });
+          }
+          sessionRemovals.forEach(r => {
+            groups[groups.length - 1].exercises.push(JSON.parse(JSON.stringify(r.origEx)));
+          });
+        }
+
+        return {
+          ...currSess,
+          ...propSess,
+          id: sId,
+          name: propSess.name || currSess.name,
+          day: propSess.day || currSess.day,
+          groups
+        };
+      });
+
+      return nextSessions;
+    }
+
     const nextSessions = JSON.parse(JSON.stringify(currentSessions));
     const approvedDiffs = (diffItems || []).filter(d => d.approved);
 

@@ -22,7 +22,7 @@
 
   const h = React.createElement;
   const { useState, useEffect, useCallback, useRef, useMemo } = React;
-  const APP_VERSION = "v2.5.15";
+  const APP_VERSION = "v2.5.16";
   const STORAGE_VERSION = "2.5.7";
 
   // --- v2.5.7 LocalStorage Preservation & Version Registration ---
@@ -6526,6 +6526,7 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
     const [physioNotes, setPhysioNotes] = useState("");
     const [rawAIResponse, setRawAIResponse] = useState("");
     const [diffItems, setDiffItems] = useState([]);
+    const [proposedSessions, setProposedSessions] = useState([]);
     const [proposedProgramName, setProposedProgramName] = useState("");
     const [milestoneLabel, setMilestoneLabel] = useState("");
     const [parseError, setParseError] = useState(null);
@@ -6661,14 +6662,17 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
         if (diffs.length === 0) {
           setParseError("No differences found between your active routine and the proposed routine.");
           setDiffItems([]);
+          setProposedSessions([]);
           return;
         }
         setDiffItems(diffs);
+        setProposedSessions(extracted.sessions || []);
         setProposedProgramName(extracted.programName || `${data.programName || "Routine"} (Adapted)`);
         setMilestoneLabel(`Physio Update - ${new Date().toISOString().slice(0, 10)}`);
       } catch (err) {
         setParseError(err.message || "Failed to parse routine from response.");
         setDiffItems([]);
+        setProposedSessions([]);
       }
     }
 
@@ -6694,7 +6698,7 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
         const snapshot = engine.createMilestoneSnapshot(data, label, personId);
         await GymCloudEngine.saveProgramMilestone(personId, snapshot);
 
-        const updatedSessions = engine.applyDiffToRoutine(data.sessions || [], diffItems);
+        const updatedSessions = engine.applyDiffToRoutine(data.sessions || [], diffItems, proposedSessions);
 
         updateData(personId, cur => ({
           ...cur,
