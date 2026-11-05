@@ -25,6 +25,7 @@ const OPTIONAL_SHELL = [
   "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore-compat.js",
   "https://www.gstatic.com/firebasejs/10.13.0/firebase-database-compat.js",
   "https://www.gstatic.com/firebasejs/10.13.0/firebase-messaging-compat.js",
+  "https://www.gstatic.com/firebasejs/10.13.0/firebase-auth-compat.js",
 ];
 
 self.addEventListener("install", event => {
