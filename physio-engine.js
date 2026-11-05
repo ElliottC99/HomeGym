@@ -25,22 +25,141 @@ export const HG_PHYSIO_ENGINE = {
   },
 
   /**
+   * Normalize an exercise name or ID for fuzzy matching across legacy log formats.
+   */
+  normalizeName(text) {
+    if (!text) return "";
+    return String(text)
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, "")
+      .trim();
+  },
+
+  /**
+   * Flatten and normalize all logs across legacy session logs, array sets, and flat logs.
+   */
+  flattenAllLogs(rawLogs) {
+    if (!Array.isArray(rawLogs)) return [];
+    const flat = [];
+
+    rawLogs.forEach(entry => {
+      if (!entry) return;
+      if (entry.type === "run" || entry.sessionId === "run") return;
+
+      const date = entry.date || (entry.timestamp ? new Date(entry.timestamp).toISOString().slice(0, 10) : "");
+      const timestamp = entry.timestamp || (date ? new Date(date).getTime() : 0);
+
+      function extractSetsAndWeight(item) {
+        let maxWeight = 0;
+        let setsCount = 1;
+        let repsDesc = "";
+
+        if (Array.isArray(item.sets) && item.sets.length > 0) {
+          setsCount = item.sets.length;
+          const weights = item.sets.map(s => Number(s?.weight)).filter(w => !isNaN(w) && w > 0);
+          if (weights.length > 0) maxWeight = Math.max(...weights);
+          const reps = item.sets.map(s => s?.reps).filter(r => r != null);
+          repsDesc = reps.join(", ");
+        } else {
+          setsCount = item.sets != null && !isNaN(Number(item.sets)) ? Number(item.sets) : 1;
+          repsDesc = item.reps != null ? String(item.reps) : "";
+          const w = Number(item.weight);
+          if (!isNaN(w) && w > 0) maxWeight = w;
+        }
+
+        if (maxWeight === 0 && item.weight != null) {
+          const w = Number(item.weight);
+          if (!isNaN(w) && w > 0) maxWeight = w;
+        }
+
+        return { setsCount, repsDesc, maxWeight };
+      }
+
+      // Check for legacy session-level logs containing an exercises array
+      if (Array.isArray(entry.exercises) && entry.exercises.length > 0) {
+        entry.exercises.forEach(subEx => {
+          if (!subEx) return;
+          const { setsCount, repsDesc, maxWeight } = extractSetsAndWeight(subEx);
+          flat.push({
+            id: subEx.id || entry.id,
+            date,
+            timestamp,
+            exerciseId: subEx.exerciseId || subEx.liftId || subEx.id || "",
+            exerciseName: subEx.exerciseName || subEx.name || "",
+            weight: maxWeight > 0 ? maxWeight : (subEx.weight != null ? Number(subEx.weight) : null),
+            sets: setsCount,
+            reps: repsDesc || (subEx.reps != null ? String(subEx.reps) : ""),
+            rpe: subEx.rpe != null ? subEx.rpe : entry.rpe,
+            feeling: subEx.feeling || entry.feeling,
+            notes: subEx.notes || subEx.note || entry.notes || ""
+          });
+        });
+      } else {
+        // Flat exercise log
+        const { setsCount, repsDesc, maxWeight } = extractSetsAndWeight(entry);
+        flat.push({
+          id: entry.id,
+          date,
+          timestamp,
+          exerciseId: entry.exerciseId || entry.liftId || entry.id || "",
+          exerciseName: entry.exerciseName || entry.name || "",
+          weight: maxWeight > 0 ? maxWeight : (entry.weight != null ? Number(entry.weight) : null),
+          sets: setsCount,
+          reps: repsDesc || (entry.reps != null ? String(entry.reps) : ""),
+          rpe: entry.rpe,
+          feeling: entry.feeling,
+          notes: entry.notes || entry.note || ""
+        });
+      }
+    });
+
+    return flat;
+  },
+
+  /**
+   * Determine whether a log entry corresponds to a target exercise ID or name.
+   */
+  matchesExercise(log, targetId, targetName) {
+    const normTargetName = this.normalizeName(targetName);
+    const normTargetId = this.normalizeName(targetId);
+
+    const logExId = String(log.exerciseId || "").trim().toLowerCase();
+    const logExName = String(log.exerciseName || "").trim().toLowerCase();
+    const normLogName = this.normalizeName(logExName);
+    const normLogId = this.normalizeName(logExId);
+
+    // 1. Exact ID match (e.g. "rdl" === "rdl")
+    if (targetId && logExId === targetId.toLowerCase()) return true;
+
+    // 2. Exact or normalized name match (e.g. "Barbell RDL" matches "Barbell RDL")
+    if (normTargetName && normLogName === normTargetName) return true;
+
+    // 3. Normalized ID matches normalized Name (e.g. id "barbell_rdl" matches name "Barbell RDL")
+    if (normTargetId && (normLogName === normTargetId || normLogId === normTargetId)) return true;
+    if (normTargetName && (normLogId === normTargetName || normLogName === normTargetName)) return true;
+
+    // 4. Substring / acronym heuristics for common gym shorthands:
+    // "rdl" matches "barbellrdl", "barbell_rdl"
+    if (normTargetId && normLogId && (normTargetId.includes(normLogId) || normLogId.includes(normTargetId))) {
+      if (normLogId.length >= 3 && normTargetId.length >= 3) return true;
+    }
+    if (normTargetName && normLogId && (normTargetName.includes(normLogId) || normLogId.includes(normTargetName))) {
+      if (normLogId.length >= 3 && normTargetName.length >= 3) return true;
+    }
+
+    return false;
+  },
+
+  /**
    * Query athlete logs to extract the latest performance data for an exercise
    * (latest weights, sets, reps, last logged date, feeling, and historical PR max).
    */
   getExerciseLatestStats(profileData, exerciseId, exerciseName) {
-    const logs = Array.isArray(profileData?.logs) ? profileData.logs : [];
-    const idTarget = exerciseId ? String(exerciseId).trim().toLowerCase() : "";
-    const nameTarget = exerciseName ? String(exerciseName).trim().toLowerCase() : "";
+    const rawLogs = Array.isArray(profileData?.logs) ? profileData.logs : [];
+    if (rawLogs.length === 0) return null;
 
-    const matchedLogs = logs.filter(log => {
-      if (!log || log.type === "run") return false;
-      const logExId = (log.exerciseId || log.id || "").toString().trim().toLowerCase();
-      const logExName = (log.exerciseName || log.name || "").toString().trim().toLowerCase();
-      if (idTarget && logExId === idTarget) return true;
-      if (nameTarget && (logExName === nameTarget || logExId === nameTarget)) return true;
-      return false;
-    });
+    const flattenedLogs = this.flattenAllLogs(rawLogs);
+    const matchedLogs = flattenedLogs.filter(log => this.matchesExercise(log, exerciseId, exerciseName));
 
     if (matchedLogs.length === 0) {
       return null;
@@ -57,35 +176,15 @@ export const HG_PHYSIO_ENGINE = {
     const latest = matchedLogs[0];
     let maxWeight = 0;
     matchedLogs.forEach(l => {
-      if (Array.isArray(l.sets)) {
-        l.sets.forEach(s => {
-          const w = Number(s.weight);
-          if (!isNaN(w) && w > maxWeight) maxWeight = w;
-        });
-      } else {
-        const w = Number(l.weight);
-        if (!isNaN(w) && w > maxWeight) maxWeight = w;
-      }
+      const w = Number(l.weight);
+      if (!isNaN(w) && w > maxWeight) maxWeight = w;
     });
 
-    let setsCount = 1;
-    let repsDesc = "";
-    let weightVal = latest.weight != null ? Number(latest.weight) : null;
+    const weightVal = latest.weight != null && !isNaN(Number(latest.weight)) ? Number(latest.weight) : null;
+    const setsCount = latest.sets || 1;
+    const repsDesc = latest.reps || "";
 
-    if (Array.isArray(latest.sets) && latest.sets.length > 0) {
-      setsCount = latest.sets.length;
-      const repsList = latest.sets.map(s => s.reps).filter(r => r != null);
-      repsDesc = repsList.join(", ");
-      const maxInLatest = Math.max(...latest.sets.map(s => Number(s.weight) || 0));
-      if (weightVal == null || isNaN(weightVal) || weightVal === 0) {
-        weightVal = maxInLatest > 0 ? maxInLatest : null;
-      }
-    } else {
-      setsCount = latest.sets != null ? Number(latest.sets) : 1;
-      repsDesc = latest.reps != null ? String(latest.reps) : "";
-    }
-
-    const weightStr = weightVal != null && !isNaN(weightVal) && weightVal > 0 ? ` @ ${weightVal}kg` : " (Bodyweight)";
+    const weightStr = weightVal != null && weightVal > 0 ? ` @ ${weightVal}kg` : " (Bodyweight)";
     const summary = `${setsCount} × ${repsDesc || "reps"}${weightStr} (${latest.date || "recent"})`;
 
     return {
@@ -124,12 +223,25 @@ export const HG_PHYSIO_ENGINE = {
           const exercises = (Array.isArray(group.exercises) ? group.exercises : []).map(ex => {
             const exId = ex.id || this.slugify(ex.name);
             const stats = this.getExerciseLatestStats(profileData, exId, ex.name);
+
+            // Active working weight: prioritizes latest logged working weight over initial startValue
+            const activeWeight = (stats?.lastLoggedWeight != null && stats.lastLoggedWeight > 0)
+              ? stats.lastLoggedWeight
+              : (ex.startValue != null && !isNaN(Number(ex.startValue)) ? Number(ex.startValue) : null);
+
+            // Active working sets/reps: prioritizes latest completed volume over baseline prescription
+            const activeSetsReps = (stats?.lastLoggedSets && stats?.lastLoggedReps)
+              ? `${stats.lastLoggedSets} × ${stats.lastLoggedReps}`
+              : (ex.setsReps || "3 × 8–10");
+
             return {
               id: exId,
               name: ex.name,
               equipmentType: ex.equipmentType || "barbell",
-              setsReps: ex.setsReps || "3 × 8–10",
-              startValue: ex.startValue != null && !isNaN(Number(ex.startValue)) ? Number(ex.startValue) : null,
+              currentWeight: activeWeight,
+              currentSetsReps: activeSetsReps,
+              startValue: activeWeight, // Primary working weight field for external AI assistants
+              baselineWeight: ex.startValue != null && !isNaN(Number(ex.startValue)) ? Number(ex.startValue) : null,
               unit: ex.unit || "kg",
               restNote: ex.restNote || "90s",
               note: ex.note || "",
@@ -146,12 +258,23 @@ export const HG_PHYSIO_ENGINE = {
         const exercises = session.exercises.map(ex => {
           const exId = ex.id || this.slugify(ex.name);
           const stats = this.getExerciseLatestStats(profileData, exId, ex.name);
+
+          const activeWeight = (stats?.lastLoggedWeight != null && stats.lastLoggedWeight > 0)
+            ? stats.lastLoggedWeight
+            : (ex.startValue != null && !isNaN(Number(ex.startValue)) ? Number(ex.startValue) : null);
+
+          const activeSetsReps = (stats?.lastLoggedSets && stats?.lastLoggedReps)
+            ? `${stats.lastLoggedSets} × ${stats.lastLoggedReps}`
+            : (ex.setsReps || "3 × 8–10");
+
           return {
             id: exId,
             name: ex.name,
             equipmentType: ex.equipmentType || "barbell",
-            setsReps: ex.setsReps || "3 × 8–10",
-            startValue: ex.startValue != null && !isNaN(Number(ex.startValue)) ? Number(ex.startValue) : null,
+            currentWeight: activeWeight,
+            currentSetsReps: activeSetsReps,
+            startValue: activeWeight,
+            baselineWeight: ex.startValue != null && !isNaN(Number(ex.startValue)) ? Number(ex.startValue) : null,
             unit: ex.unit || "kg",
             restNote: ex.restNote || "90s",
             note: ex.note || "",
@@ -220,11 +343,12 @@ export const HG_PHYSIO_ENGINE = {
       session.groups.forEach(group => {
         if (group.label) markdown += `*${group.label}:*\n`;
         group.exercises.forEach(ex => {
-          const load = ex.startValue ? ` @ ${ex.startValue}${ex.unit || "kg"}` : "";
-          const sr = ex.setsReps ? ` (${ex.setsReps}${load})` : "";
+          const load = ex.currentWeight ? ` @ ${ex.currentWeight}${ex.unit || "kg"}` : "";
+          const sr = ex.currentSetsReps ? ` (${ex.currentSetsReps}${load})` : "";
           const note = ex.note ? ` — Note: ${ex.note}` : "";
           const stats = ex.latestPerformance;
-          const statsStr = stats ? `\n    - Latest Logged: ${stats.summary}${stats.maxHistoricalWeight ? ` | PR Max: ${stats.maxHistoricalWeight}kg` : ""}` : "";
+          const baselineNote = (ex.baselineWeight && ex.currentWeight && ex.baselineWeight !== ex.currentWeight) ? ` | Initial Baseline: ${ex.baselineWeight}kg` : "";
+          const statsStr = stats ? `\n    - Latest Logged: ${stats.summary}${stats.maxHistoricalWeight ? ` | PR Max: ${stats.maxHistoricalWeight}kg` : ""}${baselineNote}` : "";
           markdown += `- **${ex.name}**${sr} [id: \`${ex.id}\`]${note}${statsStr}\n`;
         });
       });

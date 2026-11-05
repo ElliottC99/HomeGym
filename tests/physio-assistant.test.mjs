@@ -309,3 +309,37 @@ test("U7: computeRoutineDiff and applyDiffToRoutine strictly preserve exercise I
   assert.equal(merged[0].groups[0].exercises[0].setsReps, "4 x 6");
   assert.equal(merged[0].groups[0].exercises[0].startValue, 72.5);
 });
+
+test("U8: RDL baseline 43kg is updated to latest logged 50kg in JSON export", () => {
+  const profileWithRdl = {
+    programName: "Elliott's Hypertrophy",
+    sessions: [
+      {
+        id: "e_lower",
+        name: "Lower Body",
+        day: "Tuesday",
+        groups: [
+          {
+            label: "Superset A",
+            exercises: [
+              { id: "rdl", name: "Barbell RDL", setsReps: "4 × 6", startValue: 43, unit: "kg" }
+            ]
+          }
+        ]
+      }
+    ],
+    logs: [
+      // Log where RDL was lifted at 50kg
+      { id: "log_rdl_recent", type: "exercise", exerciseId: "rdl", exerciseName: "Barbell RDL", date: "2026-11-01", weight: 50, sets: 4, reps: 6 }
+    ]
+  };
+
+  const json = HG_PHYSIO_ENGINE.buildEnrichedRoutineJSON(profileWithRdl, "Elliott");
+  const rdlEx = json.sessions[0].groups[0].exercises[0];
+
+  assert.equal(rdlEx.name, "Barbell RDL");
+  assert.equal(rdlEx.currentWeight, 50, "Current working weight must be 50kg, not 43kg");
+  assert.equal(rdlEx.startValue, 50, "startValue in JSON must reflect latest working load 50kg");
+  assert.equal(rdlEx.baselineWeight, 43, "baselineWeight retains 43kg initial starting point");
+  assert.equal(rdlEx.latestPerformance.lastLoggedWeight, 50);
+});

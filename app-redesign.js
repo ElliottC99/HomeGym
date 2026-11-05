@@ -22,7 +22,7 @@
 
   const h = React.createElement;
   const { useState, useEffect, useCallback, useRef, useMemo } = React;
-  const APP_VERSION = "v2.5.13";
+  const APP_VERSION = "v2.5.14";
   const STORAGE_VERSION = "2.5.7";
 
   // --- v2.5.7 LocalStorage Preservation & Version Registration ---
@@ -6506,6 +6506,7 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
       physioModalOpen && h(PhysioAIAssistantModal, {
         personId,
         data,
+        store,
         meta,
         updateData,
         showToast,
@@ -6514,7 +6515,7 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
     );
   }
 
-  function PhysioAIAssistantModal({ personId, data, meta, updateData, showToast, onClose }) {
+  function PhysioAIAssistantModal({ personId, data, store, meta, updateData, showToast, onClose }) {
     const [tab, setTab] = useState("export"); // "export" | "import" | "milestones"
     const [exportFormat, setExportFormat] = useState("prompt"); // "prompt" | "json"
     const [physioNotes, setPhysioNotes] = useState("");
@@ -6549,15 +6550,56 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
       }
     }, [tab, loadMilestones]);
 
+    // Gather logs across active state, store, and all local backup stores
+    const unifiedData = useMemo(() => {
+      let combinedLogs = Array.isArray(data?.logs) ? [...data.logs] : [];
+
+      if (store?.[personId]?.logs && Array.isArray(store[personId].logs)) {
+        combinedLogs = combinedLogs.concat(store[personId].logs);
+      }
+
+      if (typeof localStorage !== "undefined") {
+        try {
+          const raw = localStorage.getItem(`data:${personId}`);
+          if (raw) {
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed?.logs)) combinedLogs = combinedLogs.concat(parsed.logs);
+          }
+        } catch (e) {}
+
+        try {
+          const rawPp = localStorage.getItem(`plateplan_v1_${personId}`);
+          if (rawPp) {
+            const parsed = JSON.parse(rawPp);
+            if (Array.isArray(parsed?.logs)) combinedLogs = combinedLogs.concat(parsed.logs);
+          }
+        } catch (e) {}
+
+        try {
+          const rawGlobal = localStorage.getItem("plateplan_v1");
+          if (rawGlobal) {
+            const parsed = JSON.parse(rawGlobal);
+            const userLogs = parsed?.users?.[personId]?.logs || parsed?.[personId]?.logs;
+            if (Array.isArray(userLogs)) combinedLogs = combinedLogs.concat(userLogs);
+          }
+        } catch (e) {}
+      }
+
+      return {
+        ...data,
+        logs: combinedLogs
+      };
+    }, [data, store, personId]);
+
     const generatedPrompt = useMemo(() => {
       if (!engine?.buildClinicalPrompt) return "";
-      return engine.buildClinicalPrompt(data, meta?.label || personId, physioNotes);
-    }, [data, meta, physioNotes, engine]);
+      return engine.buildClinicalPrompt(unifiedData, meta?.label || personId, physioNotes);
+    }, [unifiedData, meta, physioNotes, engine, personId]);
 
     const enrichedJSON = useMemo(() => {
       if (!engine?.buildEnrichedRoutineJSON) return null;
-      return engine.buildEnrichedRoutineJSON(data, meta?.label || personId);
-    }, [data, meta, personId, engine]);
+      return engine.buildEnrichedRoutineJSON(unifiedData, meta?.label || personId);
+    }, [unifiedData, meta, personId, engine]);
 
     const formattedJSONString = useMemo(() => {
       if (!enrichedJSON) return "";

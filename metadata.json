@@ -1,6 +1,6 @@
 {
   "name": "Home Gym Log",
-  "description": "Strength training tracker HomeGym v2.5.13: Lean HomeGym release with permanent Exercise ID continuity, latest performance JSON export for AI/physio, version milestones, and cloud sync",
+  "description": "Strength training tracker HomeGym v2.5.14: Lean HomeGym release with active performance working weights in AI JSON export, permanent Exercise ID continuity, and cloud sync",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
