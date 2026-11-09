@@ -1,6 +1,6 @@
 {
   "name": "Home Gym Log",
-  "description": "Strength training tracker HomeGym v2.5.18: Last-Write-Wins (LWW) cloud sync and refresh persistence for AI physio routine updates",
+  "description": "Strength training tracker HomeGym v2.5.19: Resolve phone sync overwrite and guarantee cross-device LWW routine propagation",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

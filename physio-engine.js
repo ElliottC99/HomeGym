@@ -793,13 +793,30 @@ export const HG_PHYSIO_ENGINE = {
     // Local uses the routine-specific clock only: profile.updatedAt is bumped by
     // log/health updates and must not make a stale routine look newer.
     const localTime = Number(localProfile?.programUpdatedAt || 0);
-    // Remote active_program nodes only hold the routine, so updatedAt is a valid fallback,
-    // but an explicit programUpdatedAt (even 0 from a legacy write) takes precedence.
-    const remoteTime = remoteProgram.programUpdatedAt != null
-      ? Number(remoteProgram.programUpdatedAt) || 0
-      : Number(remoteProgram.updatedAt || 0);
 
-    return remoteTime > localTime;
+    // Remote routine timestamp: prefer positive programUpdatedAt (> 0).
+    // If remote has no routine clock (programUpdatedAt === 0 or missing):
+    // only fall back to remote.updatedAt if local ALSO has no routine clock (localTime === 0)
+    // so an unversioned local profile (e.g. phone) can be initialized without allowing a zero-clock remote to overwrite a timestamped local routine.
+    const remoteProgTime = Number(remoteProgram?.programUpdatedAt || 0);
+    const remoteTime = remoteProgTime > 0
+      ? remoteProgTime
+      : (localTime === 0 ? Number(remoteProgram?.updatedAt || 0) : 0);
+
+    // If both have timestamps:
+    if (remoteTime > 0 && localTime > 0) {
+      return remoteTime > localTime;
+    }
+    // If local has no routine timestamp (e.g. unversioned local routine on phone), accept remote:
+    if (remoteTime > 0 && localTime === 0) {
+      return true;
+    }
+    // If remote has no timestamp but local does, local is newer:
+    if (localTime > 0 && remoteTime === 0) {
+      return false;
+    }
+    // Fallback: keep local if neither has timestamp
+    return false;
   }
 };
 

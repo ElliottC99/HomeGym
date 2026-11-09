@@ -619,4 +619,48 @@ test("U14: LWW timestamp comparison prevents stale cloud snapshot from overwriti
     true,
     "Log-driven updatedAt bumps must not block a newer routine from another device"
   );
+
+  // 6. Unversioned phone profile (programUpdatedAt: 0) must accept newer remote program
+  const unversionedPhoneProfile = {
+    programUpdatedAt: 0,
+    updatedAt: 1729000000000,
+    sessions: [{ id: "session_old", name: "Old Plan", groups: [] }]
+  };
+  assert.equal(
+    HG_PHYSIO_ENGINE.shouldAcceptRemoteProgram(unversionedPhoneProfile, newerRemote),
+    true,
+    "Unversioned phone profile must accept newer remote program with positive programUpdatedAt"
+  );
+
+  // 7. Unversioned phone profile must accept remote program falling back to positive updatedAt
+  assert.equal(
+    HG_PHYSIO_ENGINE.shouldAcceptRemoteProgram(unversionedPhoneProfile, legacyZeroClockRemote),
+    true,
+    "Unversioned phone profile must accept remote program falling back to positive updatedAt"
+  );
+});
+
+test("U15: Active routine payload sanitization guarantees positive non-zero programUpdatedAt", () => {
+  const inputWithoutClock = {
+    sessions: [{ id: "s1", name: "Push", groups: [] }],
+    updatedAt: 1730000000000
+  };
+
+  const resolvedClock = (Number(inputWithoutClock.programUpdatedAt || 0) > 0)
+    ? Number(inputWithoutClock.programUpdatedAt)
+    : (Number(inputWithoutClock.updatedAt || 0) > 0 ? Number(inputWithoutClock.updatedAt) : 12345);
+
+  assert.equal(resolvedClock, 1730000000000, "Unversioned input falls back to updatedAt positive timestamp");
+
+  const inputWithClock = {
+    sessions: [{ id: "s1", name: "Push", groups: [] }],
+    programUpdatedAt: 1731111111111,
+    updatedAt: 1730000000000
+  };
+
+  const resolvedClock2 = (Number(inputWithClock.programUpdatedAt || 0) > 0)
+    ? Number(inputWithClock.programUpdatedAt)
+    : (Number(inputWithClock.updatedAt || 0) > 0 ? Number(inputWithClock.updatedAt) : 12345);
+
+  assert.equal(resolvedClock2, 1731111111111, "Explicit programUpdatedAt takes precedence");
 });

@@ -22,7 +22,7 @@
 
   const h = React.createElement;
   const { useState, useEffect, useCallback, useRef, useMemo } = React;
-  const APP_VERSION = "v2.5.18";
+  const APP_VERSION = "v2.5.19";
   const STORAGE_VERSION = "2.5.7";
 
   // --- v2.5.7 LocalStorage Preservation & Version Registration ---
@@ -815,13 +815,13 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
     };
   }
 
-  // Routine LWW clock. Local profiles use programUpdatedAt only (profile.updatedAt is
-  // bumped by log/health updates and must not make a stale routine look newer).
-  // Remote active_program nodes only hold the routine, so their updatedAt is a fallback.
+  // Routine LWW clock. Local profiles use programUpdatedAt (> 0).
+  // Remote active_program nodes prefer programUpdatedAt (> 0), falling back to updatedAt (> 0).
   function getProgramTime(obj, isRemote) {
-    if (!obj) return 0;
-    if (obj.programUpdatedAt != null) return Number(obj.programUpdatedAt) || 0;
-    return isRemote ? (Number(obj.updatedAt) || 0) : 0;
+    if (!obj || typeof obj !== "object") return 0;
+    const pTime = Number(obj.programUpdatedAt || 0);
+    if (pTime > 0) return pTime;
+    return isRemote ? (Number(obj.updatedAt || 0)) : 0;
   }
 
   function shouldAcceptRemoteProgram(localProfile, remoteProgram) {
@@ -835,7 +835,23 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
     if (!hasRemoteSessions) return false;
     const hasLocalSessions = Array.isArray(localProfile?.sessions) && localProfile.sessions.length > 0;
     if (!hasLocalSessions) return true;
-    return getProgramTime(remoteProgram, true) > getProgramTime(localProfile, false);
+
+    const localTime = Number(localProfile?.programUpdatedAt || 0);
+    const remoteProgTime = Number(remoteProgram?.programUpdatedAt || 0);
+    const remoteTime = remoteProgTime > 0
+      ? remoteProgTime
+      : (localTime === 0 ? Number(remoteProgram?.updatedAt || 0) : 0);
+
+    if (remoteTime > 0 && localTime > 0) {
+      return remoteTime > localTime;
+    }
+    if (remoteTime > 0 && localTime === 0) {
+      return true;
+    }
+    if (localTime > 0 && remoteTime === 0) {
+      return false;
+    }
+    return false;
   }
 
   const PlatePlanSyncEngine = {
@@ -1338,10 +1354,10 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
         sessions: cleanSessions,
         weekOverrides: programData.weekOverrides || {},
         equipment: programData.equipment || null,
-        // Routine LWW clock: only bumped when the routine itself is edited (apply/revert/activate).
-        // Incidental saves (e.g. logging a set) carry the existing clock so a stale device
-        // can never make its old routine look newer than another device's edit.
-        programUpdatedAt: Number(programData.programUpdatedAt || 0),
+        // Routine LWW clock: guaranteed positive timestamp so remote subscribers can never treat it as epoch 0
+        programUpdatedAt: Number(programData.programUpdatedAt || 0) > 0
+          ? Number(programData.programUpdatedAt)
+          : (Number(programData.updatedAt || 0) > 0 ? Number(programData.updatedAt) : Date.now()),
         updatedAt: Date.now()
       };
 
@@ -2443,16 +2459,8 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
         const bwSaves = recoveredWeights.map(w => GymCloudEngine.saveMetricEntry(profileId, "weight", w, { skipQueue: true }));
         const sleepSaves = recoveredSleep.map(s => GymCloudEngine.saveMetricEntry(profileId, "sleep", s, { skipQueue: true }));
 
-        if (legacyData) {
-          await GymCloudEngine.saveActiveProgram(profileId, {
-            startDate: legacyData.startDate,
-            goals: legacyData.goals,
-            resumeNote: legacyData.resumeNote,
-            sessions: legacyData.sessions,
-            weekOverrides: legacyData.weekOverrides,
-            equipment: legacyData.equipment,
-          }, { skipQueue: true });
-        }
+        // Note: Legacy recovery strictly recovers historical logs, bodyweight, sleep, and readiness.
+        // It must NEVER push or overwrite the active program routine, which is managed by LWW routine sync.
 
         await Promise.allSettled([...logSaves, ...readSaves, ...bwSaves, ...sleepSaves]);
         results[profileId] = {
@@ -7211,7 +7219,59 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
     const [enabling, setEnabling] = useState(false);
     const [restoring, setRestoring] = useState(false);
     const [recovering, setRecovering] = useState(false);
+    const [pullingCloud, setPullingCloud] = useState(false);
+    const [pushingCloud, setPushingCloud] = useState(false);
     const backupFileInputRef = useRef(null);
+
+    async function handleForcePullFromCloud() {
+      setPullingCloud(true);
+      showToast("Fetching latest routine from cloud…");
+      try {
+        const rtdb = GymCloudEngine.getRTDB();
+        if (!rtdb) throw new Error("Cloud database not connected");
+        const snap = await rtdb.ref(`gym_users/${personId}/active_program/current`).once("value");
+        const val = snap.val();
+        if (!val || !val.sessions || !val.sessions.length) {
+          showToast("No active program found in cloud.");
+          return;
+        }
+        const normalized = normalizeRemoteProgram(val);
+        const local = loadDecoupledProfile(personId);
+        const merged = {
+          ...local,
+          ...normalized,
+          programUpdatedAt: Number(normalized.programUpdatedAt || normalized.updatedAt || Date.now()),
+          logs: local.logs || []
+        };
+        savePlatePlanV1Local(personId, merged);
+        I.Ee(personId, merged);
+        updateData(personId, () => merged);
+        showToast(`Pulled "${merged.programName || "Active Routine"}" (${merged.sessions.length} sessions) from cloud!`);
+      } catch (err) {
+        showToast("Cloud pull failed: " + (err?.message || "Unknown error"));
+      } finally {
+        setPullingCloud(false);
+      }
+    }
+
+    async function handleForcePushToCloud() {
+      setPushingCloud(true);
+      showToast("Pushing active routine to cloud…");
+      try {
+        const curProfile = store[personId] || loadDecoupledProfile(personId);
+        const toPush = {
+          ...curProfile,
+          programUpdatedAt: Date.now()
+        };
+        await GymCloudEngine.saveActiveProgram(personId, toPush);
+        updateData(personId, () => toPush);
+        showToast(`Pushed "${toPush.programName || "Active Routine"}" (${toPush.sessions?.length || 0} sessions) to cloud!`);
+      } catch (err) {
+        showToast("Cloud push failed: " + (err?.message || "Unknown error"));
+      } finally {
+        setPushingCloud(false);
+      }
+    }
 
     function chooseTheme(value) {
       setTheme(value);
@@ -7352,7 +7412,7 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
             h("input", { className: "hg-input", type: "text", value: key, onChange: event => setKey(event.target.value.trim()), placeholder: "Enter or generate a private key" }),
             h(Button, { onClick: () => setKey(randomHouseholdKey()) }, "Generate")
           ),
-          h("div", { className: "hg-actions" },
+          h("div", { className: "hg-actions", style: { marginTop: 8 } },
             h(Button, { primary: true, disabled: !key, onClick: () => onSaveKey(key) }, "Save & sync"),
             key && h(Button, {
               onClick: async () => {
@@ -7361,7 +7421,9 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
                   showToast("Household key copied");
                 } catch { showToast("Could not copy the key"); }
               },
-            }, "Copy key")
+            }, "Copy key"),
+            h(Button, { disabled: pullingCloud, onClick: handleForcePullFromCloud }, pullingCloud ? "Pulling…" : "📥 Pull Routine from Cloud"),
+            h(Button, { disabled: pushingCloud, onClick: handleForcePushToCloud }, pushingCloud ? "Pushing…" : "📤 Push Routine to Cloud")
           )
         ),
         h("div", { className: "hg-setting-section" },
