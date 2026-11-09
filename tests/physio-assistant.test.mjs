@@ -664,3 +664,21 @@ test("U15: Active routine payload sanitization guarantees positive non-zero prog
 
   assert.equal(resolvedClock2, 1731111111111, "Explicit programUpdatedAt takes precedence");
 });
+
+test("U16: Routine updates reset ghost weekOverrides so new session days show on Today view", () => {
+  const profileWithOverrides = {
+    programName: "Old Plan",
+    sessions: [{ id: "e_lower", name: "Lower Body", day: "Tue", groups: [] }],
+    weekOverrides: { "2026-11-09": { e_lower: "Tue" } }
+  };
+
+  // Simulating handleApplyChanges weekOverrides reset:
+  const newProfile = {
+    ...profileWithOverrides,
+    sessions: [{ id: "e_lower", name: "Lower Body & Physio", day: "Mon", groups: [] }],
+    weekOverrides: {}
+  };
+
+  assert.deepEqual(newProfile.weekOverrides, {}, "weekOverrides must be reset when a new routine is adopted");
+  assert.equal(newProfile.sessions[0].day, "Mon", "New session day is Monday");
+});

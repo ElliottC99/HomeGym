@@ -22,7 +22,7 @@
 
   const h = React.createElement;
   const { useState, useEffect, useCallback, useRef, useMemo } = React;
-  const APP_VERSION = "v2.5.19";
+  const APP_VERSION = "v2.5.20";
   const STORAGE_VERSION = "2.5.7";
 
   // --- v2.5.7 LocalStorage Preservation & Version Registration ---
@@ -2738,8 +2738,8 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
         equipment: source.equipment || userPpv1?.equipment || null,
         programName: source.programName || perUserPpv1?.programName || userPpv1?.programName || undefined,
         programId: source.programId || perUserPpv1?.programId || userPpv1?.programId || undefined,
-        // Routine-specific LWW clock (independent of log/health updates that bump updatedAt)
-        programUpdatedAt: Number(source.programUpdatedAt || perUserPpv1?.programUpdatedAt || userPpv1?.programUpdatedAt || 0),
+        // Routine-specific LWW clock (promotes positive updatedAt if programUpdatedAt was not yet stamped)
+        programUpdatedAt: Number(source.programUpdatedAt || perUserPpv1?.programUpdatedAt || userPpv1?.programUpdatedAt || (resolvedSessions.length > 0 ? source.updatedAt : 0) || 0),
         updatedAt: typeof source.updatedAt === "number" ? source.updatedAt : 0,
       };
     } catch (e) {
@@ -3049,8 +3049,11 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
     if (!session) return [];
     const type = session.type || (session.targetKm ? "run" : "strength");
     if (type !== "strength") return [];
+    if (Array.isArray(session.exercises) && session.exercises.length > 0) {
+      return session.exercises.map(exercise => ({ exercise, groupLabel: "Exercises" }));
+    }
     return (session.groups || []).flatMap(group =>
-      (group.exercises || []).map(exercise => ({ exercise, groupLabel: group.label }))
+      (group.exercises || []).map(exercise => ({ exercise, groupLabel: group.label || "Group" }))
     );
   }
 
@@ -3744,7 +3747,10 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
 
     return h(React.Fragment, null,
       h("div", { className: "hg-view-header" },
-        h("h1", null, "Today"),
+        h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 6 } },
+          h("h1", null, "Today"),
+          data?.programName && h("span", { className: "hg-chip", style: { fontSize: 11, fontWeight: 600, padding: "2px 8px" } }, data.programName)
+        ),
         h("p", null, new Date(`${today}T12:00:00`).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" }))
       ),
       h(ReadinessInline, { personId, data, updateData, showToast }),
@@ -3755,6 +3761,17 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
         otherSessions.length > 0 && h("div", { className: "hg-actions", style: { justifyContent: "center" } },
           h(Button, { primary: true, onClick: () => setBringToTodayOpen(true) }, "Move a workout here"),
           h(Button, { onClick: () => setRearrangeWeekOpen(true) }, "Rearrange this week")
+        ),
+        data?.weekOverrides && Object.keys(data.weekOverrides).length > 0 && h("div", { style: { marginTop: 14 } },
+          h("button", {
+            type: "button",
+            className: "hg-link-button",
+            style: { fontSize: 12, color: "var(--hg-text-2)", textDecoration: "underline", cursor: "pointer" },
+            onClick: () => {
+              updateData(personId, cur => ({ ...cur, weekOverrides: {} }));
+              showToast("Reset weekly schedule overrides to normal plan days");
+            }
+          }, "Reset weekly schedule overrides")
         )
       ),
       sessions.map(session => {
@@ -3776,7 +3793,7 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
             h("summary", { className: "hg-link-button", style: { cursor: "pointer", display: "inline-flex" } }, "Session notes"),
             h("div", { className: "hg-callout", style: { marginTop: 4 } }, session.notes)
           ),
-          sessionType === "strength" && h("details", { style: { marginTop: 10 } },
+          sessionType === "strength" && h("details", { style: { marginTop: 10 }, open: true },
             h("summary", { className: "hg-link-button", style: { cursor: "pointer", display: "inline-flex" } }, "Exercises & Recommended Weights"),
             h("div", { className: "hg-callout", style: { marginTop: 4, display: "grid", gap: 6 } },
               flattenExercises(session).map(({ exercise }) => {
@@ -6866,6 +6883,7 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
           sessions: updatedSessions,
           programName: proposedProgramName || data.programName || "Active Routine",
           programUpdatedAt: now,
+          weekOverrides: {}, // Wipe week overrides so the new program's session days take effect immediately!
           updatedAt: now
         };
 
@@ -6905,6 +6923,7 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
           sessions: restoredSessions,
           programName: milestone.programName || data.programName || "Active Routine",
           programUpdatedAt: now,
+          weekOverrides: {}, // Wipe week overrides on revert
           updatedAt: now
         };
 

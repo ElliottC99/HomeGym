@@ -1,6 +1,6 @@
 {
   "name": "Home Gym Log",
-  "description": "Strength training tracker HomeGym v2.5.19: Resolve phone sync overwrite and guarantee cross-device LWW routine propagation",
+  "description": "Strength training tracker HomeGym v2.5.20: Reset week overrides on routine update, expand Today view exercises, and self-heal LWW clock",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
