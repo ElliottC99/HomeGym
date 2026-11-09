@@ -1,6 +1,6 @@
 {
   "name": "Home Gym Log",
-  "description": "Strength training tracker HomeGym v2.5.20: Reset week overrides on routine update, expand Today view exercises, and self-heal LWW clock",
+  "description": "Strength training tracker HomeGym v2.5.21: Seamless automatic two-way routine synchronization, ghost override sanitization, and elimination of manual sync workarounds",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

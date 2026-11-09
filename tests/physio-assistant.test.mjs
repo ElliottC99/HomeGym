@@ -682,3 +682,73 @@ test("U16: Routine updates reset ghost weekOverrides so new session days show on
   assert.deepEqual(newProfile.weekOverrides, {}, "weekOverrides must be reset when a new routine is adopted");
   assert.equal(newProfile.sessions[0].day, "Mon", "New session day is Monday");
 });
+
+test("U17: normalizeRemoteProgram ensures weekOverrides is empty object when omitted by RTDB", () => {
+  const rtdbPayloadWithoutWeekOverrides = {
+    programId: "current",
+    programName: "Phase 1: Back Rehab",
+    sessions: [{ id: "e_lower", name: "Lower Body", day: "Mon", groups: [] }],
+    programUpdatedAt: 1731112223334
+  };
+
+  const localProfileWithOldOverrides = {
+    programName: "Old Plan",
+    programUpdatedAt: 1730000000000,
+    sessions: [{ id: "e_lower", name: "Lower Body", day: "Tue", groups: [] }],
+    weekOverrides: { "2026-11-09": { e_lower: "Tue" } }
+  };
+
+  const remoteNormalized = HG_PHYSIO_ENGINE.normalizeRemoteProgram
+    ? HG_PHYSIO_ENGINE.normalizeRemoteProgram(rtdbPayloadWithoutWeekOverrides)
+    : { ...rtdbPayloadWithoutWeekOverrides, weekOverrides: rtdbPayloadWithoutWeekOverrides.weekOverrides || {} };
+
+  const merged = {
+    ...localProfileWithOldOverrides,
+    ...remoteNormalized,
+    weekOverrides: remoteNormalized.weekOverrides || {}
+  };
+
+  assert.deepEqual(merged.weekOverrides, {}, "Local stale weekOverrides must be replaced by empty object from remote update");
+  assert.equal(merged.sessions[0].day, "Mon", "New routine day takes effect");
+});
+
+test("U18: Unversioned phone profile with recent updatedAt accepts newer remote program and does not overwrite", () => {
+  const unversionedPhoneProfile = {
+    programName: "Old Plan",
+    programUpdatedAt: 0,
+    updatedAt: 1731199999999,
+    sessions: [{ id: "old_s", name: "Old Routine", day: "Mon", groups: [] }]
+  };
+
+  const laptopRemoteProgram = {
+    programName: "Phase 1: Back Rehab",
+    programUpdatedAt: 1731199000000,
+    updatedAt: 1731199000000,
+    sessions: [{ id: "e_lower", name: "Lower Body & Physio", day: "Mon", groups: [] }]
+  };
+
+  const accepted = HG_PHYSIO_ENGINE.shouldAcceptRemoteProgram(unversionedPhoneProfile, laptopRemoteProgram);
+  assert.equal(accepted, true, "Phone must accept laptop routine because phone has no explicit routine version");
+
+  const localRoutineClock = Number(unversionedPhoneProfile.programUpdatedAt || 0);
+  const remoteRoutineClock = Number(laptopRemoteProgram.programUpdatedAt || 0);
+  const localIsNewer = localRoutineClock > remoteRoutineClock;
+  assert.equal(localIsNewer, false, "Local unversioned profile must NOT be considered newer than remote");
+});
+
+test("U19: Stale weekOverrides pointing away from routine natural day are sanitized", () => {
+  const profile = {
+    programUpdatedAt: 1731199000000,
+    sessions: [{ id: "e_lower", name: "Lower Body & Physio", day: "Mon", groups: [] }],
+    weekOverrides: {
+      "2026-11-02": { e_lower: "Tue" },
+      "2026-11-09": { e_lower: "Tue" }
+    }
+  };
+
+  const sanitized = HG_PHYSIO_ENGINE.sanitizeWeekOverrides
+    ? HG_PHYSIO_ENGINE.sanitizeWeekOverrides(profile.weekOverrides, profile.sessions, "2026-11-09", profile.programUpdatedAt)
+    : {};
+
+  assert.deepEqual(sanitized, {}, "Overrides from old routine or past weeks must be sanitized");
+});

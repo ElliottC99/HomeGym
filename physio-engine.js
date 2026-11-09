@@ -817,6 +817,91 @@ export const HG_PHYSIO_ENGINE = {
     }
     // Fallback: keep local if neither has timestamp
     return false;
+  },
+
+  /**
+   * Normalizes an active program object retrieved from Firebase RTDB or local storage.
+   * Guarantees sessions, groups, exercises, and an empty weekOverrides object if omitted.
+   */
+  normalizeRemoteProgram(remote) {
+    if (!remote || typeof remote !== "object") return remote;
+    const rawSessions = remote.sessions;
+    let sessions = [];
+    if (Array.isArray(rawSessions)) {
+      sessions = rawSessions;
+    } else if (rawSessions && typeof rawSessions === "object") {
+      sessions = Object.keys(rawSessions).sort((a, b) => Number(a) - Number(b)).map(k => rawSessions[k]);
+    }
+
+    const cleanSessions = sessions.filter(Boolean).map(s => {
+      let groups = [];
+      if (Array.isArray(s.groups)) groups = s.groups;
+      else if (s.groups && typeof s.groups === "object") {
+        groups = Object.keys(s.groups).sort((a, b) => Number(a) - Number(b)).map(k => s.groups[k]);
+      }
+      return {
+        ...s,
+        type: s.type || (s.targetKm ? "run" : "strength"),
+        groups: groups.filter(Boolean).map(g => {
+          let exercises = [];
+          if (Array.isArray(g.exercises)) exercises = g.exercises;
+          else if (g.exercises && typeof g.exercises === "object") {
+            exercises = Object.keys(g.exercises).sort((a, b) => Number(a) - Number(b)).map(k => g.exercises[k]);
+          }
+          return {
+            ...g,
+            exercises: exercises.filter(Boolean).map(ex => ({
+              ...ex,
+              setsReps: ex.setsReps || ex.currentSetsReps || "3 × 10",
+              startValue: ex.startValue != null ? ex.startValue : (ex.currentWeight != null ? ex.currentWeight : null)
+            }))
+          };
+        })
+      };
+    });
+
+    return {
+      ...remote,
+      name: remote.name || remote.programName || "Active Routine",
+      programName: remote.name || remote.programName || "Active Routine",
+      sessions: cleanSessions,
+      // If remote has no weekOverrides (e.g. stripped as empty object by RTDB), default to empty object
+      weekOverrides: (remote.weekOverrides && typeof remote.weekOverrides === "object") ? remote.weekOverrides : {}
+    };
+  },
+
+  /**
+   * Sanitize weekOverrides against the current routine sessions and date.
+   * Prunes past weeks and discards overrides that were created on a previous routine version.
+   */
+  sanitizeWeekOverrides(weekOverrides, sessions = [], currentMonday = null, programUpdatedAt = 0, weekOverridesUpdatedAt = 0) {
+    if (!weekOverrides || typeof weekOverrides !== "object") return {};
+    // If the routine was updated and overrides do not have a timestamp newer than the routine,
+    // they belong to an older routine and must be discarded.
+    if (Number(programUpdatedAt || 0) > 0 && Number(weekOverridesUpdatedAt || 0) < Number(programUpdatedAt || 0)) {
+      return {};
+    }
+    const sanitized = {};
+    const sessionMap = new Map((sessions || []).map(s => [s.id, s.day]));
+
+    Object.keys(weekOverrides).forEach(weekKey => {
+      if (currentMonday && weekKey < currentMonday) return;
+      const weekObj = weekOverrides[weekKey];
+      if (!weekObj || typeof weekObj !== "object") return;
+
+      const cleanWeek = {};
+      Object.keys(weekObj).forEach(sessId => {
+        const targetDay = weekObj[sessId];
+        const naturalDay = sessionMap.get(sessId);
+        if (naturalDay && targetDay && targetDay !== naturalDay) {
+          cleanWeek[sessId] = targetDay;
+        }
+      });
+      if (Object.keys(cleanWeek).length > 0) {
+        sanitized[weekKey] = cleanWeek;
+      }
+    });
+    return sanitized;
   }
 };
 

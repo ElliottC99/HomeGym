@@ -18,11 +18,28 @@
         return { ...res, isDeload: false };
       };
     }
+    if (typeof I.ue === "function") {
+      const origUe = I.ue;
+      I.ue = function (data, session, monday) {
+        if (!session) return null;
+        const today = I.W ? I.W() : "";
+        const todayDay = I.De ? I.De(today) : "";
+        const todayMonday = I.j ? I.j(today) : "";
+        // If session belongs on today according to the active routine, prevent ghost overrides from hiding it
+        if (monday === todayMonday && session.day === todayDay) {
+          const override = data?.weekOverrides?.[monday]?.[session.id];
+          if (override && override !== session.day) {
+            return session.day;
+          }
+        }
+        return origUe(data, session, monday);
+      };
+    }
   }
 
   const h = React.createElement;
   const { useState, useEffect, useCallback, useRef, useMemo } = React;
-  const APP_VERSION = "v2.5.20";
+  const APP_VERSION = "v2.5.21";
   const STORAGE_VERSION = "2.5.7";
 
   // --- v2.5.7 LocalStorage Preservation & Version Registration ---
@@ -811,7 +828,9 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
       ...remote,
       name: remote.name || remote.programName || "Active Routine",
       programName: remote.name || remote.programName || "Active Routine",
-      sessions: cleanSessions
+      sessions: cleanSessions,
+      // If remote has no weekOverrides (e.g. stripped as empty object by RTDB), default to empty object
+      weekOverrides: (remote.weekOverrides && typeof remote.weekOverrides === "object") ? remote.weekOverrides : {}
     };
   }
 
@@ -1626,12 +1645,13 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
               const merged = {
                 ...local,
                 ...normalized,
+                weekOverrides: normalized.weekOverrides || {},
                 programUpdatedAt: getProgramTime(normalized, true),
                 logs: local.logs || []
               };
               savePlatePlanV1Local(userId, merged);
               I.Ee(userId, merged);
-            } else if (getProgramTime(local, false) > getProgramTime(normalized, true) && Array.isArray(local.sessions) && local.sessions.length > 0) {
+            } else if (Number(local.programUpdatedAt || 0) > 0 && getProgramTime(local, false) > getProgramTime(normalized, true) && Array.isArray(local.sessions) && local.sessions.length > 0) {
               console.info(`[PlatePlan RTDB Boot Pull] Local routine for ${userId} is newer; pushing local to RTDB.`);
               await this.saveActiveProgram(userId, local, { skipQueue: true }).catch(() => {});
             }
@@ -2720,12 +2740,19 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
           ? userPpv1.sessions
           : defaultData.sessions);
 
+      const rawOverrides = source.weekOverrides && typeof source.weekOverrides === "object" ? source.weekOverrides : {};
+      const curMonday = I.j ? I.j(I.W ? I.W() : "") : null;
+      const cleanOverrides = window.HG_PHYSIO_ENGINE?.sanitizeWeekOverrides
+        ? window.HG_PHYSIO_ENGINE.sanitizeWeekOverrides(rawOverrides, resolvedSessions, curMonday, Number(source.programUpdatedAt || 0), Number(source.weekOverridesUpdatedAt || 0))
+        : rawOverrides;
+
       return {
         startDate: source.startDate || perUserPpv1?.startDate || userPpv1?.startDate || defaultData.startDate,
         goals: source.goals || defaultData.goals,
         resumeNote: source.resumeNote || defaultData.resumeNote,
         sessions: resolvedSessions,
-        weekOverrides: source.weekOverrides && typeof source.weekOverrides === "object" ? source.weekOverrides : {},
+        weekOverrides: cleanOverrides,
+        weekOverridesUpdatedAt: Number(source.weekOverridesUpdatedAt || 0),
         logs: logs,
         bodyWeightLogs: health.bodyWeightLogs,
         sleepLogs: health.sleepLogs,
@@ -2738,8 +2765,8 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
         equipment: source.equipment || userPpv1?.equipment || null,
         programName: source.programName || perUserPpv1?.programName || userPpv1?.programName || undefined,
         programId: source.programId || perUserPpv1?.programId || userPpv1?.programId || undefined,
-        // Routine-specific LWW clock (promotes positive updatedAt if programUpdatedAt was not yet stamped)
-        programUpdatedAt: Number(source.programUpdatedAt || perUserPpv1?.programUpdatedAt || userPpv1?.programUpdatedAt || (resolvedSessions.length > 0 ? source.updatedAt : 0) || 0),
+        // Routine-specific LWW clock (strictly independent of log/health updates)
+        programUpdatedAt: Number(source.programUpdatedAt || perUserPpv1?.programUpdatedAt || userPpv1?.programUpdatedAt || 0),
         updatedAt: typeof source.updatedAt === "number" ? source.updatedAt : 0,
       };
     } catch (e) {
@@ -3737,7 +3764,7 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
       if (!session || !targetDay) return;
       updateData(personId, current => {
         const weekOverrides = I.dt(current, monday, session.id, targetDay);
-        return { ...current, weekOverrides };
+        return { ...current, weekOverrides, weekOverridesUpdatedAt: Date.now() };
       });
       setSessionToMove(null);
       setBringToTodayOpen(false);
@@ -3761,17 +3788,6 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
         otherSessions.length > 0 && h("div", { className: "hg-actions", style: { justifyContent: "center" } },
           h(Button, { primary: true, onClick: () => setBringToTodayOpen(true) }, "Move a workout here"),
           h(Button, { onClick: () => setRearrangeWeekOpen(true) }, "Rearrange this week")
-        ),
-        data?.weekOverrides && Object.keys(data.weekOverrides).length > 0 && h("div", { style: { marginTop: 14 } },
-          h("button", {
-            type: "button",
-            className: "hg-link-button",
-            style: { fontSize: 12, color: "var(--hg-text-2)", textDecoration: "underline", cursor: "pointer" },
-            onClick: () => {
-              updateData(personId, cur => ({ ...cur, weekOverrides: {} }));
-              showToast("Reset weekly schedule overrides to normal plan days");
-            }
-          }, "Reset weekly schedule overrides")
         )
       ),
       sessions.map(session => {
@@ -7238,59 +7254,7 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
     const [enabling, setEnabling] = useState(false);
     const [restoring, setRestoring] = useState(false);
     const [recovering, setRecovering] = useState(false);
-    const [pullingCloud, setPullingCloud] = useState(false);
-    const [pushingCloud, setPushingCloud] = useState(false);
     const backupFileInputRef = useRef(null);
-
-    async function handleForcePullFromCloud() {
-      setPullingCloud(true);
-      showToast("Fetching latest routine from cloud…");
-      try {
-        const rtdb = GymCloudEngine.getRTDB();
-        if (!rtdb) throw new Error("Cloud database not connected");
-        const snap = await rtdb.ref(`gym_users/${personId}/active_program/current`).once("value");
-        const val = snap.val();
-        if (!val || !val.sessions || !val.sessions.length) {
-          showToast("No active program found in cloud.");
-          return;
-        }
-        const normalized = normalizeRemoteProgram(val);
-        const local = loadDecoupledProfile(personId);
-        const merged = {
-          ...local,
-          ...normalized,
-          programUpdatedAt: Number(normalized.programUpdatedAt || normalized.updatedAt || Date.now()),
-          logs: local.logs || []
-        };
-        savePlatePlanV1Local(personId, merged);
-        I.Ee(personId, merged);
-        updateData(personId, () => merged);
-        showToast(`Pulled "${merged.programName || "Active Routine"}" (${merged.sessions.length} sessions) from cloud!`);
-      } catch (err) {
-        showToast("Cloud pull failed: " + (err?.message || "Unknown error"));
-      } finally {
-        setPullingCloud(false);
-      }
-    }
-
-    async function handleForcePushToCloud() {
-      setPushingCloud(true);
-      showToast("Pushing active routine to cloud…");
-      try {
-        const curProfile = store[personId] || loadDecoupledProfile(personId);
-        const toPush = {
-          ...curProfile,
-          programUpdatedAt: Date.now()
-        };
-        await GymCloudEngine.saveActiveProgram(personId, toPush);
-        updateData(personId, () => toPush);
-        showToast(`Pushed "${toPush.programName || "Active Routine"}" (${toPush.sessions?.length || 0} sessions) to cloud!`);
-      } catch (err) {
-        showToast("Cloud push failed: " + (err?.message || "Unknown error"));
-      } finally {
-        setPushingCloud(false);
-      }
-    }
 
     function chooseTheme(value) {
       setTheme(value);
@@ -7440,9 +7404,7 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
                   showToast("Household key copied");
                 } catch { showToast("Could not copy the key"); }
               },
-            }, "Copy key"),
-            h(Button, { disabled: pullingCloud, onClick: handleForcePullFromCloud }, pullingCloud ? "Pulling…" : "📥 Pull Routine from Cloud"),
-            h(Button, { disabled: pushingCloud, onClick: handleForcePushToCloud }, pushingCloud ? "Pushing…" : "📤 Push Routine to Cloud")
+            }, "Copy key")
           )
         ),
         h("div", { className: "hg-setting-section" },
@@ -7602,18 +7564,25 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
     // Automated Two-Way Sync on boot & person switch
     useEffect(() => {
       let active = true;
-      PlatePlanSyncEngine.syncPlatePlanWithFirestore(personId, showToast).then(reconciled => {
-        if (!active) return;
-        if (reconciled) {
-          setStore(current => ({
-            ...current,
-            [personId]: reconciled
-          }));
+      const syncProfiles = async () => {
+        for (const pid of ["elliott", "chloe"]) {
+          try {
+            const reconciled = await PlatePlanSyncEngine.syncPlatePlanWithFirestore(pid, pid === personId ? showToast : undefined);
+            if (reconciled && active) {
+              setStore(current => ({
+                ...current,
+                [pid]: reconciled
+              }));
+            }
+          } catch (err) {
+            console.warn(`[PlatePlan Sync] Boot sync error for ${pid}:`, err);
+          }
         }
-        setQueueCount(PlatePlanSyncEngine.getOfflineQueue().length);
-      }).catch(err => {
-        console.warn("[PlatePlan Sync] Initial sync error:", err);
-      });
+        if (active) {
+          setQueueCount(PlatePlanSyncEngine.getOfflineQueue().length);
+        }
+      };
+      syncProfiles();
       return () => { active = false; };
     }, [personId, showToast]);
 
@@ -7788,7 +7757,8 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
               goals: normalized.goals || currentProfile.goals,
               resumeNote: normalized.resumeNote || currentProfile.resumeNote,
               sessions: Array.isArray(normalized.sessions) && normalized.sessions.length ? normalized.sessions : currentProfile.sessions,
-              weekOverrides: normalized.weekOverrides || currentProfile.weekOverrides,
+              weekOverrides: normalized.weekOverrides || {},
+              weekOverridesUpdatedAt: Number(normalized.weekOverridesUpdatedAt || 0),
               equipment: normalized.equipment || currentProfile.equipment,
               programUpdatedAt: getProgramTime(normalized, true),
               updatedAt: Math.max(Number(currentProfile.updatedAt || 0), Date.now())
