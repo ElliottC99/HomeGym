@@ -902,6 +902,34 @@ export const HG_PHYSIO_ENGINE = {
       }
     });
     return sanitized;
+  },
+
+  /**
+   * Resolves the primary local routine source among available local storage candidates
+   * (e.g. plateplan_v1_elliott, plateplan_v1, data:elliott).
+   * Picks the candidate with the highest programUpdatedAt (> 0).
+   * Never splices stale sessions from one store with a newer timestamp from another store.
+   */
+  resolveLocalRoutineSource(...candidates) {
+    let best = null;
+    let bestTime = -1;
+    for (const c of candidates) {
+      if (!c || typeof c !== "object") continue;
+      const time = Number(c.programUpdatedAt || 0);
+      const hasSessions = Array.isArray(c.sessions) && c.sessions.length > 0;
+      if (hasSessions && time > bestTime) {
+        best = c;
+        bestTime = time;
+      }
+    }
+    if (!best) {
+      for (const c of candidates) {
+        if (c && typeof c === "object" && Array.isArray(c.sessions) && c.sessions.length > 0) {
+          return c;
+        }
+      }
+    }
+    return best || {};
   }
 };
 

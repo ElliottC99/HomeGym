@@ -752,3 +752,33 @@ test("U19: Stale weekOverrides pointing away from routine natural day are saniti
 
   assert.deepEqual(sanitized, {}, "Overrides from old routine or past weeks must be sanitized");
 });
+
+test("U20: Routine resolution across local storage keys selects candidate with highest programUpdatedAt", () => {
+  const legacyDataWithOldSessions = {
+    sessions: [
+      { id: "e_run", name: "Run", day: "Mon" },
+      { id: "e_lower", name: "Lower Body", day: "Tue" }
+    ],
+    updatedAt: 1730000000000
+    // programUpdatedAt missing/0
+  };
+
+  const newerPpv1WithNewRoutine = {
+    programName: "Phase 1: Back Rehab & Match Fit",
+    programUpdatedAt: 1731112223334,
+    sessions: [
+      { id: "e_lower", name: "Lower Body & Physio", day: "Mon" },
+      { id: "e_full", name: "Full Body, Core & Physio", day: "Thu" }
+    ],
+    updatedAt: 1731112223334
+  };
+
+  const resolved = HG_PHYSIO_ENGINE.resolveLocalRoutineSource
+    ? HG_PHYSIO_ENGINE.resolveLocalRoutineSource(legacyDataWithOldSessions, newerPpv1WithNewRoutine)
+    : (Number(newerPpv1WithNewRoutine.programUpdatedAt || 0) > Number(legacyDataWithOldSessions.programUpdatedAt || 0) ? newerPpv1WithNewRoutine : legacyDataWithOldSessions);
+
+  assert.equal(resolved.programName, "Phase 1: Back Rehab & Match Fit");
+  assert.equal(resolved.sessions[0].name, "Lower Body & Physio");
+  assert.equal(resolved.sessions[0].day, "Mon");
+  assert.equal(resolved.programUpdatedAt, 1731112223334);
+});

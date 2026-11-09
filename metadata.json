@@ -1,6 +1,6 @@
 {
   "name": "Home Gym Log",
-  "description": "Strength training tracker HomeGym v2.5.21: Seamless automatic two-way routine synchronization, ghost override sanitization, and elimination of manual sync workarounds",
+  "description": "Strength training tracker HomeGym v2.5.22: Elimination of rogue household listener and coherent routine candidate selection across local storage keys to prevent routine reversion",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

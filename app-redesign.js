@@ -39,7 +39,7 @@
 
   const h = React.createElement;
   const { useState, useEffect, useCallback, useRef, useMemo } = React;
-  const APP_VERSION = "v2.5.21";
+  const APP_VERSION = "v2.5.22";
   const STORAGE_VERSION = "2.5.7";
 
   // --- v2.5.7 LocalStorage Preservation & Version Registration ---
@@ -2248,20 +2248,6 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
           };
           progRef.on("value", onProg);
           unsubscribers.push(() => progRef.off("value", onProg));
-
-          const pin = (window.HG_INTERNALS?.qe ? window.HG_INTERNALS.qe() : null) || window.HOUSEHOLD_PIN_DEFAULT || "";
-          if (pin) {
-            const houseRef = rtdb.ref(`households/${pin}/${profileId}`);
-            const onHouse = snap => {
-              const val = snap.val();
-              if (val) {
-                if (navigator.onLine) onStatusChange?.("synced");
-                onRemoteUpdate?.("active_program", normalizeRemoteProgram(val));
-              }
-            };
-            houseRef.on("value", onHouse);
-            unsubscribers.push(() => houseRef.off("value", onHouse));
-          }
         } catch (e) {
           console.warn("RTDB subscribe exception:", e?.message);
         }
@@ -2513,6 +2499,10 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
         startDate: payload.startDate || currentData.startDate,
         goals: payload.goals || currentData.goals,
         resumeNote: payload.resumeNote || currentData.resumeNote,
+        programName: payload.programName || currentData.programName,
+        programId: payload.programId || currentData.programId,
+        programUpdatedAt: payload.programUpdatedAt != null ? Number(payload.programUpdatedAt) : currentData.programUpdatedAt,
+        weekOverridesUpdatedAt: payload.weekOverridesUpdatedAt != null ? Number(payload.weekOverridesUpdatedAt) : currentData.weekOverridesUpdatedAt,
         sessions: Array.isArray(payload.sessions) ? payload.sessions : currentData.sessions,
         weekOverrides: payload.weekOverrides || currentData.weekOverrides,
         logs: Array.isArray(payload.logs) ? payload.logs : currentData.logs,
@@ -2528,7 +2518,12 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
         ...currentPP,
         startDate: payload.startDate || currentPP.startDate,
         goals: payload.goals || currentPP.goals,
+        programName: payload.programName || currentPP.programName,
+        programId: payload.programId || currentPP.programId,
+        programUpdatedAt: payload.programUpdatedAt != null ? Number(payload.programUpdatedAt) : currentPP.programUpdatedAt,
+        weekOverridesUpdatedAt: payload.weekOverridesUpdatedAt != null ? Number(payload.weekOverridesUpdatedAt) : currentPP.weekOverridesUpdatedAt,
         sessions: Array.isArray(payload.sessions) ? payload.sessions : currentPP.sessions,
+        weekOverrides: payload.weekOverrides || currentPP.weekOverrides,
         logs: Array.isArray(payload.logs) ? payload.logs : currentPP.logs,
         bodyWeightLogs: Array.isArray(payload.bodyWeightLogs) ? payload.bodyWeightLogs : currentPP.bodyWeightLogs,
         readinessLogs: Array.isArray(payload.readinessLogs) ? payload.readinessLogs : currentPP.readinessLogs,
@@ -2716,6 +2711,13 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
       // LocalStorage Priority: data:${profileId} takes precedence if it contains logs or data
       const source = parsedData || perUserPpv1 || userPpv1 || {};
 
+      // Select routine source with highest programUpdatedAt to avoid Frankenstein routine resolution
+      const routineSource = window.HG_PHYSIO_ENGINE?.resolveLocalRoutineSource
+        ? window.HG_PHYSIO_ENGINE.resolveLocalRoutineSource(perUserPpv1, userPpv1, parsedData)
+        : (Number(perUserPpv1?.programUpdatedAt || 0) > Number(parsedData?.programUpdatedAt || 0)
+            ? (perUserPpv1 || userPpv1 || parsedData || {})
+            : (parsedData || perUserPpv1 || userPpv1 || {}));
+
       // Ingest logs across local stores, with data:${profileId} as primary
       const rawParsedLogs = Array.isArray(parsedData?.logs) ? parsedData.logs : [];
       const rawPerLogs = Array.isArray(perUserPpv1?.logs) ? perUserPpv1.logs : [];
@@ -2734,25 +2736,35 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
       // Hydrate health tracking and standalone keys into central state
       const health = hydrateHealthAndLogsForProfile(profileId, source);
 
-      const resolvedSessions = (Array.isArray(source.sessions) && source.sessions.length)
-        ? source.sessions
-        : ((Array.isArray(userPpv1?.sessions) && userPpv1.sessions.length)
-          ? userPpv1.sessions
-          : defaultData.sessions);
+      const resolvedSessions = (Array.isArray(routineSource.sessions) && routineSource.sessions.length)
+        ? routineSource.sessions
+        : ((Array.isArray(source.sessions) && source.sessions.length)
+          ? source.sessions
+          : ((Array.isArray(userPpv1?.sessions) && userPpv1.sessions.length)
+            ? userPpv1.sessions
+            : defaultData.sessions));
 
-      const rawOverrides = source.weekOverrides && typeof source.weekOverrides === "object" ? source.weekOverrides : {};
+      const rawOverrides = (routineSource.weekOverrides && typeof routineSource.weekOverrides === "object")
+        ? routineSource.weekOverrides
+        : ((source.weekOverrides && typeof source.weekOverrides === "object") ? source.weekOverrides : {});
       const curMonday = I.j ? I.j(I.W ? I.W() : "") : null;
       const cleanOverrides = window.HG_PHYSIO_ENGINE?.sanitizeWeekOverrides
-        ? window.HG_PHYSIO_ENGINE.sanitizeWeekOverrides(rawOverrides, resolvedSessions, curMonday, Number(source.programUpdatedAt || 0), Number(source.weekOverridesUpdatedAt || 0))
+        ? window.HG_PHYSIO_ENGINE.sanitizeWeekOverrides(
+            rawOverrides,
+            resolvedSessions,
+            curMonday,
+            Number(routineSource.programUpdatedAt || 0),
+            Number(routineSource.weekOverridesUpdatedAt || 0)
+          )
         : rawOverrides;
 
       return {
-        startDate: source.startDate || perUserPpv1?.startDate || userPpv1?.startDate || defaultData.startDate,
-        goals: source.goals || defaultData.goals,
-        resumeNote: source.resumeNote || defaultData.resumeNote,
+        startDate: routineSource.startDate || source.startDate || perUserPpv1?.startDate || userPpv1?.startDate || defaultData.startDate,
+        goals: routineSource.goals || source.goals || defaultData.goals,
+        resumeNote: routineSource.resumeNote || source.resumeNote || defaultData.resumeNote,
         sessions: resolvedSessions,
         weekOverrides: cleanOverrides,
-        weekOverridesUpdatedAt: Number(source.weekOverridesUpdatedAt || 0),
+        weekOverridesUpdatedAt: Number(routineSource.weekOverridesUpdatedAt || 0),
         logs: logs,
         bodyWeightLogs: health.bodyWeightLogs,
         sleepLogs: health.sleepLogs,
@@ -2762,11 +2774,11 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
           sleep: health.sleepLogs,
           readiness: health.readinessLogs
         },
-        equipment: source.equipment || userPpv1?.equipment || null,
-        programName: source.programName || perUserPpv1?.programName || userPpv1?.programName || undefined,
-        programId: source.programId || perUserPpv1?.programId || userPpv1?.programId || undefined,
+        equipment: routineSource.equipment || source.equipment || userPpv1?.equipment || null,
+        programName: routineSource.programName || source.programName || perUserPpv1?.programName || userPpv1?.programName || undefined,
+        programId: routineSource.programId || source.programId || perUserPpv1?.programId || userPpv1?.programId || undefined,
         // Routine-specific LWW clock (strictly independent of log/health updates)
-        programUpdatedAt: Number(source.programUpdatedAt || perUserPpv1?.programUpdatedAt || userPpv1?.programUpdatedAt || 0),
+        programUpdatedAt: Number(routineSource.programUpdatedAt || 0),
         updatedAt: typeof source.updatedAt === "number" ? source.updatedAt : 0,
       };
     } catch (e) {
@@ -7697,6 +7709,7 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
             const next = { ...currentProfile, logs: mergedLogs, updatedAt: Date.now() };
             savePlatePlanV1Local(id, next);
             I.Ee(id, next);
+            syncLegacyStorage(id, next);
             return { ...current, [id]: next };
           }
           if (subCollection === "weight" || subCollection === "bodyweight") {
@@ -7765,6 +7778,7 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
             };
             savePlatePlanV1Local(id, next);
             I.Ee(id, next);
+            syncLegacyStorage(id, next);
             return { ...current, [id]: next };
           }
           return current;
