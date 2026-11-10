@@ -684,7 +684,7 @@ export const HG_PHYSIO_ENGINE = {
         };
       });
 
-      return nextSessions;
+      return this.sortSessionsByDay(nextSessions);
     }
 
     const nextSessions = JSON.parse(JSON.stringify(currentSessions));
@@ -745,7 +745,7 @@ export const HG_PHYSIO_ENGINE = {
       }
     });
 
-    return nextSessions;
+    return this.sortSessionsByDay(nextSessions);
   },
 
   /**
@@ -778,6 +778,26 @@ export const HG_PHYSIO_ENGINE = {
    * using Last-Write-Wins (LWW) comparison.
    * Prevents stale cloud snapshots from overwriting fresh local routine changes.
    */
+  /**
+   * Sorts sessions strictly in Monday to Sunday order.
+   */
+  sortSessionsByDay(sessions) {
+    if (!Array.isArray(sessions)) return [];
+    const DAY_ORDER = { Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 7 };
+    return [...sessions].sort((a, b) => {
+      const dayA = DAY_ORDER[a?.day] || 99;
+      const dayB = DAY_ORDER[b?.day] || 99;
+      if (dayA !== dayB) return dayA - dayB;
+      return (a?.name || "").localeCompare(b?.name || "");
+    });
+  },
+
+  /**
+   * Determines whether an incoming remote program snapshot should replace the local profile.
+   * Routine-specific LWW (Last-Write-Wins): remote must have a newer programUpdatedAt.
+   * If local has only the default boilerplate routine and remote is a named clinical/physio routine,
+   * remote takes precedence even if local clock was bumped by routine-unaware health updates.
+   */
   shouldAcceptRemoteProgram(localProfile, remoteProgram) {
     if (!remoteProgram || typeof remoteProgram !== "object") return false;
     const remoteSessions = remoteProgram.sessions;
@@ -795,17 +815,39 @@ export const HG_PHYSIO_ENGINE = {
     const localTime = Number(localProfile?.programUpdatedAt || 0);
 
     // Remote routine timestamp: prefer positive programUpdatedAt (> 0).
-    // If remote has no routine clock (programUpdatedAt === 0 or missing):
-    // only fall back to remote.updatedAt if local ALSO has no routine clock (localTime === 0)
-    // so an unversioned local profile (e.g. phone) can be initialized without allowing a zero-clock remote to overwrite a timestamped local routine.
     const remoteProgTime = Number(remoteProgram?.programUpdatedAt || 0);
     const remoteTime = remoteProgTime > 0
       ? remoteProgTime
       : (localTime === 0 ? Number(remoteProgram?.updatedAt || 0) : 0);
 
+    const isLocalDefaultBoilerplate = !localProfile?.programName ||
+      localProfile.programName === "Current Routine" ||
+      localProfile.programName === "Active Routine" ||
+      (Array.isArray(localSessions) && localSessions.every(s => ["e_run", "e_lower", "e_upper", "e_total"].includes(s.id)));
+
+    const isRemoteNamedCustom = Boolean(remoteProgram.programName &&
+      remoteProgram.programName !== "Current Routine" &&
+      remoteProgram.programName !== "Active Routine");
+
+    // If local is default boilerplate and remote is a named routine, remote MUST win
+    if (isLocalDefaultBoilerplate && isRemoteNamedCustom) {
+      return true;
+    }
+
     // If both have timestamps:
     if (remoteTime > 0 && localTime > 0) {
-      return remoteTime > localTime;
+      if (remoteTime > localTime) return true;
+      if (remoteTime === localTime) {
+        // If timestamps are equal, check if remote carries a named routine or different sessions
+        if (isRemoteNamedCustom && (!localProfile.programName || remoteProgram.programName !== localProfile.programName)) {
+          return true;
+        }
+        const rList = Array.isArray(remoteSessions) ? remoteSessions : Object.values(remoteSessions);
+        const remoteIds = rList.map(s => `${s.id}_${s.day}`).join(",");
+        const localIds = localSessions.map(s => `${s.id}_${s.day}`).join(",");
+        if (remoteIds !== localIds) return true;
+      }
+      return false;
     }
     // If local has no routine timestamp (e.g. unversioned local routine on phone), accept remote:
     if (remoteTime > 0 && localTime === 0) {
@@ -864,7 +906,7 @@ export const HG_PHYSIO_ENGINE = {
       ...remote,
       name: remote.name || remote.programName || "Active Routine",
       programName: remote.name || remote.programName || "Active Routine",
-      sessions: cleanSessions,
+      sessions: this.sortSessionsByDay(cleanSessions),
       // If remote has no weekOverrides (e.g. stripped as empty object by RTDB), default to empty object
       weekOverrides: (remote.weekOverrides && typeof remote.weekOverrides === "object") ? remote.weekOverrides : {}
     };

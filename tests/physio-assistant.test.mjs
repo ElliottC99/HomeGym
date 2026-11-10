@@ -782,3 +782,73 @@ test("U20: Routine resolution across local storage keys selects candidate with h
   assert.equal(resolved.sessions[0].day, "Mon");
   assert.equal(resolved.programUpdatedAt, 1731112223334);
 });
+
+test("U21: sortSessionsByDay arranges sessions strictly in Monday to Sunday order", () => {
+  const unsortedSessions = [
+    { id: "e_run", name: "Run (10km)", day: "Fri" },
+    { id: "e_lower", name: "Lower Body & Physio", day: "Mon" },
+    { id: "e_upper", name: "Upper Body & Physio", day: "Tue" },
+    { id: "e_total", name: "Full Body, Core & Physio", day: "Thu" },
+  ];
+
+  const sorted = HG_PHYSIO_ENGINE.sortSessionsByDay(unsortedSessions);
+  assert.deepEqual(
+    sorted.map(s => s.day),
+    ["Mon", "Tue", "Thu", "Fri"],
+    "Sessions must be sorted Monday to Sunday"
+  );
+  assert.equal(sorted[0].name, "Lower Body & Physio");
+  assert.equal(sorted[3].name, "Run (10km)");
+});
+
+test("U22: shouldAcceptRemoteProgram accepts remote named program if local has default boilerplate sessions even with equal or higher timestamp", () => {
+  const localBoilerplate = {
+    programName: "Current Routine",
+    programUpdatedAt: 1731200000000,
+    sessions: [
+      { id: "e_run", name: "Run", day: "Mon" },
+      { id: "e_lower", name: "Lower Body", day: "Tue" },
+      { id: "e_upper", name: "Upper Body", day: "Wed" },
+      { id: "e_total", name: "Full Body", day: "Thu" }
+    ]
+  };
+
+  const remoteNamed = {
+    programName: "Phase 1: Back Rehab & Match Fit",
+    programUpdatedAt: 1731100000000, // Older timestamp in RTDB
+    sessions: [
+      { id: "e_lower", name: "Lower Body & Physio", day: "Mon" },
+      { id: "e_upper", name: "Upper Body & Physio", day: "Tue" },
+      { id: "e_total", name: "Full Body, Core & Physio", day: "Thu" },
+      { id: "e_run", name: "Run (10km)", day: "Fri" }
+    ]
+  };
+
+  const accepted = HG_PHYSIO_ENGINE.shouldAcceptRemoteProgram(localBoilerplate, remoteNamed);
+  assert.equal(accepted, true, "Named remote program must replace local boilerplate routine even if local clock was bumped");
+});
+
+test("U23: shouldAcceptRemoteProgram accepts remote program when timestamps are equal and remote has different sessions or program name", () => {
+  const localProfile = {
+    programName: "Current Routine",
+    programUpdatedAt: 1731112223334,
+    sessions: [
+      { id: "e_run", name: "Run", day: "Mon" },
+      { id: "e_lower", name: "Lower Body", day: "Tue" }
+    ]
+  };
+
+  const remoteProgram = {
+    programName: "Phase 1: Back Rehab & Match Fit",
+    programUpdatedAt: 1731112223334, // Exactly equal timestamp (Frankenstein bug scenario)
+    sessions: [
+      { id: "e_lower", name: "Lower Body & Physio", day: "Mon" },
+      { id: "e_upper", name: "Upper Body & Physio", day: "Tue" },
+      { id: "e_total", name: "Full Body, Core & Physio", day: "Thu" },
+      { id: "e_run", name: "Run (10km)", day: "Fri" }
+    ]
+  };
+
+  const accepted = HG_PHYSIO_ENGINE.shouldAcceptRemoteProgram(localProfile, remoteProgram);
+  assert.equal(accepted, true, "Equal timestamp with different sessions or named program must be accepted");
+});

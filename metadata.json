@@ -1,6 +1,6 @@
 {
   "name": "Home Gym Log",
-  "description": "Strength training tracker HomeGym v2.5.22: Elimination of rogue household listener and coherent routine candidate selection across local storage keys to prevent routine reversion",
+  "description": "Strength training tracker HomeGym v2.5.23: Canonical Monday-to-Sunday day ordering, enhanced remote routine acceptance over local boilerplate, and elimination of boot cache cloud overwrite",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

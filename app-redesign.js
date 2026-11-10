@@ -39,7 +39,7 @@
 
   const h = React.createElement;
   const { useState, useEffect, useCallback, useRef, useMemo } = React;
-  const APP_VERSION = "v2.5.22";
+  const APP_VERSION = "v2.5.23";
   const STORAGE_VERSION = "2.5.7";
 
   // --- v2.5.7 LocalStorage Preservation & Version Registration ---
@@ -787,6 +787,20 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
     return mutation;
   }
 
+  function sortSessionsByDay(sessions) {
+    if (window.HG_PHYSIO_ENGINE?.sortSessionsByDay) {
+      return window.HG_PHYSIO_ENGINE.sortSessionsByDay(sessions);
+    }
+    if (!Array.isArray(sessions)) return [];
+    const DAY_ORDER = { Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 7 };
+    return [...sessions].sort((a, b) => {
+      const dayA = DAY_ORDER[a?.day] || 99;
+      const dayB = DAY_ORDER[b?.day] || 99;
+      if (dayA !== dayB) return dayA - dayB;
+      return (a?.name || "").localeCompare(b?.name || "");
+    });
+  }
+
   function normalizeRemoteProgram(remote) {
     if (!remote || typeof remote !== "object") return remote;
     const rawSessions = remote.sessions;
@@ -828,7 +842,7 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
       ...remote,
       name: remote.name || remote.programName || "Active Routine",
       programName: remote.name || remote.programName || "Active Routine",
-      sessions: cleanSessions,
+      sessions: sortSessionsByDay(cleanSessions),
       // If remote has no weekOverrides (e.g. stripped as empty object by RTDB), default to empty object
       weekOverrides: (remote.weekOverrides && typeof remote.weekOverrides === "object") ? remote.weekOverrides : {}
     };
@@ -852,7 +866,8 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
     const hasRemoteSessions = (Array.isArray(remoteSessions) && remoteSessions.length > 0) ||
       (remoteSessions && typeof remoteSessions === "object" && Object.keys(remoteSessions).length > 0);
     if (!hasRemoteSessions) return false;
-    const hasLocalSessions = Array.isArray(localProfile?.sessions) && localProfile.sessions.length > 0;
+    const localSessions = localProfile?.sessions;
+    const hasLocalSessions = Array.isArray(localSessions) && localSessions.length > 0;
     if (!hasLocalSessions) return true;
 
     const localTime = Number(localProfile?.programUpdatedAt || 0);
@@ -861,8 +876,31 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
       ? remoteProgTime
       : (localTime === 0 ? Number(remoteProgram?.updatedAt || 0) : 0);
 
+    const isLocalDefaultBoilerplate = !localProfile?.programName ||
+      localProfile.programName === "Current Routine" ||
+      localProfile.programName === "Active Routine" ||
+      (Array.isArray(localSessions) && localSessions.every(s => ["e_run", "e_lower", "e_upper", "e_total"].includes(s.id)));
+
+    const isRemoteNamedCustom = Boolean(remoteProgram.programName &&
+      remoteProgram.programName !== "Current Routine" &&
+      remoteProgram.programName !== "Active Routine");
+
+    if (isLocalDefaultBoilerplate && isRemoteNamedCustom) {
+      return true;
+    }
+
     if (remoteTime > 0 && localTime > 0) {
-      return remoteTime > localTime;
+      if (remoteTime > localTime) return true;
+      if (remoteTime === localTime) {
+        if (isRemoteNamedCustom && (!localProfile.programName || remoteProgram.programName !== localProfile.programName)) {
+          return true;
+        }
+        const rList = Array.isArray(remoteSessions) ? remoteSessions : Object.values(remoteSessions);
+        const remoteIds = rList.map(s => `${s.id}_${s.day}`).join(",");
+        const localIds = localSessions.map(s => `${s.id}_${s.day}`).join(",");
+        if (remoteIds !== localIds) return true;
+      }
+      return false;
     }
     if (remoteTime > 0 && localTime === 0) {
       return true;
@@ -1370,7 +1408,7 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
         startDate: programData.startDate || "",
         goals: programData.goals || "",
         resumeNote: programData.resumeNote || "",
-        sessions: cleanSessions,
+        sessions: sortSessionsByDay(cleanSessions),
         weekOverrides: programData.weekOverrides || {},
         equipment: programData.equipment || null,
         // Routine LWW clock: guaranteed positive timestamp so remote subscribers can never treat it as epoch 0
@@ -1651,9 +1689,7 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
               };
               savePlatePlanV1Local(userId, merged);
               I.Ee(userId, merged);
-            } else if (Number(local.programUpdatedAt || 0) > 0 && getProgramTime(local, false) > getProgramTime(normalized, true) && Array.isArray(local.sessions) && local.sessions.length > 0) {
-              console.info(`[PlatePlan RTDB Boot Pull] Local routine for ${userId} is newer; pushing local to RTDB.`);
-              await this.saveActiveProgram(userId, local, { skipQueue: true }).catch(() => {});
+              syncLegacyStorage(userId, merged);
             }
           }
         } catch (e) {
@@ -2246,7 +2282,10 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
               onRemoteUpdate?.("active_program", normalizeRemoteProgram(val));
             }
           };
-          progRef.on("value", onProg);
+          const onProgErr = err => {
+            console.warn(`[RTDB subscribe active_program error for ${profileId}]:`, err?.message);
+          };
+          progRef.on("value", onProg, onProgErr);
           unsubscribers.push(() => progRef.off("value", onProg));
         } catch (e) {
           console.warn("RTDB subscribe exception:", e?.message);
@@ -2762,7 +2801,7 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
         startDate: routineSource.startDate || source.startDate || perUserPpv1?.startDate || userPpv1?.startDate || defaultData.startDate,
         goals: routineSource.goals || source.goals || defaultData.goals,
         resumeNote: routineSource.resumeNote || source.resumeNote || defaultData.resumeNote,
-        sessions: resolvedSessions,
+        sessions: sortSessionsByDay(resolvedSessions),
         weekOverrides: cleanOverrides,
         weekOverridesUpdatedAt: Number(routineSource.weekOverridesUpdatedAt || 0),
         logs: logs,
@@ -6125,7 +6164,7 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
 
     const fileInputRef = useRef(null);
 
-    const sessions = Array.isArray(data.sessions) ? data.sessions : [];
+    const sessions = sortSessionsByDay(Array.isArray(data.sessions) ? data.sessions : []);
     const activeSession = sessions[activeSessionIdx] || sessions[0] || null;
     const exercises = (useMemo || React.useMemo)(() => extractSessionExercises(activeSession), [activeSession]);
 
@@ -6164,10 +6203,12 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
           if (idx !== activeSessionIdx && s.id !== activeSession?.id) return s;
           return updatedSession;
         });
+        const now = Date.now();
         return {
           ...cur,
-          sessions: nextSessions,
-          updatedAt: Date.now()
+          sessions: sortSessionsByDay(nextSessions),
+          programUpdatedAt: now,
+          updatedAt: now
         };
       });
     }
@@ -6391,6 +6432,25 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
             }, "📤 Restore from backup…"),
 
             h("div", { className: "hg-menu-divider" }),
+
+            h("button", {
+              type: "button",
+              className: "hg-menu-item",
+              onClick: async () => {
+                setOverflowMenuOpen(false);
+                const sorted = sortSessionsByDay(data.sessions || []);
+                const now = Date.now();
+                const syncedProfile = {
+                  ...data,
+                  sessions: sorted,
+                  programUpdatedAt: now,
+                  updatedAt: now
+                };
+                updateData(personId, () => syncedProfile);
+                await GymCloudEngine.saveActiveProgram(personId, syncedProfile);
+                showToast("⚡ Re-synced routine to cloud with fresh timestamp");
+              }
+            }, "⚡ Re-sync routine to cloud"),
 
             h("button", {
               type: "button",
