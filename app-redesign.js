@@ -39,7 +39,7 @@
 
   const h = React.createElement;
   const { useState, useEffect, useCallback, useRef, useMemo } = React;
-  const APP_VERSION = "v2.5.25";
+  const APP_VERSION = "v2.5.26";
   const STORAGE_VERSION = "2.5.7";
 
   // --- v2.5.7 LocalStorage Preservation & Version Registration ---
@@ -1386,40 +1386,47 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
       }, options);
     },
 
+    getProgramEndpoints(profileId) {
+      const rtdb = this.getRTDB();
+      if (!rtdb) return [];
+      const pin = (window.HG_INTERNALS?.qe ? window.HG_INTERNALS.qe() : null) || window.HOUSEHOLD_PIN_DEFAULT || "";
+      const endpoints = [
+        {
+          name: `gym_users/${profileId}/active_program/current`,
+          write: (p) => rtdb.ref(`gym_users/${profileId}/active_program/current`).set(p)
+        },
+        {
+          name: `gym_users/${profileId}/plateplan/current`,
+          write: (p) => rtdb.ref(`gym_users/${profileId}/plateplan/current`).set(p)
+        }
+      ];
+      if (pin) {
+        endpoints.push({
+          name: `households/${pin}/${profileId}`,
+          write: (p) => rtdb.ref(`households/${pin}/${profileId}`).set(p)
+        });
+      }
+      return endpoints;
+    },
+
     async saveActiveProgram(profileId, programData, options = {}) {
       if (!profileId || !programData) return;
-      const cleanSessions = (Array.isArray(programData.sessions) ? programData.sessions : []).map(s => ({
-        ...s,
-        type: s.type || (s.targetKm ? "run" : "strength"),
-        groups: (Array.isArray(s.groups) ? s.groups : []).map(g => ({
-          ...g,
-          exercises: (Array.isArray(g.exercises) ? g.exercises : []).map(ex => ({
-            ...ex,
-            setsReps: ex.setsReps || ex.currentSetsReps || "3 × 10",
-            startValue: ex.startValue != null ? ex.startValue : (ex.currentWeight != null ? ex.currentWeight : null)
-          }))
-        }))
-      }));
-
-      const rawPayload = {
-        programId: programData.programId || "current",
-        name: programData.programName || programData.name || "Active Routine",
-        programName: programData.programName || programData.name || "Active Routine",
-        startDate: programData.startDate || "",
-        goals: programData.goals || "",
-        resumeNote: programData.resumeNote || "",
-        sessions: sortSessionsByDay(cleanSessions),
-        weekOverrides: programData.weekOverrides || {},
-        equipment: programData.equipment || null,
-        // Routine LWW clock: guaranteed positive timestamp so remote subscribers can never treat it as epoch 0
-        programUpdatedAt: Number(programData.programUpdatedAt || 0) > 0
-          ? Number(programData.programUpdatedAt)
-          : (Number(programData.updatedAt || 0) > 0 ? Number(programData.updatedAt) : Date.now()),
-        updatedAt: Date.now()
-      };
-
-      // Strip all undefined properties to prevent fatal Firebase RTDB rejection
-      const payload = JSON.parse(JSON.stringify(rawPayload));
+      const now = Date.now();
+      const payload = window.HG_PHYSIO_ENGINE?.buildCleanActiveProgramPayload
+        ? window.HG_PHYSIO_ENGINE.buildCleanActiveProgramPayload(programData, now)
+        : JSON.parse(JSON.stringify({
+            programId: programData.programId || "current",
+            name: programData.programName || programData.name || "Active Routine",
+            programName: programData.programName || programData.name || "Active Routine",
+            startDate: programData.startDate || "",
+            goals: programData.goals || "",
+            resumeNote: programData.resumeNote || "",
+            sessions: sortSessionsByDay(Array.isArray(programData.sessions) ? programData.sessions : []),
+            weekOverrides: programData.weekOverrides || {},
+            equipment: programData.equipment || null,
+            programUpdatedAt: Number(programData.programUpdatedAt || 0) > 0 ? Number(programData.programUpdatedAt) : now,
+            updatedAt: now
+          }));
 
       // 1. Immediately cache locally
       try {
@@ -1455,25 +1462,8 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
         }
       }
 
-      const rtdb = this.getRTDB();
-      if (rtdb) {
-        const pin = (window.HG_INTERNALS?.qe ? window.HG_INTERNALS.qe() : null) || window.HOUSEHOLD_PIN_DEFAULT || "";
-        const endpoints = [
-          {
-            name: `gym_users/${profileId}/active_program/current`,
-            write: (p) => rtdb.ref(`gym_users/${profileId}/active_program/current`).set(p)
-          },
-          {
-            name: `gym_users/${profileId}/plateplan/current`,
-            write: (p) => rtdb.ref(`gym_users/${profileId}/plateplan/current`).set(p)
-          }
-        ];
-        if (pin) {
-          endpoints.push({
-            name: `households/${pin}/${profileId}`,
-            write: (p) => rtdb.ref(`households/${pin}/${profileId}`).set(p)
-          });
-        }
+      const endpoints = this.getProgramEndpoints(profileId);
+      if (endpoints.length > 0) {
         try {
           if (window.HG_PHYSIO_ENGINE?.dispatchDualPathProgramWrite) {
             await window.HG_PHYSIO_ENGINE.dispatchDualPathProgramWrite(payload, endpoints);
@@ -1646,26 +1636,8 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
       } catch (e) {}
 
       // 2. Dual-path cloud write - strictly writing ONLY the clean program payload (no logs, zero undefined)
-      const rtdb = this.getRTDB();
-      if (!rtdb) return { success: false, error: "RTDB not available" };
-
-      const pin = (window.HG_INTERNALS?.qe ? window.HG_INTERNALS.qe() : null) || window.HOUSEHOLD_PIN_DEFAULT || "";
-      const endpoints = [
-        {
-          name: `gym_users/${profileId}/active_program/current`,
-          write: (p) => rtdb.ref(`gym_users/${profileId}/active_program/current`).set(p)
-        },
-        {
-          name: `gym_users/${profileId}/plateplan/current`,
-          write: (p) => rtdb.ref(`gym_users/${profileId}/plateplan/current`).set(p)
-        }
-      ];
-      if (pin) {
-        endpoints.push({
-          name: `households/${pin}/${profileId}`,
-          write: (p) => rtdb.ref(`households/${pin}/${profileId}`).set(p)
-        });
-      }
+      const endpoints = this.getProgramEndpoints(profileId);
+      if (endpoints.length === 0) return { success: false, error: "RTDB not available" };
 
       const res = await (window.HG_PHYSIO_ENGINE?.dispatchDualPathProgramWrite
         ? window.HG_PHYSIO_ENGINE.dispatchDualPathProgramWrite(cleanProgram, endpoints)

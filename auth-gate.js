@@ -5,11 +5,11 @@
 (function () {
   const ALLOWED_EMAILS = ["ejcallender@gmail.com", "clncarr7@gmail.com"];
   const APP_SCRIPTS = [
-    "./notifications.js?v=2.5.25",
-    "./physio-engine.js?v=2.5.25",
-    "./app.bundle.js?v=2.5.25",
-    "./app-redesign.js?v=2.5.25",
-    "./data-recovery-inspector.js?v=2.5.25",
+    "./notifications.js?v=2.5.26",
+    "./physio-engine.js?v=2.5.26",
+    "./app.bundle.js?v=2.5.26",
+    "./app-redesign.js?v=2.5.26",
+    "./data-recovery-inspector.js?v=2.5.26",
   ];
 
   let started = false;

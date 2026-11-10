@@ -1,6 +1,6 @@
 {
   "name": "Home Gym Log",
-  "description": "Strength training tracker HomeGym v2.5.25: Sanitized program payload stripping logs and undefined properties on force push to RTDB",
+  "description": "Strength training tracker HomeGym v2.5.26: Unified cloud program serialization and endpoint dispatching",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
