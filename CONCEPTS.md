@@ -25,3 +25,22 @@ Enables non-destructive rollback of active programming without modifying or inva
 ### Routine Exchange Diff
 A structured delta computed between an athlete's active program and an AI-proposed clinical adaptation.
 Categorizes modifications into substitutions, load adjustments, additions, and removals with discrete athlete-approved cherry-picking.
+
+## Cloud Synchronization & State
+
+### Active Routine Blueprint
+The canonical, declarative definition of an athlete's current training schedule, session structures, and prescribed exercise metrics.
+*Avoid: Full profile state, tracking log archive*
+
+The blueprint is strictly decoupled from historical workout logs and health metrics. It contains only program metadata, ordered weekly sessions, and equipment profiles, ensuring rapid, lightweight cloud propagation and preventing tracking data from corrupting database nodes.
+
+### Dual-Path Synchronization
+A concurrent cloud data distribution pattern that writes active routine blueprints across multiple database topologies (such as direct user paths and shared household scopes) simultaneously using non-blocking settlement.
+Ensures real-time continuity across heterogeneous clients and prevents access control mismatches or path deprecations on one endpoint from stalling replication to another.
+
+### Routine LWW Clock
+The logical last-write-wins clock (`programUpdatedAt`) tracking intentional routine authoring events.
+*Avoid: Generalized device record update timestamps (`updatedAt`)*
+
+Guarantees that cloud routine distribution is governed strictly by the recency of the training blueprint itself, preventing local device metadata churn or workout completion logs from inadvertently overwriting newer routines.
+
