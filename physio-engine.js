@@ -972,8 +972,65 @@ export const HG_PHYSIO_ENGINE = {
       }
     }
     return best || {};
+  },
+
+  /**
+   * Selects the best candidate program across multiple cloud endpoints (e.g. gym_users vs households).
+   * Prioritizes non-empty sessions, named routines over boilerplate, and higher programUpdatedAt.
+   */
+  selectBestRemoteProgramCandidate(...candidates) {
+    const valid = candidates.filter(c => c && typeof c === "object" && Array.isArray(c.sessions) && c.sessions.length > 0);
+    if (!valid.length) return null;
+
+    let best = valid[0];
+    for (let i = 1; i < valid.length; i++) {
+      const candidate = valid[i];
+      if (this.shouldAcceptRemoteProgram(best, candidate)) {
+        best = candidate;
+      }
+    }
+    return best;
+  },
+
+  /**
+   * Dispatches dual-path cloud writes concurrently via Promise.allSettled.
+   * Guarantees that a rejection on one endpoint (e.g. gym_users PERMISSION_DENIED) does not abort
+   * writes to other endpoints (e.g. households).
+   *
+   * @param {Object} payload The sanitized routine payload to write.
+   * @param {Array<{ name: string, write: (payload: Object) => Promise<any> }>} endpoints
+   * @returns {Promise<{ succeeded: Array<{ name: string, value: any }>, failed: Array<{ name: string, error: string }>, allFailed: boolean }>}
+   */
+  async dispatchDualPathProgramWrite(payload, endpoints) {
+    if (!Array.isArray(endpoints) || endpoints.length === 0) {
+      return { succeeded: [], failed: [], allFailed: true };
+    }
+
+    const settled = await Promise.allSettled(
+      endpoints.map(ep => ep.write(payload))
+    );
+
+    const succeeded = [];
+    const failed = [];
+
+    settled.forEach((res, idx) => {
+      const epName = endpoints[idx]?.name || `endpoint_${idx}`;
+      if (res.status === "fulfilled") {
+        succeeded.push({ name: epName, value: res.value });
+      } else {
+        const errMsg = res.reason?.message || String(res.reason || "Unknown error");
+        failed.push({ name: epName, error: errMsg });
+      }
+    });
+
+    return {
+      succeeded,
+      failed,
+      allFailed: succeeded.length === 0
+    };
   }
 };
+
 
 // Also attach globally for browser / window environments
 if (typeof window !== "undefined") {

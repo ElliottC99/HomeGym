@@ -1,6 +1,6 @@
 {
   "name": "Home Gym Log",
-  "description": "Strength training tracker HomeGym v2.5.23: Canonical Monday-to-Sunday day ordering, enhanced remote routine acceptance over local boilerplate, and elimination of boot cache cloud overwrite",
+  "description": "Strength training tracker HomeGym v2.5.24: RTDB wire diagnostics modal, dual-path cloud routine sync (gym_users & households), and on-demand force push/pull",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

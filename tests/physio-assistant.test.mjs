@@ -852,3 +852,66 @@ test("U23: shouldAcceptRemoteProgram accepts remote program when timestamps are 
   const accepted = HG_PHYSIO_ENGINE.shouldAcceptRemoteProgram(localProfile, remoteProgram);
   assert.equal(accepted, true, "Equal timestamp with different sessions or named program must be accepted");
 });
+
+test("U24: selectBestRemoteProgramCandidate picks the valid candidate with highest programUpdatedAt or named routine", () => {
+  const boilerplateCandidate = {
+    programName: "Current Routine",
+    programUpdatedAt: 1700000000000,
+    sessions: [{ id: "s1", name: "Run", day: "Mon" }]
+  };
+
+  const newerNamedCandidate = {
+    programName: "Phase 1: Back Rehab & Match Fit",
+    programUpdatedAt: 1731112223334,
+    sessions: [
+      { id: "e_lower", name: "Lower Body & Physio", day: "Mon" },
+      { id: "e_upper", name: "Upper Body & Physio", day: "Tue" },
+      { id: "e_total", name: "Full Body, Core & Physio", day: "Thu" },
+      { id: "e_run", name: "Run (10km)", day: "Fri" }
+    ]
+  };
+
+  const nullCandidate = null;
+  const emptyCandidate = { sessions: [] };
+
+  const best = HG_PHYSIO_ENGINE.selectBestRemoteProgramCandidate(
+    boilerplateCandidate,
+    newerNamedCandidate,
+    nullCandidate,
+    emptyCandidate
+  );
+
+  assert.equal(best.programName, "Phase 1: Back Rehab & Match Fit");
+  assert.equal(best.sessions.length, 4);
+});
+
+test("U25: dispatchDualPathProgramWrite dispatches to multiple endpoints concurrently via Promise.allSettled and does not abort on single failure", async () => {
+  const attempts = [];
+  const writeEndpoints = [
+    {
+      name: "gym_users/elliott/active_program/current",
+      write: async (p) => {
+        attempts.push("gym_users_attempt");
+        throw new Error("PERMISSION_DENIED: Client doesn't have permission to access the desired data.");
+      }
+    },
+    {
+      name: "households/a0c90dc277095620d5289a740773fd3a/elliott",
+      write: async (p) => {
+        attempts.push("households_attempt");
+        return "OK";
+      }
+    }
+  ];
+
+  const payload = { programName: "Phase 1: Back Rehab", programUpdatedAt: 1731112223334 };
+  const result = await HG_PHYSIO_ENGINE.dispatchDualPathProgramWrite(payload, writeEndpoints);
+
+  assert.equal(attempts.length, 2, "Both write endpoints must be attempted concurrently");
+  assert.equal(result.succeeded.length, 1);
+  assert.equal(result.succeeded[0].name, "households/a0c90dc277095620d5289a740773fd3a/elliott");
+  assert.equal(result.failed.length, 1);
+  assert.equal(result.failed[0].name, "gym_users/elliott/active_program/current");
+  assert.ok(result.failed[0].error.includes("PERMISSION_DENIED"));
+});
+

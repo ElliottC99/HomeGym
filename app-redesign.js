@@ -39,7 +39,7 @@
 
   const h = React.createElement;
   const { useState, useEffect, useCallback, useRef, useMemo } = React;
-  const APP_VERSION = "v2.5.23";
+  const APP_VERSION = "v2.5.24";
   const STORAGE_VERSION = "2.5.7";
 
   // --- v2.5.7 LocalStorage Preservation & Version Registration ---
@@ -1457,12 +1457,28 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
 
       const rtdb = this.getRTDB();
       if (rtdb) {
+        const pin = (window.HG_INTERNALS?.qe ? window.HG_INTERNALS.qe() : null) || window.HOUSEHOLD_PIN_DEFAULT || "";
+        const endpoints = [
+          {
+            name: `gym_users/${profileId}/active_program/current`,
+            write: (p) => rtdb.ref(`gym_users/${profileId}/active_program/current`).set(p)
+          },
+          {
+            name: `gym_users/${profileId}/plateplan/current`,
+            write: (p) => rtdb.ref(`gym_users/${profileId}/plateplan/current`).set(p)
+          }
+        ];
+        if (pin) {
+          endpoints.push({
+            name: `households/${pin}/${profileId}`,
+            write: (p) => rtdb.ref(`households/${pin}/${profileId}`).set(p)
+          });
+        }
         try {
-          await rtdb.ref(`gym_users/${profileId}/active_program/current`).set(payload);
-          await rtdb.ref(`gym_users/${profileId}/plateplan/current`).set(payload).catch(() => {});
-          const pin = (window.HG_INTERNALS?.qe ? window.HG_INTERNALS.qe() : null) || window.HOUSEHOLD_PIN_DEFAULT || "";
-          if (pin) {
-            await rtdb.ref(`households/${pin}/${profileId}`).set(payload).catch(() => {});
+          if (window.HG_PHYSIO_ENGINE?.dispatchDualPathProgramWrite) {
+            await window.HG_PHYSIO_ENGINE.dispatchDualPathProgramWrite(payload, endpoints);
+          } else {
+            await Promise.allSettled(endpoints.map(ep => ep.write(payload)));
           }
         } catch (e) {
           console.warn("[PlatePlan RTDB saveActiveProgram]", e?.message);
@@ -1471,6 +1487,237 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
 
       return payload;
     },
+
+    async runDiagnostics(profileId = "elliott") {
+      const pin = (window.HG_INTERNALS?.qe ? window.HG_INTERNALS.qe() : null) || window.HOUSEHOLD_PIN_DEFAULT || "";
+      const report = {
+        timestamp: Date.now(),
+        profileId,
+        auth: { loggedIn: false, email: "", uid: "", emailVerified: false },
+        rtdbConnected: null,
+        pin,
+        gymUsers: { status: "pending", programName: "", programUpdatedAt: 0, sessionsCount: 0, sessionDays: [], error: null },
+        households: { status: "pending", programName: "", programUpdatedAt: 0, sessionsCount: 0, sessionDays: [], error: null },
+        local: {
+          programName: "",
+          programUpdatedAt: 0,
+          sessionsCount: 0,
+          sessionDays: []
+        }
+      };
+
+      // 1. Inspect Auth
+      try {
+        const auth = window.firebase?.auth?.();
+        const user = auth?.currentUser;
+        if (user) {
+          report.auth = {
+            loggedIn: true,
+            email: user.email || "",
+            uid: user.uid || "",
+            emailVerified: Boolean(user.emailVerified)
+          };
+        }
+      } catch (err) {
+        report.auth.error = err?.message || String(err);
+      }
+
+      // 2. Inspect Local Storage
+      try {
+        const rawV1 = localStorage.getItem(`plateplan_v1_${profileId}`) || localStorage.getItem("plateplan_v1");
+        let v1Obj = null;
+        if (rawV1) {
+          try { v1Obj = JSON.parse(rawV1); } catch (e) {}
+        }
+        const rawLegacy = localStorage.getItem(`data:${profileId}`);
+        let legacyObj = null;
+        if (rawLegacy) {
+          try { legacyObj = JSON.parse(rawLegacy); } catch (e) {}
+        }
+
+        const chosen = (window.HG_PHYSIO_ENGINE?.resolveLocalRoutineSource
+          ? window.HG_PHYSIO_ENGINE.resolveLocalRoutineSource(v1Obj, legacyObj)
+          : v1Obj) || {};
+
+        report.local.programName = chosen.programName || chosen.name || (Array.isArray(chosen.sessions) && chosen.sessions.length ? "Active Routine" : "None");
+        report.local.programUpdatedAt = Number(chosen.programUpdatedAt || chosen.updatedAt || 0);
+        report.local.sessionsCount = Array.isArray(chosen.sessions) ? chosen.sessions.length : 0;
+        report.local.sessionDays = Array.isArray(chosen.sessions) ? chosen.sessions.map(s => `${s.day}: ${s.name || ""}`) : [];
+      } catch (err) {
+        report.local.error = err?.message || String(err);
+      }
+
+      // 3. Inspect RTDB Connection
+      const rtdb = this.getRTDB();
+      if (!rtdb) {
+        report.rtdbConnected = false;
+        report.gymUsers.status = "no_rtdb";
+        report.households.status = "no_rtdb";
+        return report;
+      }
+
+      try {
+        const connSnap = await Promise.race([
+          rtdb.ref(".info/connected").once("value"),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout checking .info/connected")), 2500))
+        ]);
+        report.rtdbConnected = Boolean(connSnap?.val());
+      } catch (err) {
+        report.rtdbConnected = false;
+        report.rtdbConnectedError = err?.message || String(err);
+      }
+
+      // 4. Probe gym_users/${profileId}/active_program/current
+      try {
+        const snap = await Promise.race([
+          rtdb.ref(`gym_users/${profileId}/active_program/current`).once("value"),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout probing gym_users")), 4000))
+        ]);
+        const val = snap.val();
+        if (val) {
+          report.gymUsers.status = "ok";
+          report.gymUsers.programName = val.programName || val.name || "Active Routine";
+          report.gymUsers.programUpdatedAt = Number(val.programUpdatedAt || val.updatedAt || 0);
+          report.gymUsers.sessionsCount = Array.isArray(val.sessions) ? val.sessions.length : 0;
+          report.gymUsers.sessionDays = Array.isArray(val.sessions) ? val.sessions.map(s => `${s.day}: ${s.name || ""}`) : [];
+        } else {
+          report.gymUsers.status = "null";
+        }
+      } catch (err) {
+        report.gymUsers.status = "error";
+        report.gymUsers.error = err?.message || String(err);
+      }
+
+      // 5. Probe households/${pin}/${profileId}
+      if (pin) {
+        try {
+          const snap = await Promise.race([
+            rtdb.ref(`households/${pin}/${profileId}`).once("value"),
+            new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout probing households")), 4000))
+          ]);
+          const val = snap.val();
+          if (val) {
+            report.households.status = "ok";
+            report.households.programName = val.programName || val.name || "Active Routine";
+            report.households.programUpdatedAt = Number(val.programUpdatedAt || val.updatedAt || 0);
+            report.households.sessionsCount = Array.isArray(val.sessions) ? val.sessions.length : 0;
+            report.households.sessionDays = Array.isArray(val.sessions) ? val.sessions.map(s => `${s.day}: ${s.name || ""}`) : [];
+          } else {
+            report.households.status = "null";
+          }
+        } catch (err) {
+          report.households.status = "error";
+          report.households.error = err?.message || String(err);
+        }
+      } else {
+        report.households.status = "no_pin";
+      }
+
+      return report;
+    },
+
+    async forcePushRoutine(profileId, routineData) {
+      if (!profileId || !routineData) return { success: false, error: "Missing profile or routine data" };
+      const now = Date.now();
+      const updated = {
+        ...routineData,
+        programUpdatedAt: now,
+        updatedAt: now
+      };
+
+      // 1. Update local caches
+      savePlatePlanV1Local(profileId, updated);
+      if (window.HG_INTERNALS?.Ee) window.HG_INTERNALS.Ee(profileId, updated);
+      syncLegacyStorage(profileId, updated);
+
+      // 2. Dual-path cloud write
+      const rtdb = this.getRTDB();
+      if (!rtdb) return { success: false, error: "RTDB not available" };
+
+      const pin = (window.HG_INTERNALS?.qe ? window.HG_INTERNALS.qe() : null) || window.HOUSEHOLD_PIN_DEFAULT || "";
+      const endpoints = [
+        {
+          name: `gym_users/${profileId}/active_program/current`,
+          write: (p) => rtdb.ref(`gym_users/${profileId}/active_program/current`).set(p)
+        },
+        {
+          name: `gym_users/${profileId}/plateplan/current`,
+          write: (p) => rtdb.ref(`gym_users/${profileId}/plateplan/current`).set(p)
+        }
+      ];
+      if (pin) {
+        endpoints.push({
+          name: `households/${pin}/${profileId}`,
+          write: (p) => rtdb.ref(`households/${pin}/${profileId}`).set(p)
+        });
+      }
+
+      const res = await (window.HG_PHYSIO_ENGINE?.dispatchDualPathProgramWrite
+        ? window.HG_PHYSIO_ENGINE.dispatchDualPathProgramWrite(updated, endpoints)
+        : Promise.allSettled(endpoints.map(ep => ep.write(updated))));
+
+      return {
+        success: !res.allFailed,
+        updated,
+        results: res
+      };
+    },
+
+    async forcePullRoutine(profileId) {
+      if (!profileId) return { success: false, error: "Missing profileId" };
+      const rtdb = this.getRTDB();
+      if (!rtdb) return { success: false, error: "RTDB not available" };
+
+      const pin = (window.HG_INTERNALS?.qe ? window.HG_INTERNALS.qe() : null) || window.HOUSEHOLD_PIN_DEFAULT || "";
+      const candidates = [];
+
+      // Probe gym_users
+      try {
+        const snap = await rtdb.ref(`gym_users/${profileId}/active_program/current`).once("value");
+        const val = snap.val();
+        if (val && Array.isArray(val.sessions) && val.sessions.length > 0) {
+          candidates.push(normalizeRemoteProgram(val));
+        }
+      } catch (e) {
+        console.warn("[forcePullRoutine gym_users probe failed]:", e?.message);
+      }
+
+      // Probe households
+      if (pin) {
+        try {
+          const snap = await rtdb.ref(`households/${pin}/${profileId}`).once("value");
+          const val = snap.val();
+          if (val && Array.isArray(val.sessions) && val.sessions.length > 0) {
+            candidates.push(normalizeRemoteProgram(val));
+          }
+        } catch (e) {
+          console.warn("[forcePullRoutine households probe failed]:", e?.message);
+        }
+      }
+
+      if (!candidates.length) {
+        return { success: false, error: "No remote programs found on cloud endpoints (both returned empty or permission denied)." };
+      }
+
+      const best = window.HG_PHYSIO_ENGINE?.selectBestRemoteProgramCandidate
+        ? window.HG_PHYSIO_ENGINE.selectBestRemoteProgramCandidate(...candidates)
+        : candidates[0];
+
+      if (!best) {
+        return { success: false, error: "Unable to select valid candidate from cloud endpoints." };
+      }
+
+      // Commit to local caches
+      savePlatePlanV1Local(profileId, best);
+      if (window.HG_INTERNALS?.Ee) window.HG_INTERNALS.Ee(profileId, best);
+      syncLegacyStorage(profileId, best);
+
+      return {
+        success: true,
+        program: best
+      };
+    },
+
 
     async saveProgramToSubcollection(userId, program) {
       if (!userId || !program) return;
@@ -2287,6 +2534,24 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
           };
           progRef.on("value", onProg, onProgErr);
           unsubscribers.push(() => progRef.off("value", onProg));
+
+          // Dual-Path cloud listener: households/${pin}/${profileId}
+          const pin = (window.HG_INTERNALS?.qe ? window.HG_INTERNALS.qe() : null) || window.HOUSEHOLD_PIN_DEFAULT || "";
+          if (pin) {
+            const householdProgRef = rtdb.ref(`households/${pin}/${profileId}`);
+            const onHouseholdProg = snap => {
+              const val = snap.val();
+              if (val) {
+                if (navigator.onLine) onStatusChange?.("synced");
+                onRemoteUpdate?.("active_program", normalizeRemoteProgram(val));
+              }
+            };
+            const onHouseholdProgErr = err => {
+              console.warn(`[RTDB subscribe household active_program error for ${profileId}]:`, err?.message);
+            };
+            householdProgRef.on("value", onHouseholdProg, onHouseholdProgErr);
+            unsubscribers.push(() => householdProgRef.off("value", onHouseholdProg));
+          }
         } catch (e) {
           console.warn("RTDB subscribe exception:", e?.message);
         }
@@ -6145,7 +6410,7 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
   }
 
   // HIG Plan View Component
-  function PlanView({ personId, data, store, meta, updateData, showToast }) {
+  function PlanView({ personId, data, store, meta, updateData, showToast, onOpenDiagnostics }) {
     const [activeSessionIdx, setActiveSessionIdx] = useState(0);
     const [overflowMenuOpen, setOverflowMenuOpen] = useState(false);
     const [rowMenuId, setRowMenuId] = useState(null);
@@ -6432,6 +6697,15 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
             }, "📤 Restore from backup…"),
 
             h("div", { className: "hg-menu-divider" }),
+
+            h("button", {
+              type: "button",
+              className: "hg-menu-item",
+              onClick: () => {
+                setOverflowMenuOpen(false);
+                onOpenDiagnostics?.();
+              }
+            }, "🩺 RTDB Wire Diagnostics"),
 
             h("button", {
               type: "button",
@@ -7319,7 +7593,7 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
     );
   }
 
-  function SettingsModal({ personId, store, pin, syncStatus, queueCount = 0, updateData, onSaveKey, onClose, showToast }) {
+  function SettingsModal({ personId, store, pin, syncStatus, queueCount = 0, updateData, onSaveKey, onClose, onOpenDiagnostics, showToast }) {
     const [theme, setTheme] = useState(getTheme());
     const [key, setKey] = useState(pin || window.HOUSEHOLD_PIN_DEFAULT || "");
     const [reminderHour, setReminderHour] = useState(() => storageGet(`hg_reminderhour_${personId}`, 9));
@@ -7428,6 +7702,15 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
           h("h3", null, "Cloud sync"),
           h("p", null,
             `${syncStatus === "synced" ? "Cloud synced." : syncStatus === "connecting" ? "Connecting…" : syncStatus === "offline" ? "Offline mode active." : "Local only."} Data automatically syncs between your devices through Google Sign-In and the shared household key.`
+          ),
+          h("div", { style: { marginTop: 10 } },
+            h(Button, {
+              id: "hg-btn-open-diagnostics",
+              onClick: () => {
+                onClose?.();
+                onOpenDiagnostics?.();
+              }
+            }, "🩺 RTDB Wire Diagnostics & Dual-Path Sync")
           )
         ),
         h("div", { className: "hg-setting-section" },
@@ -7494,7 +7777,289 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
     );
   }
 
-  function Header({ personId, setPersonId, syncStatus, queueCount = 0, onSettings }) {
+  function SyncDiagnosticsModal({ personId, store, updateData, onClose, showToast }) {
+    const [diag, setDiag] = useState(null);
+    const [loading, setLoading] = useState(true);
+    const [actionMsg, setActionMsg] = useState(null);
+    const [busy, setBusy] = useState(false);
+
+    const loadData = useCallback(async () => {
+      setLoading(true);
+      try {
+        const res = await PlatePlanSyncEngine.runDiagnostics(personId);
+        setDiag(res);
+      } catch (err) {
+        setActionMsg({ type: "error", text: "Diagnostics probe failed: " + (err?.message || String(err)) });
+      } finally {
+        setLoading(false);
+      }
+    }, [personId]);
+
+    useEffect(() => {
+      loadData();
+    }, [loadData]);
+
+    const handleForcePush = async () => {
+      if (!store?.[personId]) return;
+      setBusy(true);
+      setActionMsg({ type: "info", text: "Pushing current routine to cloud endpoints (dual-path)..." });
+      try {
+        const res = await PlatePlanSyncEngine.forcePushRoutine(personId, store[personId]);
+        if (res.success) {
+          const succNames = (res.results?.succeeded || []).map(s => s.name).join(", ");
+          const failNames = (res.results?.failed || []).map(f => `${f.name} (${f.error})`).join("; ");
+          setActionMsg({
+            type: "success",
+            text: `✅ Dual-path push completed!\nSucceeded: ${succNames || "None"}${failNames ? `\nFailed: ${failNames}` : ""}`
+          });
+          showToast?.("🚀 Routine pushed to cloud via dual-path!");
+        } else {
+          setActionMsg({
+            type: "error",
+            text: `❌ Dual-path push failed:\n${(res.results?.failed || []).map(f => `${f.name}: ${f.error}`).join("\n") || res.error || "Unknown error"}`
+          });
+        }
+        await loadData();
+      } catch (err) {
+        setActionMsg({ type: "error", text: "Push exception: " + (err?.message || String(err)) });
+      } finally {
+        setBusy(false);
+      }
+    };
+
+    const handleForcePull = async () => {
+      setBusy(true);
+      setActionMsg({ type: "info", text: "Pulling latest routine from cloud endpoints into this device..." });
+      try {
+        const res = await PlatePlanSyncEngine.forcePullRoutine(personId);
+        if (res.success && res.program) {
+          updateData(personId, () => res.program);
+          setActionMsg({
+            type: "success",
+            text: `✅ Routine successfully pulled & installed locally!\nProgram: "${res.program.programName || "Active Routine"}" (${(res.program.sessions || []).length} sessions, timestamp ${res.program.programUpdatedAt})`
+          });
+          showToast?.(`📥 Pulled "${res.program.programName || "Active Routine"}"!`);
+        } else {
+          setActionMsg({
+            type: "error",
+            text: `❌ Could not pull routine from cloud: ${res.error || "No valid routine found"}`
+          });
+        }
+        await loadData();
+      } catch (err) {
+        setActionMsg({ type: "error", text: "Pull exception: " + (err?.message || String(err)) });
+      } finally {
+        setBusy(false);
+      }
+    };
+
+    const handleCopyReport = async () => {
+      try {
+        await navigator.clipboard.writeText(JSON.stringify(diag, null, 2));
+        showToast?.("📋 Diagnostics JSON copied to clipboard");
+      } catch (e) {
+        showToast?.("Could not copy to clipboard");
+      }
+    };
+
+    return h("div", { className: "hg-modal-wrap", onClick: onClose },
+      h("div", {
+        className: "hg-modal",
+        style: { width: "min(680px, 100%)", maxHeight: "90dvh", overflowY: "auto" },
+        onClick: e => e.stopPropagation()
+      },
+        h("div", { className: "hg-modal-head" },
+          h("div", { style: { display: "flex", alignItems: "center", gap: 10 } },
+            h("span", { style: { fontSize: 24 } }, "🩺"),
+            h("div", null,
+              h("h2", { style: { margin: 0, fontSize: 18 } }, "RTDB Wire & Sync Diagnostics"),
+              h("div", { style: { fontSize: 12, color: "var(--hg-text-2)" } }, `Inspecting profile: ${personId.toUpperCase()}`)
+            )
+          ),
+          h("button", { type: "button", className: "hg-icon-button", onClick: onClose }, "×")
+        ),
+
+        // Quick Auth & Connection Bar
+        h("div", {
+          style: {
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))",
+            gap: 8,
+            marginBottom: 16,
+            padding: 12,
+            background: "var(--hg-surface-2, rgba(0,0,0,0.04))",
+            borderRadius: 12
+          }
+        },
+          h("div", null,
+            h("div", { style: { fontSize: 11, color: "var(--hg-text-2)", textTransform: "uppercase", fontWeight: 700 } }, "Google Auth"),
+            h("div", { style: { fontSize: 12, fontWeight: 600, marginTop: 2, wordBreak: "break-all" } },
+              diag?.auth?.loggedIn ? `🟢 ${diag.auth.email}` : "🔴 Not Signed In"
+            )
+          ),
+          h("div", null,
+            h("div", { style: { fontSize: 11, color: "var(--hg-text-2)", textTransform: "uppercase", fontWeight: 700 } }, "Email Verified"),
+            h("div", { style: { fontSize: 12, fontWeight: 600, marginTop: 2 } },
+              diag?.auth?.emailVerified ? "🟢 Verified" : "🔴 Not Verified"
+            )
+          ),
+          h("div", null,
+            h("div", { style: { fontSize: 11, color: "var(--hg-text-2)", textTransform: "uppercase", fontWeight: 700 } }, "RTDB Socket"),
+            h("div", { style: { fontSize: 12, fontWeight: 600, marginTop: 2 } },
+              diag?.rtdbConnected ? "🟢 Connected" : "🔴 Disconnected"
+            )
+          ),
+          h("div", null,
+            h("div", { style: { fontSize: 11, color: "var(--hg-text-2)", textTransform: "uppercase", fontWeight: 700 } }, "Household PIN"),
+            h("div", { style: { fontSize: 12, fontFamily: "monospace", marginTop: 2 } },
+              diag?.pin ? `${diag.pin.slice(0, 8)}…` : "None"
+            )
+          )
+        ),
+
+        // Action Status Message Banner
+        actionMsg && h("div", {
+          style: {
+            padding: "10px 14px",
+            borderRadius: 10,
+            marginBottom: 14,
+            fontSize: 12.5,
+            whiteSpace: "pre-wrap",
+            fontFamily: "monospace",
+            lineHeight: 1.4,
+            background: actionMsg.type === "success" ? "rgba(16, 185, 129, 0.12)" : actionMsg.type === "error" ? "rgba(239, 68, 68, 0.12)" : "rgba(59, 130, 246, 0.12)",
+            color: actionMsg.type === "success" ? "#059669" : actionMsg.type === "error" ? "#dc2626" : "#2563eb",
+            border: `1px solid ${actionMsg.type === "success" ? "#10b981" : actionMsg.type === "error" ? "#ef4444" : "#3b82f6"}`
+          }
+        }, actionMsg.text),
+
+        // Wire Probes Table / Cards
+        h("div", { style: { display: "flex", flexDirection: "column", gap: 10, marginBottom: 16 } },
+          // Endpoint 1: gym_users
+          h("div", {
+            style: {
+              border: "1px solid var(--hg-border, #e5e7eb)",
+              borderRadius: 12,
+              padding: 12,
+              background: "var(--hg-surface, #fff)"
+            }
+          },
+            h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 } },
+              h("span", { style: { fontFamily: "monospace", fontSize: 12, fontWeight: 700 } }, `gym_users/${personId}/active_program/current`),
+              h("span", {
+                style: {
+                  fontSize: 11,
+                  fontWeight: 700,
+                  padding: "2px 8px",
+                  borderRadius: 999,
+                  background: diag?.gymUsers?.status === "ok" ? "rgba(16, 185, 129, 0.15)" : diag?.gymUsers?.status === "null" ? "rgba(156, 163, 175, 0.2)" : "rgba(239, 68, 68, 0.15)",
+                  color: diag?.gymUsers?.status === "ok" ? "#059669" : diag?.gymUsers?.status === "null" ? "#4b5563" : "#dc2626"
+                }
+              }, diag?.gymUsers?.status === "ok" ? "🟢 REACHABLE" : diag?.gymUsers?.status === "null" ? "⚪ EMPTY" : `🔴 ${diag?.gymUsers?.status || "PENDING"}`)
+            ),
+            diag?.gymUsers?.error
+              ? h("div", { style: { color: "#dc2626", fontSize: 11.5, fontFamily: "monospace", marginTop: 4 } }, diag.gymUsers.error)
+              : h("div", { style: { fontSize: 12, color: "var(--hg-text-2)" } },
+                  h("div", null, `Program: `, h("strong", { style: { color: "var(--hg-text)" } }, diag?.gymUsers?.programName || "None")),
+                  h("div", null, `Timestamp: `, h("span", { style: { fontFamily: "monospace" } }, diag?.gymUsers?.programUpdatedAt ? `${new Date(diag.gymUsers.programUpdatedAt).toLocaleString()} (${diag.gymUsers.programUpdatedAt})` : "0")),
+                  h("div", null, `Sessions (${diag?.gymUsers?.sessionsCount || 0}): `, diag?.gymUsers?.sessionDays?.join(", ") || "None")
+                )
+          ),
+
+          // Endpoint 2: households
+          h("div", {
+            style: {
+              border: "1px solid var(--hg-border, #e5e7eb)",
+              borderRadius: 12,
+              padding: 12,
+              background: "var(--hg-surface, #fff)"
+            }
+          },
+            h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 } },
+              h("span", { style: { fontFamily: "monospace", fontSize: 12, fontWeight: 700 } }, `households/${diag?.pin ? `${diag.pin.slice(0, 8)}…` : "pin"}/${personId}`),
+              h("span", {
+                style: {
+                  fontSize: 11,
+                  fontWeight: 700,
+                  padding: "2px 8px",
+                  borderRadius: 999,
+                  background: diag?.households?.status === "ok" ? "rgba(16, 185, 129, 0.15)" : diag?.households?.status === "null" ? "rgba(156, 163, 175, 0.2)" : "rgba(239, 68, 68, 0.15)",
+                  color: diag?.households?.status === "ok" ? "#059669" : diag?.households?.status === "null" ? "#4b5563" : "#dc2626"
+                }
+              }, diag?.households?.status === "ok" ? "🟢 REACHABLE" : diag?.households?.status === "null" ? "⚪ EMPTY" : `🔴 ${diag?.households?.status || "PENDING"}`)
+            ),
+            diag?.households?.error
+              ? h("div", { style: { color: "#dc2626", fontSize: 11.5, fontFamily: "monospace", marginTop: 4 } }, diag.households.error)
+              : h("div", { style: { fontSize: 12, color: "var(--hg-text-2)" } },
+                  h("div", null, `Program: `, h("strong", { style: { color: "var(--hg-text)" } }, diag?.households?.programName || "None")),
+                  h("div", null, `Timestamp: `, h("span", { style: { fontFamily: "monospace" } }, diag?.households?.programUpdatedAt ? `${new Date(diag.households.programUpdatedAt).toLocaleString()} (${diag.households.programUpdatedAt})` : "0")),
+                  h("div", null, `Sessions (${diag?.households?.sessionsCount || 0}): `, diag?.households?.sessionDays?.join(", ") || "None")
+                )
+          ),
+
+          // Endpoint 3: Local Storage
+          h("div", {
+            style: {
+              border: "1px solid var(--hg-border, #e5e7eb)",
+              borderRadius: 12,
+              padding: 12,
+              background: "var(--hg-surface, #fff)"
+            }
+          },
+            h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 } },
+              h("span", { style: { fontFamily: "monospace", fontSize: 12, fontWeight: 700 } }, `localStorage (This Device)`),
+              h("span", {
+                style: {
+                  fontSize: 11,
+                  fontWeight: 700,
+                  padding: "2px 8px",
+                  borderRadius: 999,
+                  background: "rgba(59, 130, 246, 0.15)",
+                  color: "#2563eb"
+                }
+              }, "📱 ACTIVE DEVICE")
+            ),
+            h("div", { style: { fontSize: 12, color: "var(--hg-text-2)" } },
+              h("div", null, `Program: `, h("strong", { style: { color: "var(--hg-text)" } }, diag?.local?.programName || "None")),
+              h("div", null, `Timestamp: `, h("span", { style: { fontFamily: "monospace" } }, diag?.local?.programUpdatedAt ? `${new Date(diag.local.programUpdatedAt).toLocaleString()} (${diag.local.programUpdatedAt})` : "0")),
+              h("div", null, `Sessions (${diag?.local?.sessionsCount || 0}): `, diag?.local?.sessionDays?.join(", ") || "None")
+            )
+          )
+        ),
+
+        // Action Buttons Row
+        h("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
+          h("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" } },
+            h(Button, {
+              primary: true,
+              disabled: busy || loading,
+              onClick: handleForcePush,
+              style: { flex: 1, minWidth: 200 }
+            }, busy ? "Working…" : "🚀 Force Push Routine to Cloud (Dual-Path)"),
+            h(Button, {
+              disabled: busy || loading,
+              onClick: handleForcePull,
+              style: { flex: 1, minWidth: 200 }
+            }, busy ? "Working…" : "📥 Force Pull from Cloud into Device")
+          ),
+          h("div", { style: { display: "flex", gap: 8 } },
+            h(Button, {
+              disabled: busy || loading,
+              onClick: loadData,
+              style: { flex: 1 }
+            }, "🔄 Refresh Status"),
+            h(Button, {
+              disabled: busy || loading,
+              onClick: handleCopyReport,
+              style: { flex: 1 }
+            }, "📋 Copy JSON Report")
+          )
+        )
+      )
+    );
+  }
+
+  function Header({ personId, setPersonId, syncStatus, queueCount = 0, onSettings, onOpenDiagnostics }) {
     const isOnline = typeof navigator !== "undefined" ? navigator.onLine : true;
     const statusText = !isOnline
       ? (queueCount > 0 ? `Offline (${queueCount} queued)` : "Offline")
@@ -7513,7 +8078,12 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
         : "#3b82f6";
 
     return h("header", { className: "hg-header" },
-      h("div", { className: "hg-brand" },
+      h("div", {
+        className: "hg-brand",
+        onClick: onOpenDiagnostics,
+        style: { cursor: "pointer" },
+        title: "Click to open RTDB Wire Diagnostics & Dual-Path Sync"
+      },
         h("div", { className: "hg-eyebrow", style: { display: "flex", alignItems: "center", gap: 6 } },
           h("span", {
             style: {
@@ -7533,6 +8103,14 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
         )
       ),
       h("div", { className: "hg-header-actions" },
+        h("button", {
+          type: "button",
+          className: "hg-icon-button",
+          onClick: onOpenDiagnostics,
+          title: "RTDB Wire Diagnostics",
+          "aria-label": "Diagnostics",
+          style: { fontSize: 15 }
+        }, "🩺"),
         h("div", { className: "hg-person-switch", role: "group", "aria-label": "Person" },
           I.J.map(id => h("button", {
             key: id,
@@ -7591,6 +8169,7 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
     }));
     const [view, setView] = useState("today");
     const [settingsOpen, setSettingsOpen] = useState(false);
+    const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
     const [toast, setToast] = useState("");
     const [pin, setPin] = useState(() => {
       const existing = I.qe();
@@ -7985,11 +8564,18 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
     if (view === "history") content = h(ErrorBoundary, { title: "Could not display History view" }, h(HistoryView, { personId, data, updateData, showToast }));
     if (view === "progress") content = h(ErrorBoundary, { title: "Could not display Progress view" }, h(ProgressView, { personId, data, meta, weekInfo, updateData, showToast }));
     if (view === "metrics") content = h(ErrorBoundary, { title: "Could not display Metrics view" }, h(MetricsView, { meta, personId, data, updateData, showToast }));
-    if (view === "plan") content = h(ErrorBoundary, { title: "Could not display Plan view" }, h(PlanView, { personId, data, store, meta, updateData, showToast }));
+    if (view === "plan") content = h(ErrorBoundary, { title: "Could not display Plan view" }, h(PlanView, { personId, data, store, meta, updateData, showToast, onOpenDiagnostics: () => setDiagnosticsOpen(true) }));
 
     return h("div", { className: "hg-app", style: { "--person-accent": meta.accent } },
       h("div", { className: "hg-app-shell" },
-        h(Header, { personId, setPersonId, syncStatus: pin ? syncStatus : "local-only", queueCount, onSettings: () => setSettingsOpen(true) }),
+        h(Header, {
+          personId,
+          setPersonId,
+          syncStatus: pin ? syncStatus : "local-only",
+          queueCount,
+          onSettings: () => setSettingsOpen(true),
+          onOpenDiagnostics: () => setDiagnosticsOpen(true)
+        }),
         h("div", { className: "hg-layout" },
           h(Navigation, { view, setView, mobile: false }),
           h("main", { className: "hg-main" }, content)
@@ -8000,6 +8586,14 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
         personId, store, pin, syncStatus: pin ? syncStatus : "local-only", queueCount, updateData,
         onSaveKey: saveHouseholdKey,
         onClose: () => setSettingsOpen(false),
+        onOpenDiagnostics: () => setDiagnosticsOpen(true),
+        showToast,
+      }),
+      diagnosticsOpen && h(SyncDiagnosticsModal, {
+        personId,
+        store,
+        updateData,
+        onClose: () => setDiagnosticsOpen(false),
         showToast,
       }),
       toast && h("div", { className: "hg-toast", role: "status" }, toast)
