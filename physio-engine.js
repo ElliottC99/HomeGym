@@ -1028,8 +1028,46 @@ export const HG_PHYSIO_ENGINE = {
       failed,
       allFailed: succeeded.length === 0
     };
+  },
+
+  /**
+   * Builds a sanitized active program payload for cloud RTDB storage.
+   * Strips all local tracking arrays (logs, bodyweightLogs, etc.) and guarantees
+   * zero undefined values across the entire object tree.
+   */
+  buildCleanActiveProgramPayload(programData, timestamp = Date.now()) {
+    if (!programData || typeof programData !== "object") return null;
+    const cleanSessions = (Array.isArray(programData.sessions) ? programData.sessions : []).map(s => ({
+      ...s,
+      type: s.type || (s.targetKm ? "run" : "strength"),
+      groups: (Array.isArray(s.groups) ? s.groups : []).map(g => ({
+        ...g,
+        exercises: (Array.isArray(g.exercises) ? g.exercises : []).map(ex => ({
+          ...ex,
+          setsReps: ex.setsReps || ex.currentSetsReps || "3 × 10",
+          startValue: ex.startValue != null ? ex.startValue : (ex.currentWeight != null ? ex.currentWeight : null)
+        }))
+      }))
+    }));
+
+    const raw = {
+      programId: programData.programId || "current",
+      name: programData.programName || programData.name || "Active Routine",
+      programName: programData.programName || programData.name || "Active Routine",
+      startDate: programData.startDate || "",
+      goals: programData.goals || "",
+      resumeNote: programData.resumeNote || "",
+      sessions: this.sortSessionsByDay ? this.sortSessionsByDay(cleanSessions) : cleanSessions,
+      weekOverrides: programData.weekOverrides || {},
+      equipment: programData.equipment || null,
+      programUpdatedAt: Number(programData.programUpdatedAt || 0) > 0 ? Number(programData.programUpdatedAt) : timestamp,
+      updatedAt: timestamp
+    };
+
+    return JSON.parse(JSON.stringify(raw));
   }
 };
+
 
 
 // Also attach globally for browser / window environments

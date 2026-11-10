@@ -39,7 +39,7 @@
 
   const h = React.createElement;
   const { useState, useEffect, useCallback, useRef, useMemo } = React;
-  const APP_VERSION = "v2.5.24";
+  const APP_VERSION = "v2.5.25";
   const STORAGE_VERSION = "2.5.7";
 
   // --- v2.5.7 LocalStorage Preservation & Version Registration ---
@@ -1070,9 +1070,9 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
         feeling: log.feeling || rpeToFeeling(log.rpe),
         rpe: log.rpe ?? null,
         notes: log.notes || "",
-        distance: log.distance != null ? Number(log.distance) : undefined,
-        duration: log.duration != null ? Number(log.duration) : undefined,
-        effort: log.effort || undefined,
+        distance: log.distance != null ? Number(log.distance) : null,
+        duration: log.duration != null ? Number(log.duration) : null,
+        effort: log.effort || null,
         timestamp: log.timestamp || Date.now(),
         updatedAt: Date.now()
       };
@@ -1619,18 +1619,33 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
     async forcePushRoutine(profileId, routineData) {
       if (!profileId || !routineData) return { success: false, error: "Missing profile or routine data" };
       const now = Date.now();
-      const updated = {
-        ...routineData,
-        programUpdatedAt: now,
-        updatedAt: now
-      };
 
-      // 1. Update local caches
-      savePlatePlanV1Local(profileId, updated);
-      if (window.HG_INTERNALS?.Ee) window.HG_INTERNALS.Ee(profileId, updated);
-      syncLegacyStorage(profileId, updated);
+      const cleanProgram = window.HG_PHYSIO_ENGINE?.buildCleanActiveProgramPayload
+        ? window.HG_PHYSIO_ENGINE.buildCleanActiveProgramPayload(routineData, now)
+        : JSON.parse(JSON.stringify({
+            programId: routineData.programId || "current",
+            name: routineData.programName || routineData.name || "Active Routine",
+            programName: routineData.programName || routineData.name || "Active Routine",
+            startDate: routineData.startDate || "",
+            goals: routineData.goals || "",
+            resumeNote: routineData.resumeNote || "",
+            sessions: sortSessionsByDay(Array.isArray(routineData.sessions) ? routineData.sessions : []),
+            weekOverrides: routineData.weekOverrides || {},
+            equipment: routineData.equipment || null,
+            programUpdatedAt: now,
+            updatedAt: now
+          }));
 
-      // 2. Dual-path cloud write
+      // 1. Update local caches (preserving athlete logs, metrics, etc.)
+      try {
+        const currentProfile = loadDecoupledProfile(profileId);
+        const next = { ...currentProfile, ...cleanProgram };
+        savePlatePlanV1Local(profileId, next);
+        if (window.HG_INTERNALS?.Ee) window.HG_INTERNALS.Ee(profileId, next);
+        syncLegacyStorage(profileId, next);
+      } catch (e) {}
+
+      // 2. Dual-path cloud write - strictly writing ONLY the clean program payload (no logs, zero undefined)
       const rtdb = this.getRTDB();
       if (!rtdb) return { success: false, error: "RTDB not available" };
 
@@ -1653,12 +1668,12 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
       }
 
       const res = await (window.HG_PHYSIO_ENGINE?.dispatchDualPathProgramWrite
-        ? window.HG_PHYSIO_ENGINE.dispatchDualPathProgramWrite(updated, endpoints)
-        : Promise.allSettled(endpoints.map(ep => ep.write(updated))));
+        ? window.HG_PHYSIO_ENGINE.dispatchDualPathProgramWrite(cleanProgram, endpoints)
+        : Promise.allSettled(endpoints.map(ep => ep.write(cleanProgram))));
 
       return {
         success: !res.allFailed,
-        updated,
+        updated: cleanProgram,
         results: res
       };
     },
@@ -2602,9 +2617,9 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
             feeling: l.feeling || rpeToFeeling(l.rpe),
             rpe: l.rpe ?? null,
             notes: l.notes || "",
-            distance: l.distance != null ? Number(l.distance) : undefined,
-            duration: l.duration != null ? Number(l.duration) : undefined,
-            effort: l.effort || undefined,
+            distance: l.distance != null ? Number(l.distance) : null,
+            duration: l.duration != null ? Number(l.duration) : null,
+            effort: l.effort || null,
             timestamp: l.timestamp || (date ? new Date(`${date}T12:00:00`).getTime() : Date.now()),
           });
         }

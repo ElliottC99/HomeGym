@@ -915,3 +915,24 @@ test("U25: dispatchDualPathProgramWrite dispatches to multiple endpoints concurr
   assert.ok(result.failed[0].error.includes("PERMISSION_DENIED"));
 });
 
+test("U26: buildCleanActiveProgramPayload strips logs and all undefined properties", () => {
+  const profileWithDirtyLogs = {
+    programName: "Phase 1: Back Rehab",
+    sessions: [
+      { id: "e_lower", name: "Lower Body", day: "Mon" }
+    ],
+    logs: [
+      { id: "log1", type: "run", distance: undefined, duration: undefined }
+    ],
+    bodyWeightLogs: [{ date: "2026-11-10", weight: 75 }]
+  };
+
+  const clean = HG_PHYSIO_ENGINE.buildCleanActiveProgramPayload(profileWithDirtyLogs, 1731112223334);
+  assert.equal(clean.logs, undefined, "Active program payload must NEVER contain logs");
+  assert.equal(clean.bodyWeightLogs, undefined, "Active program payload must NEVER contain bodyWeightLogs");
+  assert.equal(clean.programName, "Phase 1: Back Rehab");
+  assert.equal(clean.sessions.length, 1);
+  assert.equal(JSON.stringify(clean).includes("undefined"), false, "No undefined properties in JSON");
+});
+
+
