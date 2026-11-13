@@ -150,22 +150,15 @@ export const HG_PHYSIO_ENGINE = {
     return false;
   },
 
-  /**
-   * Query athlete logs to extract the latest performance data for an exercise
-   * (latest weights, sets, reps, last logged date, feeling, and historical PR max).
-   */
-  getExerciseLatestStats(profileData, exerciseId, exerciseName) {
-    const rawLogs = Array.isArray(profileData?.logs) ? profileData.logs : [];
-    if (rawLogs.length === 0) return null;
+  getExerciseLatestStats(profileData, exerciseId, exerciseName, preFlattenedLogs = null) {
+    const flattenedLogs = Array.isArray(preFlattenedLogs)
+      ? preFlattenedLogs
+      : this.flattenAllLogs(Array.isArray(profileData?.logs) ? profileData.logs : []);
+    if (flattenedLogs.length === 0) return null;
 
-    const flattenedLogs = this.flattenAllLogs(rawLogs);
     const matchedLogs = flattenedLogs.filter(log => this.matchesExercise(log, exerciseId, exerciseName));
+    if (matchedLogs.length === 0) return null;
 
-    if (matchedLogs.length === 0) {
-      return null;
-    }
-
-    // Sort by date desc, then timestamp desc
     matchedLogs.sort((a, b) => {
       const dateA = a.date || "";
       const dateB = b.date || "";
@@ -183,9 +176,7 @@ export const HG_PHYSIO_ENGINE = {
     const weightVal = latest.weight != null && !isNaN(Number(latest.weight)) ? Number(latest.weight) : null;
     const setsCount = latest.sets || 1;
     const repsDesc = latest.reps || "";
-
     const weightStr = weightVal != null && weightVal > 0 ? ` @ ${weightVal}kg` : " (Bodyweight)";
-    const summary = `${setsCount} × ${repsDesc || "reps"}${weightStr} (${latest.date || "recent"})`;
 
     return {
       lastLoggedDate: latest.date || null,
@@ -195,14 +186,52 @@ export const HG_PHYSIO_ENGINE = {
       lastLoggedRpe: latest.rpe ?? null,
       lastLoggedFeeling: latest.feeling || null,
       maxHistoricalWeight: maxWeight > 0 ? maxWeight : null,
-      summary
+      summary: `${setsCount} × ${repsDesc || "reps"}${weightStr} (${latest.date || "recent"})`
     };
   },
 
-  /**
-   * Build an enriched JSON representation of the active routine with permanent exercise IDs
-   * and latest workout performance stats attached to each exercise.
-   */
+  _coerceArray(val) {
+    if (Array.isArray(val)) return val;
+    if (val && typeof val === "object") {
+      return Object.keys(val).sort((a, b) => Number(a) - Number(b)).map(k => val[k]);
+    }
+    return [];
+  },
+
+  _normalizeExerciseFields(ex) {
+    return {
+      ...ex,
+      setsReps: ex.setsReps || ex.currentSetsReps || (ex.sets && ex.reps ? `${ex.sets} × ${ex.reps}` : "3 × 10"),
+      startValue: ex.startValue != null ? ex.startValue : (ex.currentWeight != null ? ex.currentWeight : null)
+    };
+  },
+
+  _enrichExercise(ex, profileData, preFlattenedLogs) {
+    const exId = ex.id || this.slugify(ex.name);
+    const stats = this.getExerciseLatestStats(profileData, exId, ex.name, preFlattenedLogs);
+    const baselineWeight = ex.startValue != null && !isNaN(Number(ex.startValue)) ? Number(ex.startValue) : null;
+    const activeWeight = (stats?.lastLoggedWeight != null && stats.lastLoggedWeight > 0)
+      ? stats.lastLoggedWeight
+      : baselineWeight;
+    const activeSetsReps = (stats?.lastLoggedSets && stats?.lastLoggedReps)
+      ? `${stats.lastLoggedSets} × ${stats.lastLoggedReps}`
+      : (ex.setsReps || "3 × 8–10");
+
+    return {
+      id: exId,
+      name: ex.name,
+      equipmentType: ex.equipmentType || "barbell",
+      currentWeight: activeWeight,
+      currentSetsReps: activeSetsReps,
+      startValue: activeWeight,
+      baselineWeight,
+      unit: ex.unit || "kg",
+      restNote: ex.restNote || "90s",
+      note: ex.note || "",
+      latestPerformance: stats
+    };
+  },
+
   buildEnrichedRoutineJSON(profileData, athleteName = "Elliott") {
     const sessions = Array.isArray(profileData?.sessions)
       ? profileData.sessions
@@ -211,6 +240,7 @@ export const HG_PHYSIO_ENGINE = {
       ? profileData.equipment
       : this.DEFAULT_EQUIPMENT;
     const programName = profileData?.programName || profileData?.active_program?.name || "Active Training Routine";
+    const preFlattenedLogs = this.flattenAllLogs(Array.isArray(profileData?.logs) ? profileData.logs : []);
 
     const enrichedSessions = sessions.map((session, sIdx) => {
       const sessionId = session.id || this.slugify(session.name) || `session_${sIdx + 1}`;
@@ -219,81 +249,22 @@ export const HG_PHYSIO_ENGINE = {
 
       let groups = [];
       if (Array.isArray(session.groups) && session.groups.length > 0) {
-        groups = session.groups.map(group => {
-          const exercises = (Array.isArray(group.exercises) ? group.exercises : []).map(ex => {
-            const exId = ex.id || this.slugify(ex.name);
-            const stats = this.getExerciseLatestStats(profileData, exId, ex.name);
-
-            // Active working weight: prioritizes latest logged working weight over initial startValue
-            const activeWeight = (stats?.lastLoggedWeight != null && stats.lastLoggedWeight > 0)
-              ? stats.lastLoggedWeight
-              : (ex.startValue != null && !isNaN(Number(ex.startValue)) ? Number(ex.startValue) : null);
-
-            // Active working sets/reps: prioritizes latest completed volume over baseline prescription
-            const activeSetsReps = (stats?.lastLoggedSets && stats?.lastLoggedReps)
-              ? `${stats.lastLoggedSets} × ${stats.lastLoggedReps}`
-              : (ex.setsReps || "3 × 8–10");
-
-            return {
-              id: exId,
-              name: ex.name,
-              equipmentType: ex.equipmentType || "barbell",
-              currentWeight: activeWeight,
-              currentSetsReps: activeSetsReps,
-              startValue: activeWeight, // Primary working weight field for external AI assistants
-              baselineWeight: ex.startValue != null && !isNaN(Number(ex.startValue)) ? Number(ex.startValue) : null,
-              unit: ex.unit || "kg",
-              restNote: ex.restNote || "90s",
-              note: ex.note || "",
-              latestPerformance: stats
-            };
-          });
-          return {
-            label: group.label || "Main Exercises",
-            type: group.type || "straight",
-            exercises
-          };
-        });
+        groups = session.groups.map(group => ({
+          label: group.label || "Main Exercises",
+          type: group.type || "straight",
+          exercises: (Array.isArray(group.exercises) ? group.exercises : []).map(ex =>
+            this._enrichExercise(ex, profileData, preFlattenedLogs)
+          )
+        }));
       } else if (Array.isArray(session.exercises)) {
-        const exercises = session.exercises.map(ex => {
-          const exId = ex.id || this.slugify(ex.name);
-          const stats = this.getExerciseLatestStats(profileData, exId, ex.name);
-
-          const activeWeight = (stats?.lastLoggedWeight != null && stats.lastLoggedWeight > 0)
-            ? stats.lastLoggedWeight
-            : (ex.startValue != null && !isNaN(Number(ex.startValue)) ? Number(ex.startValue) : null);
-
-          const activeSetsReps = (stats?.lastLoggedSets && stats?.lastLoggedReps)
-            ? `${stats.lastLoggedSets} × ${stats.lastLoggedReps}`
-            : (ex.setsReps || "3 × 8–10");
-
-          return {
-            id: exId,
-            name: ex.name,
-            equipmentType: ex.equipmentType || "barbell",
-            currentWeight: activeWeight,
-            currentSetsReps: activeSetsReps,
-            startValue: activeWeight,
-            baselineWeight: ex.startValue != null && !isNaN(Number(ex.startValue)) ? Number(ex.startValue) : null,
-            unit: ex.unit || "kg",
-            restNote: ex.restNote || "90s",
-            note: ex.note || "",
-            latestPerformance: stats
-          };
-        });
         groups = [{
           label: "Main Exercises",
           type: "straight",
-          exercises
+          exercises: session.exercises.map(ex => this._enrichExercise(ex, profileData, preFlattenedLogs))
         }];
       }
 
-      return {
-        id: sessionId,
-        name: sessionName,
-        day,
-        groups
-      };
+      return { id: sessionId, name: sessionName, day, groups };
     });
 
     return {
@@ -444,28 +415,38 @@ export const HG_PHYSIO_ENGINE = {
     return parsed;
   },
 
-  /**
-   * Compare active sessions against proposed sessions and generate individual diff cards.
-   */
+  _findMatchingCurrentSession(currentSessions, propSession) {
+    return currentSessions.find(s =>
+      (s.id && s.id === propSession.id) ||
+      (s.day && propSession.day && s.day.toLowerCase() === propSession.day.toLowerCase()) ||
+      (s.name && propSession.name && s.name.toLowerCase() === propSession.name.toLowerCase())
+    );
+  },
+
+  _matchProposedExercise(propEx, currById, currByName) {
+    if (propEx.id && currById.has(String(propEx.id))) {
+      return currById.get(String(propEx.id));
+    }
+    const propNameNorm = (propEx.name || "").trim().toLowerCase();
+    const match = currByName.get(propNameNorm) || null;
+    if (match?.id && (!propEx.id || propEx.id !== match.id)) {
+      propEx.id = match.id;
+    }
+    return match;
+  },
+
   computeRoutineDiff(currentSessions = [], proposedSessions = []) {
     const diffs = [];
     let diffCounter = 1;
 
-    proposedSessions.forEach(propSession => {
-      // Match session by ID or day or name
-      const currSession = currentSessions.find(s =>
-        (s.id && s.id === propSession.id) ||
-        (s.day && propSession.day && s.day.toLowerCase() === propSession.day.toLowerCase()) ||
-        (s.name && propSession.name && s.name.toLowerCase() === propSession.name.toLowerCase())
-      );
-
-      const sessionName = propSession.name || (currSession ? currSession.name : "Training Session");
-      const sessionId = propSession.id || (currSession ? currSession.id : `sess_${diffCounter}`);
+    for (const propSession of proposedSessions) {
+      const currSession = this._findMatchingCurrentSession(currentSessions, propSession);
+      const sessionName = propSession.name || currSession?.name || "Training Session";
+      const sessionId = propSession.id || currSession?.id || `sess_${diffCounter}`;
 
       const currExercises = this._extractExercisesFromSession(currSession);
       const propExercises = this._extractExercisesFromSession(propSession);
 
-      // Map current exercises by normalized name and ID
       const currById = new Map();
       const currByName = new Map();
       currExercises.forEach(ex => {
@@ -475,58 +456,9 @@ export const HG_PHYSIO_ENGINE = {
 
       const matchedCurrIds = new Set();
 
-      propExercises.forEach((propEx, idx) => {
-        const propNameNorm = (propEx.name || "").trim().toLowerCase();
-        let match = null;
-
-        // Try exact ID match first
-        if (propEx.id && currById.has(String(propEx.id))) {
-          match = currById.get(String(propEx.id));
-        } else if (currByName.has(propNameNorm)) {
-          match = currByName.get(propNameNorm);
-          // Preserve canonical exercise ID if proposed exercise omitted or altered it
-          if (match.id && (!propEx.id || propEx.id !== match.id)) {
-            propEx.id = match.id;
-          }
-        }
-
-        if (match) {
-          matchedCurrIds.add(match.id || match.name);
-          const matchNameNorm = (match.name || "").trim().toLowerCase();
-
-          if (matchNameNorm !== propNameNorm) {
-            // Exercise Substitution (matched by canonical ID but with changed exercise name)
-            diffs.push({
-              id: `diff_${diffCounter++}`,
-              sessionId,
-              sessionName,
-              type: "SUBSTITUTION",
-              approved: true,
-              originalExercise: match,
-              proposedExercise: propEx,
-              clinicalReason: propEx.note || "Exercise swapped for clinical adaptation"
-            });
-          } else {
-            // Same exercise: check load / setsReps changes
-            const propSr = propEx.setsReps || propEx.currentSetsReps;
-            const matchSr = match.setsReps || match.currentSetsReps;
-            const loadChanged = Number(match.startValue) !== Number(propEx.startValue) && propEx.startValue != null;
-            const srChanged = matchSr !== propSr && propSr != null;
-            if (loadChanged || srChanged) {
-              diffs.push({
-                id: `diff_${diffCounter++}`,
-                sessionId,
-                sessionName,
-                type: "LOAD_CHANGE",
-                approved: true,
-                originalExercise: match,
-                proposedExercise: propEx,
-                clinicalReason: propEx.note || "Sets/reps or target working weight adjusted"
-              });
-            }
-          }
-        } else {
-          // Proposed exercise has no current match -> ADDITION
+      for (const propEx of propExercises) {
+        const match = this._matchProposedExercise(propEx, currById, currByName);
+        if (!match) {
           diffs.push({
             id: `diff_${diffCounter++}`,
             sessionId,
@@ -536,11 +468,46 @@ export const HG_PHYSIO_ENGINE = {
             proposedExercise: propEx,
             clinicalReason: propEx.note || "New exercise added to routine"
           });
+          continue;
         }
-      });
 
-      // Check for removed exercises
-      currExercises.forEach(currEx => {
+        matchedCurrIds.add(match.id || match.name);
+        const propNameNorm = (propEx.name || "").trim().toLowerCase();
+        const matchNameNorm = (match.name || "").trim().toLowerCase();
+
+        if (matchNameNorm !== propNameNorm) {
+          diffs.push({
+            id: `diff_${diffCounter++}`,
+            sessionId,
+            sessionName,
+            type: "SUBSTITUTION",
+            approved: true,
+            originalExercise: match,
+            proposedExercise: propEx,
+            clinicalReason: propEx.note || "Exercise swapped for clinical adaptation"
+          });
+          continue;
+        }
+
+        const propSr = propEx.setsReps || propEx.currentSetsReps;
+        const matchSr = match.setsReps || match.currentSetsReps;
+        const loadChanged = Number(match.startValue) !== Number(propEx.startValue) && propEx.startValue != null;
+        const srChanged = matchSr !== propSr && propSr != null;
+        if (loadChanged || srChanged) {
+          diffs.push({
+            id: `diff_${diffCounter++}`,
+            sessionId,
+            sessionName,
+            type: "LOAD_CHANGE",
+            approved: true,
+            originalExercise: match,
+            proposedExercise: propEx,
+            clinicalReason: propEx.note || "Sets/reps or target working weight adjusted"
+          });
+        }
+      }
+
+      for (const currEx of currExercises) {
         if (!matchedCurrIds.has(currEx.id || currEx.name)) {
           diffs.push({
             id: `diff_${diffCounter++}`,
@@ -552,8 +519,8 @@ export const HG_PHYSIO_ENGINE = {
             clinicalReason: "Exercise omitted in proposed routine"
           });
         }
-      });
-    });
+      }
+    }
 
     return diffs;
   },
@@ -575,116 +542,85 @@ export const HG_PHYSIO_ENGINE = {
     return list;
   },
 
-  /**
-   * Merge user-approved diff items into the active routine.
-   * If proposedSessions is provided, adopts proposed session/group structures
-   * while respecting approvals/rejections and preserving canonical IDs.
-   */
+  _resolveProposalExercise(ex, sId, unapprovedAdditions, unapprovedSubstitutions, unapprovedLoadChanges) {
+    const exIdKey = ex.id ? `${sId}::${ex.id}` : null;
+    const exNameKey = ex.name ? `${sId}::${ex.name.trim().toLowerCase()}` : null;
+
+    if ((exIdKey && unapprovedAdditions.has(exIdKey)) || (exNameKey && unapprovedAdditions.has(exNameKey))) {
+      return null;
+    }
+    const sub = (exIdKey && unapprovedSubstitutions.get(exIdKey)) || (exNameKey && unapprovedSubstitutions.get(exNameKey));
+    if (sub) return JSON.parse(JSON.stringify(sub));
+
+    const orig = (exIdKey && unapprovedLoadChanges.get(exIdKey)) || (exNameKey && unapprovedLoadChanges.get(exNameKey));
+    if (orig) {
+      return {
+        ...ex,
+        startValue: orig.startValue,
+        setsReps: orig.setsReps || orig.currentSetsReps || ex.setsReps
+      };
+    }
+    return JSON.parse(JSON.stringify(ex));
+  },
+
+  _applyProposalToSessions(currentSessions, diffItems, proposedSessions) {
+    const unapprovedAdditions = new Set();
+    const unapprovedSubstitutions = new Map();
+    const unapprovedLoadChanges = new Map();
+    const unapprovedRemovals = [];
+
+    for (const d of diffItems) {
+      if (d.approved) continue;
+      const sId = d.sessionId;
+      const pKey = d.proposedExercise ? (d.proposedExercise.id || (d.proposedExercise.name || "").trim().toLowerCase()) : null;
+      if (d.type === "ADDITION" && pKey) unapprovedAdditions.add(`${sId}::${pKey}`);
+      else if (d.type === "SUBSTITUTION" && pKey && d.originalExercise) unapprovedSubstitutions.set(`${sId}::${pKey}`, d.originalExercise);
+      else if (d.type === "LOAD_CHANGE" && pKey && d.originalExercise) unapprovedLoadChanges.set(`${sId}::${pKey}`, d.originalExercise);
+      else if (d.type === "REMOVAL" && d.originalExercise) unapprovedRemovals.push({ sessionId: sId, origEx: d.originalExercise });
+    }
+
+    const nextSessions = proposedSessions.map(propSess => {
+      const sId = propSess.id;
+      const currSess = currentSessions.find(cs => cs.id === sId) || {};
+      const groups = (propSess.groups || [])
+        .map(group => ({
+          ...group,
+          exercises: (group.exercises || [])
+            .map(ex => this._resolveProposalExercise(ex, sId, unapprovedAdditions, unapprovedSubstitutions, unapprovedLoadChanges))
+            .filter(Boolean)
+        }))
+        .filter(g => g.exercises.length > 0);
+
+      const sessionRemovals = unapprovedRemovals.filter(r => r.sessionId === sId);
+      if (sessionRemovals.length > 0) {
+        if (groups.length === 0) groups.push({ label: "Restored Exercises", exercises: [] });
+        sessionRemovals.forEach(r => groups[groups.length - 1].exercises.push(JSON.parse(JSON.stringify(r.origEx))));
+      }
+
+      const normalizedGroups = groups.map(g => ({
+        ...g,
+        exercises: (g.exercises || []).map(ex => this._normalizeExerciseFields(ex))
+      }));
+
+      return {
+        ...currSess,
+        ...propSess,
+        id: sId,
+        type: propSess.type || currSess.type || (propSess.targetKm ? "run" : "strength"),
+        name: propSess.name || currSess.name,
+        day: propSess.day || currSess.day,
+        groups: normalizedGroups
+      };
+    });
+
+    return this.sortSessionsByDay(nextSessions);
+  },
+
   applyDiffToRoutine(currentSessions = [], diffItems = [], proposedSessions = null) {
     if (!Array.isArray(currentSessions)) return [];
     if (!Array.isArray(diffItems)) return currentSessions;
-
     if (Array.isArray(proposedSessions) && proposedSessions.length > 0) {
-      // Build lookup of unapproved diffs by session and exercise
-      const unapprovedAdditions = new Set();
-      const unapprovedSubstitutions = new Map();
-      const unapprovedLoadChanges = new Map();
-      const unapprovedRemovals = [];
-
-      diffItems.forEach(d => {
-        if (d.approved) return;
-        const sId = d.sessionId;
-        const pKey = d.proposedExercise ? (d.proposedExercise.id || (d.proposedExercise.name || "").trim().toLowerCase()) : null;
-        if (d.type === "ADDITION" && pKey) {
-          unapprovedAdditions.add(`${sId}::${pKey}`);
-        } else if (d.type === "SUBSTITUTION" && pKey && d.originalExercise) {
-          unapprovedSubstitutions.set(`${sId}::${pKey}`, d.originalExercise);
-        } else if (d.type === "LOAD_CHANGE" && pKey && d.originalExercise) {
-          unapprovedLoadChanges.set(`${sId}::${pKey}`, d.originalExercise);
-        } else if (d.type === "REMOVAL" && d.originalExercise) {
-          unapprovedRemovals.push({ sessionId: sId, origEx: d.originalExercise });
-        }
-      });
-
-      const nextSessions = proposedSessions.map(propSess => {
-        const sId = propSess.id;
-        const currSess = currentSessions.find(cs => cs.id === sId) || {};
-        const groups = (propSess.groups || []).map(group => {
-          const exercises = [];
-          (group.exercises || []).forEach(ex => {
-            const exIdKey = ex.id ? `${sId}::${ex.id}` : null;
-            const exNameKey = ex.name ? `${sId}::${ex.name.trim().toLowerCase()}` : null;
-
-            if ((exIdKey && unapprovedAdditions.has(exIdKey)) || (exNameKey && unapprovedAdditions.has(exNameKey))) {
-              // Rejected addition: omit
-              return;
-            }
-            if (exIdKey && unapprovedSubstitutions.has(exIdKey)) {
-              exercises.push(JSON.parse(JSON.stringify(unapprovedSubstitutions.get(exIdKey))));
-              return;
-            }
-            if (exNameKey && unapprovedSubstitutions.has(exNameKey)) {
-              exercises.push(JSON.parse(JSON.stringify(unapprovedSubstitutions.get(exNameKey))));
-              return;
-            }
-            if (exIdKey && unapprovedLoadChanges.has(exIdKey)) {
-              const orig = unapprovedLoadChanges.get(exIdKey);
-              exercises.push({
-                ...ex,
-                startValue: orig.startValue,
-                setsReps: orig.setsReps || orig.currentSetsReps || ex.setsReps
-              });
-              return;
-            }
-            if (exNameKey && unapprovedLoadChanges.has(exNameKey)) {
-              const orig = unapprovedLoadChanges.get(exNameKey);
-              exercises.push({
-                ...ex,
-                startValue: orig.startValue,
-                setsReps: orig.setsReps || orig.currentSetsReps || ex.setsReps
-              });
-              return;
-            }
-            exercises.push(JSON.parse(JSON.stringify(ex)));
-          });
-          return {
-            ...group,
-            exercises
-          };
-        }).filter(g => (g.exercises || []).length > 0);
-
-        const sessionRemovals = unapprovedRemovals.filter(r => r.sessionId === sId);
-        if (sessionRemovals.length > 0) {
-          if (groups.length === 0) {
-            groups.push({ label: "Restored Exercises", exercises: [] });
-          }
-          sessionRemovals.forEach(r => {
-            groups[groups.length - 1].exercises.push(JSON.parse(JSON.stringify(r.origEx)));
-          });
-        }
-
-        // Normalize groups and exercises to preserve setsReps and weights
-        const normalizedGroups = groups.map(g => ({
-          ...g,
-          exercises: (g.exercises || []).map(ex => ({
-            ...ex,
-            setsReps: ex.setsReps || ex.currentSetsReps || (ex.sets && ex.reps ? `${ex.sets} × ${ex.reps}` : "3 × 10"),
-            startValue: ex.startValue != null ? ex.startValue : (ex.currentWeight != null ? ex.currentWeight : null)
-          }))
-        }));
-
-        return {
-          ...currSess,
-          ...propSess,
-          id: sId,
-          type: propSess.type || currSess.type || (propSess.targetKm ? "run" : "strength"),
-          name: propSess.name || currSess.name,
-          day: propSess.day || currSess.day,
-          groups: normalizedGroups
-        };
-      });
-
-      return this.sortSessionsByDay(nextSessions);
+      return this._applyProposalToSessions(currentSessions, diffItems, proposedSessions);
     }
 
     const nextSessions = JSON.parse(JSON.stringify(currentSessions));
@@ -773,14 +709,6 @@ export const HG_PHYSIO_ENGINE = {
     return JSON.parse(JSON.stringify(snapshot.sessions));
   },
 
-  /**
-   * Determine if a remote program update should overwrite the local program profile
-   * using Last-Write-Wins (LWW) comparison.
-   * Prevents stale cloud snapshots from overwriting fresh local routine changes.
-   */
-  /**
-   * Sorts sessions strictly in Monday to Sunday order.
-   */
   sortSessionsByDay(sessions) {
     if (!Array.isArray(sessions)) return [];
     const DAY_ORDER = { Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 7 };
@@ -861,46 +789,16 @@ export const HG_PHYSIO_ENGINE = {
     return false;
   },
 
-  /**
-   * Normalizes an active program object retrieved from Firebase RTDB or local storage.
-   * Guarantees sessions, groups, exercises, and an empty weekOverrides object if omitted.
-   */
   normalizeRemoteProgram(remote) {
     if (!remote || typeof remote !== "object") return remote;
-    const rawSessions = remote.sessions;
-    let sessions = [];
-    if (Array.isArray(rawSessions)) {
-      sessions = rawSessions;
-    } else if (rawSessions && typeof rawSessions === "object") {
-      sessions = Object.keys(rawSessions).sort((a, b) => Number(a) - Number(b)).map(k => rawSessions[k]);
-    }
-
-    const cleanSessions = sessions.filter(Boolean).map(s => {
-      let groups = [];
-      if (Array.isArray(s.groups)) groups = s.groups;
-      else if (s.groups && typeof s.groups === "object") {
-        groups = Object.keys(s.groups).sort((a, b) => Number(a) - Number(b)).map(k => s.groups[k]);
-      }
-      return {
-        ...s,
-        type: s.type || (s.targetKm ? "run" : "strength"),
-        groups: groups.filter(Boolean).map(g => {
-          let exercises = [];
-          if (Array.isArray(g.exercises)) exercises = g.exercises;
-          else if (g.exercises && typeof g.exercises === "object") {
-            exercises = Object.keys(g.exercises).sort((a, b) => Number(a) - Number(b)).map(k => g.exercises[k]);
-          }
-          return {
-            ...g,
-            exercises: exercises.filter(Boolean).map(ex => ({
-              ...ex,
-              setsReps: ex.setsReps || ex.currentSetsReps || "3 × 10",
-              startValue: ex.startValue != null ? ex.startValue : (ex.currentWeight != null ? ex.currentWeight : null)
-            }))
-          };
-        })
-      };
-    });
+    const cleanSessions = this._coerceArray(remote.sessions).filter(Boolean).map(s => ({
+      ...s,
+      type: s.type || (s.targetKm ? "run" : "strength"),
+      groups: this._coerceArray(s.groups).filter(Boolean).map(g => ({
+        ...g,
+        exercises: this._coerceArray(g.exercises).filter(Boolean).map(ex => this._normalizeExerciseFields(ex))
+      }))
+    }));
 
     return {
       ...remote,
@@ -1030,23 +928,14 @@ export const HG_PHYSIO_ENGINE = {
     };
   },
 
-  /**
-   * Builds a sanitized active program payload for cloud RTDB storage.
-   * Strips all local tracking arrays (logs, bodyweightLogs, etc.) and guarantees
-   * zero undefined values across the entire object tree.
-   */
   buildCleanActiveProgramPayload(programData, timestamp = Date.now()) {
     if (!programData || typeof programData !== "object") return null;
-    const cleanSessions = (Array.isArray(programData.sessions) ? programData.sessions : []).map(s => ({
+    const cleanSessions = this._coerceArray(programData.sessions).filter(Boolean).map(s => ({
       ...s,
       type: s.type || (s.targetKm ? "run" : "strength"),
-      groups: (Array.isArray(s.groups) ? s.groups : []).map(g => ({
+      groups: this._coerceArray(s.groups).filter(Boolean).map(g => ({
         ...g,
-        exercises: (Array.isArray(g.exercises) ? g.exercises : []).map(ex => ({
-          ...ex,
-          setsReps: ex.setsReps || ex.currentSetsReps || "3 × 10",
-          startValue: ex.startValue != null ? ex.startValue : (ex.currentWeight != null ? ex.currentWeight : null)
-        }))
+        exercises: this._coerceArray(g.exercises).filter(Boolean).map(ex => this._normalizeExerciseFields(ex))
       }))
     }));
 
@@ -1065,6 +954,29 @@ export const HG_PHYSIO_ENGINE = {
     };
 
     return JSON.parse(JSON.stringify(raw));
+  },
+
+  mergeActiveProgramIntoProfile(currentProfile, normalizedProgram, programTime) {
+    const base = currentProfile && typeof currentProfile === "object" ? currentProfile : {};
+    const prog = normalizedProgram && typeof normalizedProgram === "object" ? normalizedProgram : {};
+    const resolvedTime = Number(programTime || prog.programUpdatedAt || prog.updatedAt || Date.now());
+    return {
+      ...base,
+      programName: prog.programName || prog.name || base.programName,
+      startDate: prog.startDate || base.startDate,
+      goals: prog.goals || base.goals,
+      resumeNote: prog.resumeNote || base.resumeNote,
+      sessions: prog.sessions,
+      weekOverrides: prog.weekOverrides || {},
+      weekOverridesUpdatedAt: Number(prog.weekOverridesUpdatedAt || resolvedTime),
+      equipment: prog.equipment || base.equipment,
+      logs: Array.isArray(base.logs) ? base.logs : [],
+      bodyWeightLogs: Array.isArray(base.bodyWeightLogs) ? base.bodyWeightLogs : [],
+      readinessLogs: Array.isArray(base.readinessLogs) ? base.readinessLogs : [],
+      sleepLogs: Array.isArray(base.sleepLogs) ? base.sleepLogs : [],
+      programUpdatedAt: resolvedTime,
+      updatedAt: Math.max(Number(base.updatedAt || 0), resolvedTime)
+    };
   }
 };
 

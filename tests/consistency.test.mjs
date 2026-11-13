@@ -65,3 +65,10 @@ test("all GymCloudEngine invocations in app-redesign.js correspond to declared m
   // Also verify savePlatePlanState is implemented as a safe proxy
   assert.ok(new RegExp(`savePlatePlanState\\s*\\([^)]*\\)\\s*\\{`).test(engineDef), "savePlatePlanState must be implemented");
 });
+
+test("legacy data recovery migration never overwrites active program", () => {
+  const code = read("app-redesign.js");
+  const match = code.match(/async function runLegacyDataRecoveryAndMigration\([\s\S]*?\n  \}/);
+  assert.ok(match, "runLegacyDataRecoveryAndMigration found");
+  assert.equal(match[0].includes("saveActiveProgram"), false, "Legacy recovery must not invoke saveActiveProgram");
+});

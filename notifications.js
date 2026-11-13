@@ -1,19 +1,4 @@
-// Home Gym Log — push notification registration.
-//
-// Requests notification permission, gets an FCM token via the app's existing
-// service worker, and stores that token (plus the chosen reminder hour) in
-// the shared Realtime Database under households/<householdKey>/tokens/<personId>.
-// A scheduled Cloud Function (see /functions in the project source) reads
-// that same path to know who to send each day's reminder to and when.
-//
-// This file only registers the device to RECEIVE notifications — it doesn't
-// send anything itself. See PUSH_SETUP.md for the one-time deployment steps
-// needed before this actually works.
-
 (function () {
-  // Firebase console → Project settings → Cloud Messaging → Web Push
-  // certificates → "Key pair". Paste that key below. Until this is filled
-  // in, HG_enableNotifications will fail gracefully with a clear message.
   const VAPID_KEY = "PASTE_YOUR_VAPID_KEY_HERE";
 
   window.HG_enableNotifications = async function (personId, reminderHour, householdKey) {
@@ -49,7 +34,6 @@
       const effectiveKey = householdKey || window.localStorage.getItem("householdPin") || "";
       if (!effectiveKey) return false;
 
-      if (!window.firebase.apps.length) window.firebase.initializeApp(window.FIREBASE_CONFIG);
       const db = window.firebase.database();
       await db.ref(`households/${effectiveKey}/tokens/${personId}`).set({
         token,

@@ -300,7 +300,7 @@
     try {
       const valStr = typeof value === "string" ? value : JSON.stringify(value);
       localStorage.setItem(key, valStr);
-      notifyStorageSubscribers(key);
+      if (!window.__hg_storage_hooked) notifyStorageSubscribers(key);
       return true;
     } catch (err) {
       console.warn(`[Storage] Storage write failed or QuotaExceeded for "${key}". Purging orphan caches...`);
@@ -308,7 +308,7 @@
       try {
         const valStr = typeof value === "string" ? value : JSON.stringify(value);
         localStorage.setItem(key, valStr);
-        notifyStorageSubscribers(key);
+        if (!window.__hg_storage_hooked) notifyStorageSubscribers(key);
         return true;
       } catch (retryErr) {
         console.error(`[Storage] Failed writing "${key}":`, retryErr?.message);
@@ -355,9 +355,8 @@
     return [];
   }
 
-  // Direct localStorage metrics binding for Elliott ('hg_weight_elliott', 'hg_sleep_elliott', 'hg_readiness_elliott') and general profiles
   function parseDirectMetricsFromStorage(profileId) {
-    const pId = profileId || (window.__HG_CURRENT_PERSON__ || "elliott");
+    const pId = profileId || "elliott";
 
     // 1. Direct Weight Binding: 'hg_weight_elliott', 'hg_weight_{pId}', 'hg_metrics_{pId}', 'hg_bodyweight_{pId}'
     const weightKeys = [`hg_weight_${pId}`, `hg_metrics_${pId}`, `hg_bodyweight_${pId}`];
@@ -463,7 +462,7 @@
       }
 
       const direct = parseDirectMetricsFromStorage(profileId);
-      const metrics = stateMetrics || (window.__HG_STORE__ && window.__HG_STORE__[profileId]?.metrics) || {
+      const metrics = stateMetrics || {
         weight: direct.weights,
         sleep: direct.sleep,
         readiness: direct.readiness
@@ -499,15 +498,12 @@
         if (!cat.items || cat.items.length === 0) continue;
 
         const existingIds = new Set();
-        try {
-          const snap = await fs.collection("gym_users").doc(profileId).collection(cat.subCol).get();
-          snap.forEach(d => existingIds.add(d.id));
-        } catch (_) {}
-
-        try {
-          const snapEntries = await fs.collection("gym_users").doc(profileId).collection("metrics").doc(cat.key).collection("entries").get();
-          snapEntries.forEach(d => existingIds.add(d.id));
-        } catch (_) {}
+        const [subSnapRes, entriesSnapRes] = await Promise.allSettled([
+          fs.collection("gym_users").doc(profileId).collection(cat.subCol).get(),
+          fs.collection("gym_users").doc(profileId).collection("metrics").doc(cat.key).collection("entries").get()
+        ]);
+        if (subSnapRes.status === "fulfilled") subSnapRes.value.forEach(d => existingIds.add(d.id));
+        if (entriesSnapRes.status === "fulfilled") entriesSnapRes.value.forEach(d => existingIds.add(d.id));
 
         const missing = cat.items.filter(item => {
           const id = String(item.id || (cat.key === "weight" ? `bw_${item.date}` : cat.key === "sleep" ? `slp_${item.date}` : `r_${item.date}`));
@@ -642,11 +638,10 @@
   }
 
   function normalizeExerciseName(name) {
-    if (!name) return "";
-    return String(name)
-      .toLowerCase()
-      .replace(/[^a-z0-9]/g, "")
-      .trim();
+    if (window.HG_PHYSIO_ENGINE?.normalizeName) {
+      return window.HG_PHYSIO_ENGINE.normalizeName(name);
+    }
+    return name ? String(name).toLowerCase().replace(/[^a-z0-9]/g, "").trim() : "";
   }
 
   function findLogsForExercise(logs, exercise) {
@@ -690,13 +685,7 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
   let isProcessingOfflineQueue = false;
 
   function getPlatePlanV1Local() {
-    try {
-      const raw = localStorage.getItem(PLATEPLAN_V1_KEY);
-      if (!raw) return null;
-      return JSON.parse(raw);
-    } catch (e) {
-      return null;
-    }
+    return storageGet(PLATEPLAN_V1_KEY, null);
   }
 
   function savePlatePlanV1Local(userId, data) {
@@ -730,12 +719,7 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
 
   function getOfflineQueue() {
     if (!firestoreEnabled()) return [];
-    try {
-      const raw = localStorage.getItem(QUEUE_STORAGE_KEY);
-      return raw ? JSON.parse(raw) : [];
-    } catch (e) {
-      return [];
-    }
+    return storageGet(QUEUE_STORAGE_KEY, []);
   }
 
   function saveOfflineQueue(queue) {
@@ -743,12 +727,7 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
   }
 
   function getDeadLetterQueue() {
-    try {
-      const raw = localStorage.getItem(DEAD_LETTER_QUEUE_KEY);
-      return raw ? JSON.parse(raw) : [];
-    } catch (e) {
-      return [];
-    }
+    return storageGet(DEAD_LETTER_QUEUE_KEY, []);
   }
 
   function saveDeadLetterQueue(queue) {
@@ -802,50 +781,10 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
   }
 
   function normalizeRemoteProgram(remote) {
-    if (!remote || typeof remote !== "object") return remote;
-    const rawSessions = remote.sessions;
-    let sessions = [];
-    if (Array.isArray(rawSessions)) {
-      sessions = rawSessions;
-    } else if (rawSessions && typeof rawSessions === "object") {
-      sessions = Object.keys(rawSessions).sort((a, b) => Number(a) - Number(b)).map(k => rawSessions[k]);
+    if (window.HG_PHYSIO_ENGINE?.normalizeRemoteProgram) {
+      return window.HG_PHYSIO_ENGINE.normalizeRemoteProgram(remote);
     }
-
-    const cleanSessions = sessions.filter(Boolean).map(s => {
-      let groups = [];
-      if (Array.isArray(s.groups)) groups = s.groups;
-      else if (s.groups && typeof s.groups === "object") {
-        groups = Object.keys(s.groups).sort((a, b) => Number(a) - Number(b)).map(k => s.groups[k]);
-      }
-      return {
-        ...s,
-        type: s.type || (s.targetKm ? "run" : "strength"),
-        groups: groups.filter(Boolean).map(g => {
-          let exercises = [];
-          if (Array.isArray(g.exercises)) exercises = g.exercises;
-          else if (g.exercises && typeof g.exercises === "object") {
-            exercises = Object.keys(g.exercises).sort((a, b) => Number(a) - Number(b)).map(k => g.exercises[k]);
-          }
-          return {
-            ...g,
-            exercises: exercises.filter(Boolean).map(ex => ({
-              ...ex,
-              setsReps: ex.setsReps || ex.currentSetsReps || "3 × 10",
-              startValue: ex.startValue != null ? ex.startValue : (ex.currentWeight != null ? ex.currentWeight : null)
-            }))
-          };
-        })
-      };
-    });
-
-    return {
-      ...remote,
-      name: remote.name || remote.programName || "Active Routine",
-      programName: remote.name || remote.programName || "Active Routine",
-      sessions: sortSessionsByDay(cleanSessions),
-      // If remote has no weekOverrides (e.g. stripped as empty object by RTDB), default to empty object
-      weekOverrides: (remote.weekOverrides && typeof remote.weekOverrides === "object") ? remote.weekOverrides : {}
-    };
+    return remote;
   }
 
   // Routine LWW clock. Local profiles use programUpdatedAt (> 0).
@@ -911,14 +850,25 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
     return false;
   }
 
+  function ensureFirebaseApp() {
+    if (!window.firebase) return false;
+    if (!window.firebase.apps || !window.firebase.apps.length) {
+      if (window.FIREBASE_CONFIG) window.firebase.initializeApp(window.FIREBASE_CONFIG);
+    }
+    return true;
+  }
+  if (typeof window !== "undefined") window.HG_ensureFirebaseApp = ensureFirebaseApp;
+
+  function normalizeMetricType(metricType) {
+    const raw = String(metricType || "").toLowerCase();
+    return (raw === "bodyweight" || raw === "weights") ? "weight" : raw;
+  }
+
   const PlatePlanSyncEngine = {
     getFirestore() {
       if (!firestoreEnabled()) return null;
       try {
-        if (window.firebase && window.firebase.firestore) {
-          if (!window.firebase.apps || !window.firebase.apps.length) {
-            if (window.FIREBASE_CONFIG) window.firebase.initializeApp(window.FIREBASE_CONFIG);
-          }
+        if (ensureFirebaseApp() && window.firebase.firestore) {
           return window.firebase.firestore();
         }
       } catch (err) {
@@ -929,10 +879,7 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
 
     getRTDB() {
       try {
-        if (window.firebase && window.firebase.database) {
-          if (!window.firebase.apps || !window.firebase.apps.length) {
-            if (window.FIREBASE_CONFIG) window.firebase.initializeApp(window.FIREBASE_CONFIG);
-          }
+        if (ensureFirebaseApp() && window.firebase.database) {
           return window.firebase.database();
         }
       } catch (err) {
@@ -1168,16 +1115,16 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
 
       const rtdb = this.getRTDB();
       if (rtdb) {
-        try {
-          await rtdb.ref(`gym_users/${profileId}/logs/${logId}`).remove();
-          await rtdb.ref(`gym_users/${profileId}/exercise_logs/${logId}`).remove().catch(() => {});
-        } catch (e) {}
+        await Promise.allSettled([
+          rtdb.ref(`gym_users/${profileId}/logs/${logId}`).remove(),
+          rtdb.ref(`gym_users/${profileId}/exercise_logs/${logId}`).remove()
+        ]);
       }
     },
 
     async saveMetricEntry(profileId, metricType, entry, options = {}) {
       if (!profileId || !metricType || !entry) return null;
-      const type = (String(metricType).toLowerCase() === "bodyweight" || String(metricType).toLowerCase() === "weights") ? "weight" : String(metricType).toLowerCase();
+      const type = normalizeMetricType(metricType);
       const serverTs = (window.firebase?.firestore?.FieldValue?.serverTimestamp
         ? window.firebase.firestore.FieldValue.serverTimestamp()
         : new Date().toISOString());
@@ -1246,20 +1193,22 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
       const fs = this.getFirestore();
       if (fs) {
         try {
+          const docId = String(clean.id);
           if (type === "weight") {
-            // Strict sub-collection destination: /users/{profileId}/bodyweight/{id}
-            await fs.collection("users").doc(profileId).collection("bodyweight").doc(String(clean.id)).set(clean, { merge: true });
-            // Mirrored collections for backwards compatibility
-            await fs.collection("gym_users").doc(profileId).collection("bodyweight").doc(String(clean.id)).set(clean, { merge: true }).catch(() => {});
-            await fs.collection("gym_users").doc(profileId).collection("metrics_weight").doc(String(clean.id)).set(clean, { merge: true }).catch(() => {});
-            await fs.collection("gym_users").doc(profileId).collection("weight").doc(String(clean.id)).set(clean, { merge: true }).catch(() => {});
-            await fs.collection("gym_users").doc(profileId).collection("metrics").doc("weight").collection("entries").doc(String(clean.id)).set(clean, { merge: true }).catch(() => {});
+            await fs.collection("users").doc(profileId).collection("bodyweight").doc(docId).set(clean, { merge: true });
+            await Promise.allSettled([
+              fs.collection("gym_users").doc(profileId).collection("bodyweight").doc(docId).set(clean, { merge: true }),
+              fs.collection("gym_users").doc(profileId).collection("metrics_weight").doc(docId).set(clean, { merge: true }),
+              fs.collection("gym_users").doc(profileId).collection("weight").doc(docId).set(clean, { merge: true }),
+              fs.collection("gym_users").doc(profileId).collection("metrics").doc("weight").collection("entries").doc(docId).set(clean, { merge: true })
+            ]);
           } else {
-            // Strict sub-collection destination: /users/{profileId}/{type}/{id}
-            await fs.collection("users").doc(profileId).collection(type).doc(String(clean.id)).set(clean, { merge: true });
-            await fs.collection("gym_users").doc(profileId).collection(type).doc(String(clean.id)).set(clean, { merge: true }).catch(() => {});
-            await fs.collection("gym_users").doc(profileId).collection(`metrics_${type}`).doc(String(clean.id)).set(clean, { merge: true }).catch(() => {});
-            await fs.collection("gym_users").doc(profileId).collection("metrics").doc(type).collection("entries").doc(String(clean.id)).set(clean, { merge: true }).catch(() => {});
+            await fs.collection("users").doc(profileId).collection(type).doc(docId).set(clean, { merge: true });
+            await Promise.allSettled([
+              fs.collection("gym_users").doc(profileId).collection(type).doc(docId).set(clean, { merge: true }),
+              fs.collection("gym_users").doc(profileId).collection(`metrics_${type}`).doc(docId).set(clean, { merge: true }),
+              fs.collection("gym_users").doc(profileId).collection("metrics").doc(type).collection("entries").doc(docId).set(clean, { merge: true })
+            ]);
           }
 
           // Consolidated health_metrics document
@@ -1344,11 +1293,11 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
 
       const rtdb = this.getRTDB();
       if (rtdb) {
-        try {
-          const colName = type === "weight" ? "bodyweight" : type;
-          await rtdb.ref(`gym_users/${profileId}/metrics/${type}/${strId}`).remove().catch(() => {});
-          await rtdb.ref(`gym_users/${profileId}/${colName}/${strId}`).remove().catch(() => {});
-        } catch (e) {}
+        const colName = type === "weight" ? "bodyweight" : type;
+        await Promise.allSettled([
+          rtdb.ref(`gym_users/${profileId}/metrics/${type}/${strId}`).remove(),
+          rtdb.ref(`gym_users/${profileId}/${colName}/${strId}`).remove()
+        ]);
       }
     },
 
@@ -1658,29 +1607,25 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
       const pin = (window.HG_INTERNALS?.qe ? window.HG_INTERNALS.qe() : null) || window.HOUSEHOLD_PIN_DEFAULT || "";
       const candidates = [];
 
-      // Probe gym_users
-      try {
-        const snap = await rtdb.ref(`gym_users/${profileId}/active_program/current`).once("value");
-        const val = snap.val();
+      const probes = [
+        rtdb.ref(`gym_users/${profileId}/active_program/current`).once("value")
+          .then(snap => snap.val())
+          .catch(e => { console.warn("[forcePullRoutine gym_users probe failed]:", e?.message); return null; })
+      ];
+      if (pin) {
+        probes.push(
+          rtdb.ref(`households/${pin}/${profileId}`).once("value")
+            .then(snap => snap.val())
+            .catch(e => { console.warn("[forcePullRoutine households probe failed]:", e?.message); return null; })
+        );
+      }
+
+      const probeVals = await Promise.all(probes);
+      probeVals.forEach(val => {
         if (val && Array.isArray(val.sessions) && val.sessions.length > 0) {
           candidates.push(normalizeRemoteProgram(val));
         }
-      } catch (e) {
-        console.warn("[forcePullRoutine gym_users probe failed]:", e?.message);
-      }
-
-      // Probe households
-      if (pin) {
-        try {
-          const snap = await rtdb.ref(`households/${pin}/${profileId}`).once("value");
-          const val = snap.val();
-          if (val && Array.isArray(val.sessions) && val.sessions.length > 0) {
-            candidates.push(normalizeRemoteProgram(val));
-          }
-        } catch (e) {
-          console.warn("[forcePullRoutine households probe failed]:", e?.message);
-        }
-      }
+      });
 
       if (!candidates.length) {
         return { success: false, error: "No remote programs found on cloud endpoints (both returned empty or permission denied)." };
@@ -1705,52 +1650,6 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
       };
     },
 
-
-    async saveProgramToSubcollection(userId, program) {
-      if (!userId || !program) return;
-      const programId = String(program.id || program.programId || `prog_${Date.now()}`);
-      const payload = {
-        id: programId,
-        programId: programId,
-        name: program.name || "Custom Workout Program",
-        description: program.description || "",
-        frequency: program.frequency || (Array.isArray(program.sessions) ? `${program.sessions.length} days/week` : "3 days/week"),
-        startDate: program.startDate || (I.j && I.W ? I.j(I.W()) : "2026-09-14"),
-        sessions: Array.isArray(program.sessions) ? program.sessions : [],
-        weekOverrides: program.weekOverrides || {},
-        equipment: program.equipment || null,
-        updatedAt: Date.now(),
-        createdAt: program.createdAt || Date.now()
-      };
-
-      const fs = this.getFirestore();
-      if (fs) {
-        try {
-          await fs.collection("users").doc(userId).collection("programs").doc(programId).set(payload, { merge: true });
-          await fs.collection("gym_users").doc(userId).collection("programs").doc(programId).set(payload, { merge: true }).catch(() => {});
-        } catch (e) {
-          console.warn("Firestore saveProgramToSubcollection error:", e?.message);
-        }
-      }
-
-      const rtdb = this.getRTDB();
-      if (rtdb) {
-        try {
-          await rtdb.ref(`users/${userId}/programs/${programId}`).set(payload);
-          await rtdb.ref(`gym_users/${userId}/programs/${programId}`).set(payload).catch(() => {});
-        } catch (e) {}
-      }
-
-      try {
-        const storedKey = `hg_programs_${userId}`;
-        const existing = JSON.parse(localStorage.getItem(storedKey) || "[]");
-        const filtered = Array.isArray(existing) ? existing.filter(p => p.id !== programId) : [];
-        filtered.unshift(payload);
-        safeStorageSet(storedKey, filtered);
-      } catch (e) {}
-
-      return payload;
-    },
 
     async loadProgramsFromSubcollection(userId) {
       if (!userId) return [];
@@ -2020,151 +1919,70 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
           ? activeProgDoc.value.data()
           : null;
 
-        // 3. Read local state from plateplan_v1 & data:${userId} & standalone keys
         const localProfile = loadDecoupledProfile(userId);
-        const localLogs = Array.isArray(localProfile.logs) ? localProfile.logs : [];
-        const localLogsMap = new Map();
-        localLogs.forEach(l => {
-          if (!l) return;
-          const key = String(l.id || `${l.date}_${l.exerciseId || l.name}_${l.weight}_${l.sets}_${l.reps}`);
-          localLogsMap.set(key, l);
-        });
-
         let pushedToRemote = 0;
         let hydratedToLocal = 0;
-        const toPush = [];
 
-        // Check if local contains newer or missing exercise logs -> push to Firestore
-        for (const [key, localLog] of localLogsMap.entries()) {
-          const remoteLog = remoteLogsMap.get(key) || remoteLogsMap.get(String(localLog.id));
-          const localTime = Number(localLog.updatedAt || localLog.timestamp || 0);
-          const remoteTime = Number(remoteLog?.updatedAt || remoteLog?.timestamp || 0);
+        const reconcileCollection = async (localItems, remoteMap, getKey, pushFn) => {
+          const localMap = new Map();
+          (Array.isArray(localItems) ? localItems : []).forEach(item => {
+            if (item) localMap.set(getKey(item), item);
+          });
 
-          if (!remoteLog || localTime > remoteTime) {
-            toPush.push(localLog);
-            pushedToRemote++;
+          const toPush = [];
+          for (const [key, localItem] of localMap.entries()) {
+            const remoteItem = remoteMap.get(key) || remoteMap.get(String(localItem.id));
+            const localTime = Number(localItem.updatedAt || localItem.timestamp || 0);
+            const remoteTime = Number(remoteItem?.updatedAt || remoteItem?.timestamp || 0);
+            if (!remoteItem || localTime > remoteTime) {
+              toPush.push(localItem);
+              pushedToRemote++;
+            }
           }
-        }
-
-        if (toPush.length > 0) {
-          console.info(`[PlatePlan Sync] Pushing ${toPush.length} newer/missing local logs to Firestore for ${userId}...`);
-          await Promise.allSettled(toPush.map(log => this.saveExerciseLog(userId, log, { skipQueue: true })));
-        }
-
-        // Check if remote contains newer exercise logs -> hydrate local
-        const mergedLogsMap = new Map(localLogsMap);
-        for (const [remoteKey, remoteLog] of remoteLogsMap.entries()) {
-          const localLog = localLogsMap.get(remoteKey) || localLogsMap.get(String(remoteLog.id));
-          const localTime = Number(localLog?.updatedAt || localLog?.timestamp || 0);
-          const remoteTime = Number(remoteLog.updatedAt || remoteLog.timestamp || 0);
-
-          if (!localLog || remoteTime > localTime) {
-            mergedLogsMap.set(String(remoteLog.id || remoteKey), remoteLog);
-            hydratedToLocal++;
+          if (toPush.length > 0) {
+            await Promise.allSettled(toPush.map(item => pushFn(item)));
           }
-        }
 
-        // --- Reconcile Bodyweight Logs ---
-        const localBw = Array.isArray(localProfile.bodyWeightLogs) ? localProfile.bodyWeightLogs : [];
-        const localBwMap = new Map();
-        localBw.forEach(bw => {
-          if (!bw) return;
-          const key = String(bw.id || `bw_${bw.date}`);
-          localBwMap.set(key, bw);
-        });
-
-        const toPushBw = [];
-        for (const [key, localItem] of localBwMap.entries()) {
-          const remoteItem = remoteBwMap.get(key) || remoteBwMap.get(String(localItem.id));
-          const localTime = Number(localItem.updatedAt || localItem.timestamp || 0);
-          const remoteTime = Number(remoteItem?.updatedAt || remoteItem?.timestamp || 0);
-          if (!remoteItem || localTime > remoteTime) {
-            toPushBw.push(localItem);
-            pushedToRemote++;
+          const mergedMap = new Map(localMap);
+          for (const [remoteKey, remoteItem] of remoteMap.entries()) {
+            const localItem = localMap.get(remoteKey) || localMap.get(String(remoteItem.id));
+            const localTime = Number(localItem?.updatedAt || localItem?.timestamp || 0);
+            const remoteTime = Number(remoteItem.updatedAt || remoteItem.timestamp || 0);
+            if (!localItem || remoteTime > localTime) {
+              mergedMap.set(String(remoteItem.id || remoteKey), remoteItem);
+              hydratedToLocal++;
+            }
           }
-        }
-        if (toPushBw.length > 0) {
-          await Promise.allSettled(toPushBw.map(bw => this.saveBodyweightLog(userId, bw, { skipQueue: true })));
-        }
+          return Array.from(mergedMap.values());
+        };
 
-        const mergedBwMap = new Map(localBwMap);
-        for (const [remoteKey, remoteItem] of remoteBwMap.entries()) {
-          const localItem = localBwMap.get(remoteKey) || localBwMap.get(String(remoteItem.id));
-          const localTime = Number(localItem?.updatedAt || localItem?.timestamp || 0);
-          const remoteTime = Number(remoteItem.updatedAt || remoteItem.timestamp || 0);
-          if (!localItem || remoteTime > localTime) {
-            mergedBwMap.set(String(remoteItem.id || remoteKey), remoteItem);
-            hydratedToLocal++;
-          }
-        }
+        const mergedLogsArray = (await reconcileCollection(
+          localProfile.logs,
+          remoteLogsMap,
+          l => String(l.id || `${l.date}_${l.exerciseId || l.name}_${l.weight}_${l.sets}_${l.reps}`),
+          log => this.saveExerciseLog(userId, log, { skipQueue: true })
+        )).sort((a, b) => (b.date || "").localeCompare(a.date || "") || ((b.timestamp || 0) - (a.timestamp || 0)));
 
-        // --- Reconcile Readiness Logs ---
-        const localReadiness = Array.isArray(localProfile.readinessLogs) ? localProfile.readinessLogs : [];
-        const localReadinessMap = new Map();
-        localReadiness.forEach(r => {
-          if (!r) return;
-          const key = String(r.id || `r_${r.date}`);
-          localReadinessMap.set(key, r);
-        });
+        const mergedBwArray = (await reconcileCollection(
+          localProfile.bodyWeightLogs,
+          remoteBwMap,
+          bw => String(bw.id || `bw_${bw.date}`),
+          bw => this.saveBodyweightLog(userId, bw, { skipQueue: true })
+        )).sort((a, b) => (a.date || "").localeCompare(b.date || ""));
 
-        const toPushReadiness = [];
-        for (const [key, localItem] of localReadinessMap.entries()) {
-          const remoteItem = remoteReadinessMap.get(key) || remoteReadinessMap.get(String(localItem.id));
-          const localTime = Number(localItem.updatedAt || localItem.timestamp || 0);
-          const remoteTime = Number(remoteItem?.updatedAt || remoteItem?.timestamp || 0);
-          if (!remoteItem || localTime > remoteTime) {
-            toPushReadiness.push(localItem);
-            pushedToRemote++;
-          }
-        }
-        if (toPushReadiness.length > 0) {
-          await Promise.allSettled(toPushReadiness.map(r => this.saveReadinessLog(userId, r, { skipQueue: true })));
-        }
+        const mergedReadinessArray = (await reconcileCollection(
+          localProfile.readinessLogs,
+          remoteReadinessMap,
+          r => String(r.id || `r_${r.date}`),
+          r => this.saveReadinessLog(userId, r, { skipQueue: true })
+        )).sort((a, b) => (a.date || "").localeCompare(b.date || ""));
 
-        const mergedReadinessMap = new Map(localReadinessMap);
-        for (const [remoteKey, remoteItem] of remoteReadinessMap.entries()) {
-          const localItem = localReadinessMap.get(remoteKey) || localReadinessMap.get(String(remoteItem.id));
-          const localTime = Number(localItem?.updatedAt || localItem?.timestamp || 0);
-          const remoteTime = Number(remoteItem.updatedAt || remoteItem.timestamp || 0);
-          if (!localItem || remoteTime > localTime) {
-            mergedReadinessMap.set(String(remoteItem.id || remoteKey), remoteItem);
-            hydratedToLocal++;
-          }
-        }
-
-        // --- Reconcile Sleep Logs ---
-        const localSleep = Array.isArray(localProfile.sleepLogs) ? localProfile.sleepLogs : [];
-        const localSleepMap = new Map();
-        localSleep.forEach(s => {
-          if (!s) return;
-          const key = String(s.id || `slp_${s.date}`);
-          localSleepMap.set(key, s);
-        });
-
-        const toPushSleep = [];
-        for (const [key, localItem] of localSleepMap.entries()) {
-          const remoteItem = remoteSleepMap.get(key) || remoteSleepMap.get(String(localItem.id));
-          const localTime = Number(localItem.updatedAt || localItem.timestamp || 0);
-          const remoteTime = Number(remoteItem?.updatedAt || remoteItem?.timestamp || 0);
-          if (!remoteItem || localTime > remoteTime) {
-            toPushSleep.push(localItem);
-            pushedToRemote++;
-          }
-        }
-        if (toPushSleep.length > 0) {
-          await Promise.allSettled(toPushSleep.map(s => this.saveSleepLog(userId, s, { skipQueue: true })));
-        }
-
-        const mergedSleepMap = new Map(localSleepMap);
-        for (const [remoteKey, remoteItem] of remoteSleepMap.entries()) {
-          const localItem = localSleepMap.get(remoteKey) || localSleepMap.get(String(remoteItem.id));
-          const localTime = Number(localItem?.updatedAt || localItem?.timestamp || 0);
-          const remoteTime = Number(remoteItem.updatedAt || remoteItem.timestamp || 0);
-          if (!localItem || remoteTime > localTime) {
-            mergedSleepMap.set(String(remoteItem.id || remoteKey), remoteItem);
-            hydratedToLocal++;
-          }
-        }
+        const mergedSleepArray = (await reconcileCollection(
+          localProfile.sleepLogs,
+          remoteSleepMap,
+          s => String(s.id || `slp_${s.date}`),
+          s => this.saveSleepLog(userId, s, { skipQueue: true })
+        )).sort((a, b) => (a.date || "").localeCompare(b.date || ""));
 
         // Reconcile Active Program / PlatePlan
         let finalProgram = localProfile;
@@ -2191,13 +2009,6 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
             pushedToRemote++;
           }
         }
-
-        const mergedLogsArray = Array.from(mergedLogsMap.values()).sort((a, b) =>
-          (b.date || "").localeCompare(a.date || "") || ((b.timestamp || 0) - (a.timestamp || 0))
-        );
-        const mergedBwArray = Array.from(mergedBwMap.values()).sort((a, b) => (a.date || "").localeCompare(b.date || ""));
-        const mergedReadinessArray = Array.from(mergedReadinessMap.values()).sort((a, b) => (a.date || "").localeCompare(b.date || ""));
-        const mergedSleepArray = Array.from(mergedSleepMap.values()).sort((a, b) => (a.date || "").localeCompare(b.date || ""));
 
         const reconciledProfile = {
           ...finalProgram,
@@ -2295,166 +2106,37 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
           unsubscribers.push(unsubLogs);
 
           // 2. Legacy exercise_logs listener
-          const unsubExerciseLogs = fs.collection("gym_users").doc(profileId).collection("exercise_logs")
-            .onSnapshot(snap => {
-              const logs = [];
-              snap.forEach(doc => logs.push({ id: doc.id, ...doc.data() }));
-              if (logs.length > 0) {
-                if (navigator.onLine) onStatusChange?.("synced");
-                onRemoteUpdate?.("exercise_logs", logs);
-              }
-            }, () => {});
-          unsubscribers.push(unsubExerciseLogs);
-
-          // 3. Readiness listener (primary: readiness)
-          const unsubReadiness = fs.collection("gym_users").doc(profileId).collection("readiness")
-            .onSnapshot(snap => {
-              const items = [];
-              snap.forEach(doc => items.push({ id: doc.id, ...doc.data() }));
-              if (items.length > 0) {
-                if (navigator.onLine) onStatusChange?.("synced");
-                onRemoteUpdate?.("readiness", items);
-              }
-            }, () => {});
-          unsubscribers.push(unsubReadiness);
-
-          // 4. Readiness logs listener (legacy fallback: readiness_logs)
-          const unsubRead = fs.collection("gym_users").doc(profileId).collection("readiness_logs")
-            .onSnapshot(snap => {
-              const items = [];
-              snap.forEach(doc => items.push({ id: doc.id, ...doc.data() }));
-              if (items.length > 0) {
-                if (navigator.onLine) onStatusChange?.("synced");
-                onRemoteUpdate?.("readiness", items);
-              }
-            }, () => {});
-          unsubscribers.push(unsubRead);
-
-          // 5. Bodyweight listener (primary: bodyweight) - strictly filtered
-          const unsubBwPrimary = fs.collection("gym_users").doc(profileId).collection("bodyweight")
-            .onSnapshot(snap => {
+          const userDoc = fs.collection("gym_users").doc(profileId);
+          const listenCol = (ref, eventType, mapDoc) => {
+            unsubscribers.push(ref.onSnapshot(snap => {
               const items = [];
               snap.forEach(doc => {
-                const d = doc.data();
-                if (isValidBodyWeightEntry({ id: doc.id, ...d })) {
-                  items.push({ id: doc.id, ...d, type: "bodyweight" });
-                }
+                const mapped = mapDoc ? mapDoc(doc) : { id: doc.id, ...doc.data() };
+                if (mapped) items.push(mapped);
               });
               if (items.length > 0) {
                 if (navigator.onLine) onStatusChange?.("synced");
-                onRemoteUpdate?.("bodyweight", items);
+                onRemoteUpdate?.(eventType, items);
               }
-            }, () => {});
-          unsubscribers.push(unsubBwPrimary);
+            }, () => {}));
+          };
+          const bwMapDoc = doc => {
+            const d = doc.data();
+            return isValidBodyWeightEntry({ id: doc.id, ...d }) ? { id: doc.id, ...d, type: "bodyweight" } : null;
+          };
 
-          // 6. Bodyweight logs listener (legacy fallback: bodyweight_logs) - strictly filtered
-          const unsubBw = fs.collection("gym_users").doc(profileId).collection("bodyweight_logs")
-            .onSnapshot(snap => {
-              const items = [];
-              snap.forEach(doc => {
-                const d = doc.data();
-                if (isValidBodyWeightEntry({ id: doc.id, ...d })) {
-                  items.push({ id: doc.id, ...d, type: "bodyweight" });
-                }
-              });
-              if (items.length > 0) {
-                if (navigator.onLine) onStatusChange?.("synced");
-                onRemoteUpdate?.("bodyweight", items);
-              }
-            }, () => {});
-          unsubscribers.push(unsubBw);
-
-          // 7. Sleep listener (primary: sleep)
-          const unsubSleep = fs.collection("gym_users").doc(profileId).collection("sleep")
-            .onSnapshot(snap => {
-              const items = [];
-              snap.forEach(doc => items.push({ id: doc.id, ...doc.data() }));
-              if (items.length > 0) {
-                if (navigator.onLine) onStatusChange?.("synced");
-                onRemoteUpdate?.("sleep", items);
-              }
-            }, () => {});
-          unsubscribers.push(unsubSleep);
-
-          // 7b. Dedicated metrics/weight subcollection listener - strictly filtered
-          const unsubMetricsWeight = fs.collection("gym_users").doc(profileId)
-            .collection("metrics").doc("weight").collection("entries")
-            .onSnapshot(snap => {
-              const items = [];
-              snap.forEach(doc => {
-                const d = doc.data();
-                if (isValidBodyWeightEntry({ id: doc.id, ...d })) {
-                  items.push({ id: doc.id, ...d, type: "bodyweight" });
-                }
-              });
-              if (items.length > 0) {
-                if (navigator.onLine) onStatusChange?.("synced");
-                onRemoteUpdate?.("weight", items);
-              }
-            }, () => {});
-          unsubscribers.push(unsubMetricsWeight);
-
-          // 7c. Dedicated metrics/sleep subcollection listener
-          const unsubMetricsSleep = fs.collection("gym_users").doc(profileId)
-            .collection("metrics").doc("sleep").collection("entries")
-            .onSnapshot(snap => {
-              const items = [];
-              snap.forEach(doc => items.push({ id: doc.id, ...doc.data() }));
-              if (items.length > 0) {
-                if (navigator.onLine) onStatusChange?.("synced");
-                onRemoteUpdate?.("sleep", items);
-              }
-            }, () => {});
-          unsubscribers.push(unsubMetricsSleep);
-
-          // 7d. Dedicated metrics/readiness subcollection listener
-          const unsubMetricsReadiness = fs.collection("gym_users").doc(profileId)
-            .collection("metrics").doc("readiness").collection("entries")
-            .onSnapshot(snap => {
-              const items = [];
-              snap.forEach(doc => items.push({ id: doc.id, ...doc.data() }));
-              if (items.length > 0) {
-                if (navigator.onLine) onStatusChange?.("synced");
-                onRemoteUpdate?.("readiness", items);
-              }
-            }, () => {});
-          unsubscribers.push(unsubMetricsReadiness);
-
-          // 7f. Direct metrics_weight collection listener
-          const unsubDirectMWeight = fs.collection("gym_users").doc(profileId).collection("metrics_weight")
-            .onSnapshot(snap => {
-              const items = [];
-              snap.forEach(doc => items.push({ id: doc.id, ...doc.data() }));
-              if (items.length > 0) {
-                if (navigator.onLine) onStatusChange?.("synced");
-                onRemoteUpdate?.("weight", items);
-              }
-            }, () => {});
-          unsubscribers.push(unsubDirectMWeight);
-
-          // 7g. Direct metrics_sleep collection listener
-          const unsubDirectMSleep = fs.collection("gym_users").doc(profileId).collection("metrics_sleep")
-            .onSnapshot(snap => {
-              const items = [];
-              snap.forEach(doc => items.push({ id: doc.id, ...doc.data() }));
-              if (items.length > 0) {
-                if (navigator.onLine) onStatusChange?.("synced");
-                onRemoteUpdate?.("sleep", items);
-              }
-            }, () => {});
-          unsubscribers.push(unsubDirectMSleep);
-
-          // 7h. Direct metrics_readiness collection listener
-          const unsubDirectMReadiness = fs.collection("gym_users").doc(profileId).collection("metrics_readiness")
-            .onSnapshot(snap => {
-              const items = [];
-              snap.forEach(doc => items.push({ id: doc.id, ...doc.data() }));
-              if (items.length > 0) {
-                if (navigator.onLine) onStatusChange?.("synced");
-                onRemoteUpdate?.("readiness", items);
-              }
-            }, () => {});
-          unsubscribers.push(unsubDirectMReadiness);
+          listenCol(userDoc.collection("exercise_logs"), "exercise_logs");
+          listenCol(userDoc.collection("readiness"), "readiness");
+          listenCol(userDoc.collection("readiness_logs"), "readiness");
+          listenCol(userDoc.collection("bodyweight"), "bodyweight", bwMapDoc);
+          listenCol(userDoc.collection("bodyweight_logs"), "bodyweight", bwMapDoc);
+          listenCol(userDoc.collection("sleep"), "sleep");
+          listenCol(userDoc.collection("metrics").doc("weight").collection("entries"), "weight", bwMapDoc);
+          listenCol(userDoc.collection("metrics").doc("sleep").collection("entries"), "sleep");
+          listenCol(userDoc.collection("metrics").doc("readiness").collection("entries"), "readiness");
+          listenCol(userDoc.collection("metrics_weight"), "weight");
+          listenCol(userDoc.collection("metrics_sleep"), "sleep");
+          listenCol(userDoc.collection("metrics_readiness"), "readiness");
 
           // 7e. Consolidated health_metrics document listener
           const unsubHealthDoc = fs.collection("gym_users").doc(profileId)
@@ -2622,27 +2304,18 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
         }
 
         const fs = GymCloudEngine.getFirestore();
-        if (fs) {
-          try {
-            const docSnap = await fs.collection("gym_users").doc(profileId).get();
-            if (docSnap.exists) {
-              const rootData = docSnap.data();
-              if (rootData?.logs && Array.isArray(rootData.logs)) {
-                rootData.logs.forEach(addLogCandidate);
-              }
-            }
-          } catch (e) {}
-        }
-
         const rtdb = GymCloudEngine.getRTDB();
-        if (rtdb) {
-          try {
-            const snap = await rtdb.ref(`gym_users/${profileId}`).once("value");
-            const val = snap.val();
-            if (val?.logs && Array.isArray(val.logs)) {
-              val.logs.forEach(addLogCandidate);
-            }
-          } catch (e) {}
+        const [fsRes, rtdbRes] = await Promise.allSettled([
+          fs ? fs.collection("gym_users").doc(profileId).get() : Promise.resolve(null),
+          rtdb ? rtdb.ref(`gym_users/${profileId}`).once("value") : Promise.resolve(null)
+        ]);
+        if (fsRes.status === "fulfilled" && fsRes.value?.exists) {
+          const rootData = fsRes.value.data();
+          if (Array.isArray(rootData?.logs)) rootData.logs.forEach(addLogCandidate);
+        }
+        if (rtdbRes.status === "fulfilled" && rtdbRes.value) {
+          const val = rtdbRes.value.val();
+          if (Array.isArray(val?.logs)) val.logs.forEach(addLogCandidate);
         }
 
         // Recover Readiness
@@ -2908,15 +2581,6 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
     const localReadiness = storageGet(`hg_readiness_${profileId}`, []);
     if (Array.isArray(localReadiness)) localReadiness.forEach(addReadinessCandidate);
 
-    try {
-      const rawLegacy = localStorage.getItem(`data:${profileId}`);
-      if (rawLegacy) {
-        const parsed = JSON.parse(rawLegacy);
-        if (Array.isArray(parsed.readiness)) parsed.readiness.forEach(addReadinessCandidate);
-        if (Array.isArray(parsed.readinessLogs)) parsed.readinessLogs.forEach(addReadinessCandidate);
-      }
-    } catch (_) {}
-
     const readinessLogs = readinessCandidates.sort((a, b) => a.date.localeCompare(b.date));
 
     // 3. Recover and deduplicate Sleep Logs
@@ -3060,11 +2724,6 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
         bodyWeightLogs: health.bodyWeightLogs,
         sleepLogs: health.sleepLogs,
         readinessLogs: health.readinessLogs,
-        metrics: {
-          weight: health.bodyWeightLogs,
-          sleep: health.sleepLogs,
-          readiness: health.readinessLogs
-        },
         equipment: routineSource.equipment || source.equipment || userPpv1?.equipment || null,
         programName: routineSource.programName || source.programName || perUserPpv1?.programName || userPpv1?.programName || undefined,
         programId: routineSource.programId || source.programId || perUserPpv1?.programId || userPpv1?.programId || undefined,
@@ -3080,12 +2739,7 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
       ...defaultData,
       bodyWeightLogs: health.bodyWeightLogs,
       sleepLogs: health.sleepLogs,
-      readinessLogs: health.readinessLogs,
-      metrics: {
-        weight: health.bodyWeightLogs,
-        sleep: health.sleepLogs,
-        readiness: health.readinessLogs
-      }
+      readinessLogs: health.readinessLogs
     };
   }
 
@@ -3164,27 +2818,6 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
       label: `+${inc}kg (${Math.round((base + inc) * 100) / 100}kg)`
     }));
     return possible.slice(0, count);
-  }
-
-  function snapToAchievable(rawWeight, currentWeight, plates, isPerSide) {
-    if (rawWeight == null || !Number.isFinite(Number(rawWeight))) return rawWeight;
-    const target = Number(rawWeight);
-    const base = currentWeight != null && Number.isFinite(Number(currentWeight)) ? Number(currentWeight) : null;
-    
-    if (base != null && target > base) {
-      const jumps = getPossibleWeightJumps(base, plates, isPerSide, 12);
-      let best = jumps[0]?.totalWeight || target;
-      let minDiff = Math.abs(best - target);
-      for (const j of jumps) {
-        const diff = Math.abs(j.totalWeight - target);
-        if (diff < minDiff) {
-          minDiff = diff;
-          best = j.totalWeight;
-        }
-      }
-      return best;
-    }
-    return Math.round(target * 2) / 2;
   }
 
   function getExerciseRecommendation({ exercise, data, weekInfo, personId }) {
@@ -3420,29 +3053,6 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
     return null;
   }
 
-  function mutateLegacyStyles() {
-    const styles = I.o;
-    if (!styles || styles.__hg2) return;
-    styles.__hg2 = true;
-    const surface = "var(--hg-surface)";
-    const background = "var(--hg-bg)";
-    const border = "1px solid var(--hg-border)";
-    const text = "var(--hg-text)";
-    const text2 = "var(--hg-text-2)";
-    for (const key of ["formCard", "sessionCard", "liftCard", "statCard", "modal"]) {
-      if (styles[key]) Object.assign(styles[key], { background: surface, border });
-    }
-    for (const key of ["input", "select", "daySelect", "targetHint", "noteBox", "restTimer"]) {
-      if (styles[key]) Object.assign(styles[key], { background, border, color: text });
-    }
-    if (styles.smallBtn) Object.assign(styles.smallBtn, { border, color: text2, minHeight: 44 });
-    if (styles.primaryBtn) Object.assign(styles.primaryBtn, { minHeight: 46 });
-    if (styles.label) styles.label.color = text2;
-    if (styles.emptyState) styles.emptyState.color = text2;
-    if (styles.sectionTitle) styles.sectionTitle.color = text2;
-  }
-
-  mutateLegacyStyles();
   applyTheme(getTheme());
 
   function Field({ label, full, children }) {
@@ -3923,10 +3533,11 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
       return () => document.removeEventListener("visibilitychange", onVisible);
     }, []);
 
-    useEffect(() => { saveActive(personId, active); }, [personId, active]);
+    useEffect(() => {
+      saveActive(personId, (!session || !step) ? null : active);
+    }, [personId, active, session, step]);
 
     if (!session || !step) {
-      saveActive(personId, null);
       return h("div", { className: "hg-workout" },
         h("div", { className: "hg-card hg-empty" },
           h("h2", null, "This workout is no longer in the plan"),
@@ -4471,11 +4082,6 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
       }
       try {
         await GymCloudEngine.deleteExerciseLog(personId, log.id);
-        const fs = GymCloudEngine.getFirestore();
-        if (fs) {
-          fs.collection("workouts").doc(String(log.id)).delete().catch(() => {});
-          fs.collection("users").doc(personId).collection("workouts").doc(String(log.id)).delete().catch(() => {});
-        }
         showToast("Entry deleted");
       } catch (err) {
         showToast("Deleted locally");
@@ -4752,19 +4358,20 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
 
   // Unified metrics data getter reading directly from recovered LocalStorage keys and reactive Firestore state
   function getMetricsData(metricType, targetPersonId, profileData) {
-    const pId = targetPersonId || (window.__HG_CURRENT_PERSON__ || "elliott");
-    const profile = profileData || (window.__HG_STORE__ && window.__HG_STORE__[pId]) || loadDecoupledProfile(pId);
-    const type = String(metricType || "").toLowerCase();
+    const pId = targetPersonId || "elliott";
+    const profile = profileData || loadDecoupledProfile(pId);
+    const type = normalizeMetricType(metricType);
     const direct = parseDirectMetricsFromStorage(pId);
 
-    if (type === "weight" || type === "bodyweight" || type === "weights") {
+    if (type === "weight") {
       const map = new Map();
-      const fromProfile = Array.isArray(profile?.bodyWeightLogs) ? profile.bodyWeightLogs : (profile?.metrics?.weight || []);
+      const fromProfile = Array.isArray(profile?.bodyWeightLogs) ? profile.bodyWeightLogs : [];
       fromProfile.forEach(w => {
         if (w && isValidBodyWeightEntry(w)) {
           const num = Number(w.weight != null ? w.weight : w.bodyweight);
-          map.set(String(w.id || `bw_${w.date}`), {
-            id: String(w.id || `bw_${w.date}`),
+          const id = String(w.id || `bw_${w.date}`);
+          map.set(id, {
+            id,
             type: "bodyweight",
             date: String(w.date),
             weight: Math.round(num * 10) / 10,
@@ -4776,9 +4383,7 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
       direct.weights.forEach(w => {
         if (w && isValidBodyWeightEntry(w)) {
           const id = String(w.id || `bw_${w.date}`);
-          if (!map.has(id)) {
-            map.set(id, { ...w, type: "bodyweight" });
-          }
+          if (!map.has(id)) map.set(id, { ...w, type: "bodyweight" });
         }
       });
       return Array.from(map.values()).sort((a, b) => (a.date || "").localeCompare(b.date || ""));
@@ -4786,15 +4391,17 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
     if (type === "readiness") {
       const map = new Map();
       direct.readiness.forEach(r => { if (r) map.set(String(r.id || `r_${r.date}`), r); });
-      const fromProfile = Array.isArray(profile?.readinessLogs) ? profile.readinessLogs : (profile?.metrics?.readiness || []);
-      fromProfile.forEach(r => { if (r) map.set(String(r.id || `r_${r.date}`), r); });
+      (Array.isArray(profile?.readinessLogs) ? profile.readinessLogs : []).forEach(r => {
+        if (r) map.set(String(r.id || `r_${r.date}`), r);
+      });
       return Array.from(map.values()).sort((a, b) => (a.date || "").localeCompare(b.date || ""));
     }
     if (type === "sleep") {
       const map = new Map();
       direct.sleep.forEach(s => { if (s?.date) map.set(s.date, s); });
-      const explicit = Array.isArray(profile?.sleepLogs) ? profile.sleepLogs : (profile?.metrics?.sleep || []);
-      explicit.forEach(s => { if (s?.date) map.set(s.date, s); });
+      (Array.isArray(profile?.sleepLogs) ? profile.sleepLogs : []).forEach(s => {
+        if (s?.date) map.set(s.date, s);
+      });
       const derived = (Array.isArray(profile?.readinessLogs) ? profile.readinessLogs : direct.readiness)
         .filter(r => r && (r.sleep != null || r.sleepHours != null))
         .map(r => ({
@@ -5036,35 +4643,21 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
       setReadinessNote("");
     }
 
-    async function deleteReadiness(id) {
-      // Optimistic UI update
-      const next = readiness.filter(r => r.id !== id);
+    async function deleteMetric(metricType, id, listKey, label) {
       if (updateData) {
-        updateData(personId, cur => ({ ...cur, readinessLogs: next }));
+        updateData(personId, cur => ({ ...cur, [listKey]: (cur?.[listKey] || []).filter(item => item.id !== id) }));
       }
       try {
-        await GymCloudEngine.deleteMetricEntry(personId, "readiness", id);
-        showToast("Readiness entry deleted from Firestore");
+        await GymCloudEngine.deleteMetricEntry(personId, metricType, id);
+        showToast(`${label} entry deleted from Firestore`);
       } catch (err) {
-        console.warn("Delete readiness error:", err);
+        console.warn(`Delete ${metricType} error:`, err);
         showToast("Deleted locally");
       }
     }
 
-    async function deleteSleep(id) {
-      // Optimistic UI update
-      const next = sleepLogs.filter(s => s.id !== id);
-      if (updateData) {
-        updateData(personId, cur => ({ ...cur, sleepLogs: next }));
-      }
-      try {
-        await GymCloudEngine.deleteMetricEntry(personId, "sleep", id);
-        showToast("Sleep entry deleted from Firestore");
-      } catch (err) {
-        console.warn("Delete sleep error:", err);
-        showToast("Deleted locally");
-      }
-    }
+    const deleteReadiness = id => deleteMetric("readiness", id, "readinessLogs", "Readiness");
+    const deleteSleep = id => deleteMetric("sleep", id, "sleepLogs", "Sleep");
 
     // Weight stats
     const sortedWeights = [...weights].sort((a, b) => a.date.localeCompare(b.date));
@@ -5684,16 +5277,7 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
         }));
       }
       try {
-        const fs = GymCloudEngine.getFirestore();
-        for (const docId of idsToDelete) {
-          await GymCloudEngine.deleteExerciseLog(personId, docId);
-          if (fs) {
-            fs.collection("workouts").doc(docId).delete().catch(() => {});
-            fs.collection("users").doc(personId).collection("workouts").doc(docId).delete().catch(() => {});
-            fs.collection("gym_users").doc(personId).collection("logs").doc(docId).delete().catch(() => {});
-            fs.collection("gym_users").doc(personId).collection("exercise_logs").doc(docId).delete().catch(() => {});
-          }
-        }
+        await Promise.allSettled(idsToDelete.map(docId => GymCloudEngine.deleteExerciseLog(personId, docId)));
         if (showToast) showToast("Exercise session deleted");
       } catch (err) {
         console.warn("Delete error:", err);
@@ -6108,6 +5692,7 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
   }
+  if (typeof window !== "undefined") window.HG_downloadFile = downloadFile;
 
   // Format helper: Display only sets and target reps (stripping out target weight text)
   function formatMetricOnly(setsReps) {
@@ -6923,26 +6508,6 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
           )
         ),
         advancedOpen && h("div", { style: { marginTop: 16, paddingTop: 14, borderTop: "1px solid var(--hg-border)" } },
-          h("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 } },
-            h(Button, {
-              primary: true,
-              onClick: () => setWizardState({ open: true, initialProgram: null, mode: "create" })
-            }, "+ Create New Program in Wizard"),
-            h(Button, {
-              onClick: () => setWizardState({
-                open: true,
-                initialProgram: {
-                  id: data.programId || ("prog_" + Date.now()),
-                  name: data.programName || "Current Routine",
-                  description: data.goals || "",
-                  frequency: sessionCount + " days/week",
-                  startDate: data.startDate,
-                  sessions: data.sessions
-                },
-                mode: "edit"
-              })
-            }, "✎ Edit in Wizard")
-          ),
           savedPrograms.length > 0 && h("div", { className: "hg-saved-programs-grid", style: { marginTop: 10 } },
             savedPrograms.map(prog => {
               const isActive = (data.programId && data.programId === prog.id) || (data.programName && data.programName === prog.name);
@@ -7212,6 +6777,25 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
       }));
     }
 
+    async function commitRoutineProfile(nextSessions, nextProgramName, toastMessage) {
+      const now = Date.now();
+      const updatedProfile = {
+        ...data,
+        sessions: nextSessions,
+        programName: nextProgramName || data.programName || "Active Routine",
+        programUpdatedAt: now,
+        weekOverrides: {},
+        updatedAt: now
+      };
+      savePlatePlanV1Local(personId, updatedProfile);
+      I.Ee(personId, updatedProfile);
+      syncLegacyStorage(personId, updatedProfile);
+      await GymCloudEngine.saveActiveProgram(personId, updatedProfile);
+      updateData(personId, () => updatedProfile);
+      showToast(toastMessage);
+      onClose();
+    }
+
     async function handleApplyChanges() {
       const approvedCount = diffItems.filter(d => d.approved).length;
       if (approvedCount === 0) {
@@ -7219,36 +6803,16 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
         return;
       }
       setApplying(true);
-
       try {
         const label = milestoneLabel.trim() || `Physio Update - ${new Date().toISOString().slice(0, 10)}`;
         const snapshot = engine.createMilestoneSnapshot(data, label, personId);
         await GymCloudEngine.saveProgramMilestone(personId, snapshot);
-
         const updatedSessions = engine.applyDiffToRoutine(data.sessions || [], diffItems, proposedSessions);
-        const now = Date.now();
-        const updatedProfile = {
-          ...data,
-          sessions: updatedSessions,
-          programName: proposedProgramName || data.programName || "Active Routine",
-          programUpdatedAt: now,
-          weekOverrides: {}, // Wipe week overrides so the new program's session days take effect immediately!
-          updatedAt: now
-        };
-
-        // 1. Immediately cache locally
-        savePlatePlanV1Local(personId, updatedProfile);
-        I.Ee(personId, updatedProfile);
-        syncLegacyStorage(personId, updatedProfile);
-
-        // 2. Await cloud save to RTDB & Firestore so remote has the update before modal closes
-        await GymCloudEngine.saveActiveProgram(personId, updatedProfile);
-
-        // 3. Update React in-memory store
-        updateData(personId, () => updatedProfile);
-
-        showToast(`Applied ${approvedCount} updates & saved milestone snapshot!`);
-        onClose();
+        await commitRoutineProfile(
+          updatedSessions,
+          proposedProgramName,
+          `Applied ${approvedCount} updates & saved milestone snapshot!`
+        );
       } catch (err) {
         showToast("Failed to apply changes: " + (err.message || "Unknown error"));
       } finally {
@@ -7260,32 +6824,15 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
       if (!window.confirm(`Revert active routine to "${milestone.label}" from ${new Date(milestone.createdAt).toLocaleDateString()}? All past workout logs and PR records will remain safe and untouched.`)) {
         return;
       }
-
       try {
         const preRevertSnapshot = engine.createMilestoneSnapshot(data, `Before reverting to ${milestone.label}`, personId);
         await GymCloudEngine.saveProgramMilestone(personId, preRevertSnapshot);
-
         const restoredSessions = engine.restoreFromMilestoneSnapshot(milestone);
-        const now = Date.now();
-        const updatedProfile = {
-          ...data,
-          sessions: restoredSessions,
-          programName: milestone.programName || data.programName || "Active Routine",
-          programUpdatedAt: now,
-          weekOverrides: {}, // Wipe week overrides on revert
-          updatedAt: now
-        };
-
-        savePlatePlanV1Local(personId, updatedProfile);
-        I.Ee(personId, updatedProfile);
-        syncLegacyStorage(personId, updatedProfile);
-
-        await GymCloudEngine.saveActiveProgram(personId, updatedProfile);
-
-        updateData(personId, () => updatedProfile);
-
-        showToast(`Reverted routine to "${milestone.label}".`);
-        onClose();
+        await commitRoutineProfile(
+          restoredSessions,
+          milestone.programName,
+          `Reverted routine to "${milestone.label}".`
+        );
       } catch (err) {
         showToast("Revert failed: " + (err.message || "Unknown error"));
       }
@@ -8126,24 +7673,10 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
   }
 
   function getInitialActiveProfile() {
-    const candidateKeys = [
-      "hg_active_profile",
-      "activeProfile",
-      "currentProfile",
-      "hg_selected_person"
-    ];
     try {
-      for (const k of candidateKeys) {
-        const val = localStorage.getItem(k);
-        if (val && I.J && I.J.includes(val)) {
-          return val;
-        }
-      }
-      // Default to 'elliott' if null or missing
+      const val = localStorage.getItem("hg_active_profile");
+      if (val && I.J && I.J.includes(val)) return val;
       localStorage.setItem("hg_active_profile", "elliott");
-      localStorage.setItem("activeProfile", "elliott");
-      localStorage.setItem("currentProfile", "elliott");
-      localStorage.setItem("hg_selected_person", "elliott");
     } catch (e) {}
     return "elliott";
   }
@@ -8167,10 +7700,8 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
       return existing;
     });
     const [syncStatus, setSyncStatus] = useState(pin ? "connecting" : "local-only");
-    const [authEpoch, setAuthEpoch] = useState(0);
     const [active, setActiveState] = useState(() => loadActive(getInitialActiveProfile()));
     const [queueCount, setQueueCount] = useState(() => PlatePlanSyncEngine.getOfflineQueue().length);
-    const dbRef = useRef(null);
     const toastTimer = useRef(null);
 
     const showToast = useCallback(message => {
@@ -8179,10 +7710,12 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
       toastTimer.current = setTimeout(() => setToast(""), 2800);
     }, []);
 
-    // Reactive Storage Subscription: propagate any localStorage updates into in-memory React state
     useEffect(() => {
       const handleStorageUpdate = (e) => {
         const k = e?.detail?.key || e?.key;
+        if (k && !k.includes("elliott") && !k.includes("chloe") && !k.includes("plateplan") && !k.includes("hg_")) {
+          return;
+        }
         if (!k || k.includes("elliott") || k.includes("plateplan") || k.includes("hg_")) {
           setStore(cur => ({ ...cur, elliott: loadDecoupledProfile("elliott") }));
         }
@@ -8199,30 +7732,26 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
       };
     }, []);
 
-    // Automated Two-Way Sync on boot & person switch
     useEffect(() => {
       let active = true;
       const syncProfiles = async () => {
-        for (const pid of ["elliott", "chloe"]) {
+        await Promise.allSettled(["elliott", "chloe"].map(async (pid) => {
           try {
             const reconciled = await PlatePlanSyncEngine.syncPlatePlanWithFirestore(pid, pid === personId ? showToast : undefined);
             if (reconciled && active) {
-              setStore(current => ({
-                ...current,
-                [pid]: reconciled
-              }));
+              setStore(current => ({ ...current, [pid]: reconciled }));
             }
           } catch (err) {
             console.warn(`[PlatePlan Sync] Boot sync error for ${pid}:`, err);
           }
-        }
+        }));
         if (active) {
           setQueueCount(PlatePlanSyncEngine.getOfflineQueue().length);
         }
       };
       syncProfiles();
       return () => { active = false; };
-    }, [personId, showToast]);
+    }, []);
 
     // Offline Fallback, Mutation Queue Processor & Connectivity Watcher
     useEffect(() => {
@@ -8326,6 +7855,19 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
     // onSnapshot for active program (gym_users/{id}/active_program/current) and history logs
     // Ensures changes made on mobile immediately update desktop/laptop state!
     useEffect(() => {
+      const mergeMetricById = (existingList, incomingData, prefix) => {
+        const items = Array.isArray(incomingData) ? incomingData : [incomingData];
+        const map = new Map();
+        (existingList || []).forEach(item => { if (item) map.set(String(item.id || `${prefix}_${item.date}`), item); });
+        items.forEach(item => {
+          if (item) {
+            const key = String(item.id || `${prefix}_${item.date}`);
+            map.set(key, { ...(map.get(key) || {}), ...item });
+          }
+        });
+        return Array.from(map.values()).sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+      };
+
       const handleRemoteUpdate = (id, subCollection, remoteData) => {
         setStore(current => {
           if (!current[id]) return current;
@@ -8339,47 +7881,17 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
             return { ...current, [id]: next };
           }
           if (subCollection === "weight" || subCollection === "bodyweight") {
-            const items = Array.isArray(remoteData) ? remoteData : [remoteData];
-            const map = new Map();
-            (currentProfile.bodyWeightLogs || []).forEach(b => { if (b) map.set(String(b.id || `bw_${b.date}`), b); });
-            items.forEach(b => {
-              if (b) {
-                const key = String(b.id || `bw_${b.date}`);
-                map.set(key, { ...(map.get(key) || {}), ...b });
-              }
-            });
-            const merged = Array.from(map.values()).sort((a, b) => (a.date || "").localeCompare(b.date || ""));
-            const next = { ...currentProfile, bodyWeightLogs: merged, updatedAt: Date.now() };
+            const next = { ...currentProfile, bodyWeightLogs: mergeMetricById(currentProfile.bodyWeightLogs, remoteData, "bw"), updatedAt: Date.now() };
             savePlatePlanV1Local(id, next);
             return { ...current, [id]: next };
           }
           if (subCollection === "readiness") {
-            const items = Array.isArray(remoteData) ? remoteData : [remoteData];
-            const map = new Map();
-            (currentProfile.readinessLogs || []).forEach(r => { if (r) map.set(String(r.id || `r_${r.date}`), r); });
-            items.forEach(r => {
-              if (r) {
-                const key = String(r.id || `r_${r.date}`);
-                map.set(key, { ...(map.get(key) || {}), ...r });
-              }
-            });
-            const merged = Array.from(map.values()).sort((a, b) => (a.date || "").localeCompare(b.date || ""));
-            const next = { ...currentProfile, readinessLogs: merged, updatedAt: Date.now() };
+            const next = { ...currentProfile, readinessLogs: mergeMetricById(currentProfile.readinessLogs, remoteData, "r"), updatedAt: Date.now() };
             savePlatePlanV1Local(id, next);
             return { ...current, [id]: next };
           }
           if (subCollection === "sleep") {
-            const items = Array.isArray(remoteData) ? remoteData : [remoteData];
-            const map = new Map();
-            (currentProfile.sleepLogs || []).forEach(s => { if (s) map.set(String(s.id || `slp_${s.date}`), s); });
-            items.forEach(s => {
-              if (s) {
-                const key = String(s.id || `slp_${s.date}`);
-                map.set(key, { ...(map.get(key) || {}), ...s });
-              }
-            });
-            const merged = Array.from(map.values()).sort((a, b) => (a.date || "").localeCompare(b.date || ""));
-            const next = { ...currentProfile, sleepLogs: merged, updatedAt: Date.now() };
+            const next = { ...currentProfile, sleepLogs: mergeMetricById(currentProfile.sleepLogs, remoteData, "slp"), updatedAt: Date.now() };
             savePlatePlanV1Local(id, next);
             return { ...current, [id]: next };
           }
@@ -8388,20 +7900,21 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
             if (!shouldAcceptRemoteProgram(currentProfile, normalized)) {
               return current;
             }
-            // Decoupled: Updating active program MUST NEVER overwrite exercise history
-            const next = {
-              ...currentProfile,
-              programName: normalized.name || normalized.programName || currentProfile.programName || "Active Routine",
-              startDate: normalized.startDate || currentProfile.startDate,
-              goals: normalized.goals || currentProfile.goals,
-              resumeNote: normalized.resumeNote || currentProfile.resumeNote,
-              sessions: Array.isArray(normalized.sessions) && normalized.sessions.length ? normalized.sessions : currentProfile.sessions,
-              weekOverrides: normalized.weekOverrides || {},
-              weekOverridesUpdatedAt: Number(normalized.weekOverridesUpdatedAt || 0),
-              equipment: normalized.equipment || currentProfile.equipment,
-              programUpdatedAt: getProgramTime(normalized, true),
-              updatedAt: Math.max(Number(currentProfile.updatedAt || 0), Date.now())
-            };
+            const next = window.HG_PHYSIO_ENGINE?.mergeActiveProgramIntoProfile
+              ? window.HG_PHYSIO_ENGINE.mergeActiveProgramIntoProfile(currentProfile, normalized, getProgramTime(normalized, true))
+              : {
+                  ...currentProfile,
+                  programName: normalized.name || normalized.programName || currentProfile.programName || "Active Routine",
+                  startDate: normalized.startDate || currentProfile.startDate,
+                  goals: normalized.goals || currentProfile.goals,
+                  resumeNote: normalized.resumeNote || currentProfile.resumeNote,
+                  sessions: Array.isArray(normalized.sessions) && normalized.sessions.length ? normalized.sessions : currentProfile.sessions,
+                  weekOverrides: normalized.weekOverrides || {},
+                  weekOverridesUpdatedAt: Number(normalized.weekOverridesUpdatedAt || 0),
+                  equipment: normalized.equipment || currentProfile.equipment,
+                  programUpdatedAt: getProgramTime(normalized, true),
+                  updatedAt: Math.max(Number(currentProfile.updatedAt || 0), Date.now())
+                };
             savePlatePlanV1Local(id, next);
             I.Ee(id, next);
             syncLegacyStorage(id, next);
@@ -8473,9 +7986,6 @@ const PLATEPLAN_V1_KEY = "plateplan_v1";
       if (!I.J.includes(id)) return;
       try {
         localStorage.setItem("hg_active_profile", id);
-        localStorage.setItem("activeProfile", id);
-        localStorage.setItem("currentProfile", id);
-        localStorage.setItem("hg_selected_person", id);
       } catch {}
       // LocalStorage Priority: immediately hydrate in-memory React state directly from local dataset on switch
       const localData = loadDecoupledProfile(id);
