@@ -1,20 +1,3 @@
-/**
- * HomeGym Data Recovery & Inspection Utility
- * 
- * Requirements:
- * 1. LOCALSTORAGE SWEEP: Iterate over every key in window.localStorage. Search for key names
- *    or values containing terms like "gym", "workout", "weight", "sleep", "readiness",
- *    "history", "log", "user", or "plateplan". Print matching key names, byte sizes, and raw
- *    JSON previews to the browser console.
- * 2. INDEXEDDB SWEEP: Check for any IndexedDB databases under this domain. List all object store
- *    names and dump record counts.
- * 3. FIRESTORE SWEEP: If Firebase/Firestore is initialized, run a read scan on legacy paths
- *    (e.g., users/, households/, root documents, or previous collections) and log any existing
- *    document keys to the console.
- * 4. EXPORT FUNCTION: Expose a global function window.exportRecoveredData() that gathers all
- *    found payloads from LocalStorage, IndexedDB, and Firestore into a single downloadable JSON file.
- */
-
 (function () {
   "use strict";
 
@@ -216,51 +199,61 @@
 
     console.log(`Checking ${candidateNames.size} candidate IndexedDB database names under origin: ${window.location.origin}`);
 
-    for (const dbName of candidateNames) {
-      try {
-        const db = await openIndexedDb(dbName);
-        if (!db) continue;
+    await Promise.allSettled(
+      Array.from(candidateNames).map(async (dbName) => {
+        try {
+          const db = await openIndexedDb(dbName);
+          if (!db) return;
 
-        const storeNames = Array.from(db.objectStoreNames || []);
-        if (storeNames.length === 0) {
-          db.close();
-          continue;
-        }
+          const storeNames = Array.from(db.objectStoreNames || []);
+          if (storeNames.length === 0) {
+            db.close();
+            return;
+          }
 
-        idbPayloads[dbName] = {
-          name: dbName,
-          version: db.version,
-          stores: {}
-        };
+          idbPayloads[dbName] = {
+            name: dbName,
+            version: db.version,
+            stores: {}
+          };
 
-        console.group(
-          `%c🗄️ Database: "${dbName}" (v${db.version}) %c- ${storeNames.length} Object Store(s)`,
-          "color: #7c3aed; font-weight: bold;",
-          "color: #4b5563; font-weight: normal;"
-        );
-        console.log("Object Store List:", storeNames);
-
-        for (const storeName of storeNames) {
-          const res = await readObjectStore(db, storeName);
-          idbPayloads[dbName].stores[storeName] = res;
-
-          console.log(
-            `%c↳ Object Store: "${storeName}" %c| Total Records: ${res.count}`,
-            "color: #db2777; font-weight: bold;",
-            "color: #111827; font-weight: bold;"
+          const storeResults = await Promise.allSettled(
+            storeNames.map(async (storeName) => ({
+              storeName,
+              res: await readObjectStore(db, storeName)
+            }))
           );
 
-          if (res.records && res.records.length > 0) {
-            console.log(`Sample records from "${storeName}" (first ${Math.min(res.records.length, 5)}):`, res.records.slice(0, 5));
-          }
-        }
+          console.group(
+            `%c🗄️ Database: "${dbName}" (v${db.version}) %c- ${storeNames.length} Object Store(s)`,
+            "color: #7c3aed; font-weight: bold;",
+            "color: #4b5563; font-weight: normal;"
+          );
+          console.log("Object Store List:", storeNames);
 
-        console.groupEnd();
-        db.close();
-      } catch (e) {
-        // Continue to next candidate
-      }
-    }
+          for (const outcome of storeResults) {
+            if (outcome.status !== "fulfilled") continue;
+            const { storeName, res } = outcome.value;
+            idbPayloads[dbName].stores[storeName] = res;
+
+            console.log(
+              `%c↳ Object Store: "${storeName}" %c| Total Records: ${res.count}`,
+              "color: #db2777; font-weight: bold;",
+              "color: #111827; font-weight: bold;"
+            );
+
+            if (res.records && res.records.length > 0) {
+              console.log(`Sample records from "${storeName}" (first ${Math.min(res.records.length, 5)}):`, res.records.slice(0, 5));
+            }
+          }
+
+          console.groupEnd();
+          db.close();
+        } catch (e) {
+          // Continue to next candidate
+        }
+      })
+    );
 
     const foundCount = Object.keys(idbPayloads).length;
     console.log(
@@ -290,10 +283,10 @@
 
     if (window.firebase) {
       try {
-        if (!window.firebase.apps || !window.firebase.apps.length) {
-          if (window.FIREBASE_CONFIG) {
-            window.firebase.initializeApp(window.FIREBASE_CONFIG);
-          }
+        if (typeof window.HG_ensureFirebaseApp === "function") {
+          window.HG_ensureFirebaseApp();
+        } else if ((!window.firebase.apps || !window.firebase.apps.length) && window.FIREBASE_CONFIG) {
+          window.firebase.initializeApp(window.FIREBASE_CONFIG);
         }
         if (typeof window.firebase.firestore === "function") {
           fs = window.firebase.firestore();
@@ -312,7 +305,6 @@
       return { firestore: firestoreResults, realtimeDatabase: rtdbResults };
     }
 
-    // Root collections to probe
     const rootCollections = [
       "users",
       "gym_users",
@@ -328,41 +320,42 @@
 
     const knownProfiles = new Set(["elliott", "chloe"]);
 
-    for (const colName of rootCollections) {
-      try {
-        const snap = await fs.collection(colName).get();
-        if (!snap.empty) {
-          console.group(
-            `%c📂 Collection: "${colName}" %c(${snap.docs.length} document(s))`,
-            "color: #d97706; font-weight: bold;",
-            "color: #4b5563; font-weight: normal;"
-          );
-          snap.forEach(doc => {
-            const docKey = `${colName}/${doc.id}`;
-            const docData = doc.data();
-            firestoreResults[docKey] = docData;
-
-            console.log(
-              `%c📄 Document Key: "${doc.id}" %c[Path: ${docKey}]`,
-              "color: #059669; font-weight: bold;",
-              "color: #64748b; font-weight: normal;",
-              docData
+    await Promise.allSettled(
+      rootCollections.map(async (colName) => {
+        try {
+          const snap = await fs.collection(colName).get();
+          if (!snap.empty) {
+            console.group(
+              `%c📂 Collection: "${colName}" %c(${snap.docs.length} document(s))`,
+              "color: #d97706; font-weight: bold;",
+              "color: #4b5563; font-weight: normal;"
             );
+            snap.forEach(doc => {
+              const docKey = `${colName}/${doc.id}`;
+              const docData = doc.data();
+              firestoreResults[docKey] = docData;
 
-            if (colName === "users" || colName === "gym_users") {
-              knownProfiles.add(doc.id);
-            }
-          });
-          console.groupEnd();
-        } else {
-          console.log(`Collection "${colName}" queried: 0 documents (empty).`);
+              console.log(
+                `%c📄 Document Key: "${doc.id}" %c[Path: ${docKey}]`,
+                "color: #059669; font-weight: bold;",
+                "color: #64748b; font-weight: normal;",
+                docData
+              );
+
+              if (colName === "users" || colName === "gym_users") {
+                knownProfiles.add(doc.id);
+              }
+            });
+            console.groupEnd();
+          } else {
+            console.log(`Collection "${colName}" queried: 0 documents (empty).`);
+          }
+        } catch (colErr) {
+          console.log(`Collection "${colName}": ${colErr?.message || "Not found or restricted"}`);
         }
-      } catch (colErr) {
-        console.log(`Collection "${colName}": ${colErr?.message || "Not found or restricted"}`);
-      }
-    }
+      })
+    );
 
-    // Subcollections scan for users/ and gym_users/
     const subcollections = [
       "logs",
       "programs",
@@ -376,51 +369,56 @@
 
     console.log(`Scanning subcollections for ${knownProfiles.size} profile(s):`, Array.from(knownProfiles));
 
+    const subQueries = [];
     for (const profileId of knownProfiles) {
       for (const parentCol of ["users", "gym_users"]) {
         for (const subCol of subcollections) {
-          try {
-            const subSnap = await fs.collection(parentCol).doc(profileId).collection(subCol).get();
-            if (!subSnap.empty) {
-              console.group(
-                `%c📂 Subcollection: "${parentCol}/${profileId}/${subCol}" %c(${subSnap.docs.length} doc(s))`,
-                "color: #d97706; font-weight: bold;",
-                "color: #4b5563; font-weight: normal;"
-              );
-              subSnap.forEach(doc => {
-                const subKey = `${parentCol}/${profileId}/${subCol}/${doc.id}`;
-                const subData = doc.data();
-                firestoreResults[subKey] = subData;
-                console.log(
-                  `%c📄 Sub-Doc Key: "${doc.id}" %c[Path: ${subKey}]`,
-                  "color: #059669; font-weight: bold;",
-                  "color: #64748b; font-weight: normal;",
-                  subData
+          subQueries.push(async () => {
+            try {
+              const subSnap = await fs.collection(parentCol).doc(profileId).collection(subCol).get();
+              if (!subSnap.empty) {
+                console.group(
+                  `%c📂 Subcollection: "${parentCol}/${profileId}/${subCol}" %c(${subSnap.docs.length} doc(s))`,
+                  "color: #d97706; font-weight: bold;",
+                  "color: #4b5563; font-weight: normal;"
                 );
-              });
-              console.groupEnd();
+                subSnap.forEach(doc => {
+                  const subKey = `${parentCol}/${profileId}/${subCol}/${doc.id}`;
+                  const subData = doc.data();
+                  firestoreResults[subKey] = subData;
+                  console.log(
+                    `%c📄 Sub-Doc Key: "${doc.id}" %c[Path: ${subKey}]`,
+                    "color: #059669; font-weight: bold;",
+                    "color: #64748b; font-weight: normal;",
+                    subData
+                  );
+                });
+                console.groupEnd();
+              }
+            } catch (subErr) {
+              // Quietly handle non-existent subcollection
             }
-          } catch (subErr) {
-            // Quietly handle non-existent subcollection
-          }
+          });
         }
       }
     }
+    await Promise.allSettled(subQueries.map(fn => fn()));
 
-    // Optional RTDB sweep for completeness
     if (rtdb) {
       console.log("Probing Firebase Realtime Database legacy paths...");
       const rtdbPaths = ["users", "gym_users", "households", "household", "plateplan"];
-      for (const path of rtdbPaths) {
-        try {
-          const snap = await rtdb.ref(path).once("value");
-          const val = snap.val();
-          if (val) {
-            rtdbResults[path] = val;
-            console.log(`%c🔥 RTDB Path: "/${path}" found:`, "color: #ea580c; font-weight: bold;", val);
-          }
-        } catch (e) {}
-      }
+      await Promise.allSettled(
+        rtdbPaths.map(async (path) => {
+          try {
+            const snap = await rtdb.ref(path).once("value");
+            const val = snap.val();
+            if (val) {
+              rtdbResults[path] = val;
+              console.log(`%c🔥 RTDB Path: "/${path}" found:`, "color: #ea580c; font-weight: bold;", val);
+            }
+          } catch (e) {}
+        })
+      );
     }
 
     console.log(
@@ -507,23 +505,25 @@
     if (options.download !== false) {
       try {
         const jsonContent = JSON.stringify(exportBundle, null, 2);
-        const blob = new Blob([jsonContent], { type: "application/json;charset=utf-8" });
-        const downloadUrl = URL.createObjectURL(blob);
         const filename = `homegym-recovered-data-${fileTimestamp}.json`;
-
-        const link = document.createElement("a");
-        link.href = downloadUrl;
-        link.download = filename;
-        document.body.appendChild(link);
-        link.click();
-
-        setTimeout(() => {
-          document.body.removeChild(link);
-          URL.revokeObjectURL(downloadUrl);
-        }, 800);
+        if (typeof window.HG_downloadFile === "function") {
+          window.HG_downloadFile(jsonContent, filename, "application/json;charset=utf-8");
+        } else {
+          const blob = new Blob([jsonContent], { type: "application/json;charset=utf-8" });
+          const downloadUrl = URL.createObjectURL(blob);
+          const link = document.createElement("a");
+          link.href = downloadUrl;
+          link.download = filename;
+          document.body.appendChild(link);
+          link.click();
+          setTimeout(() => {
+            document.body.removeChild(link);
+            URL.revokeObjectURL(downloadUrl);
+          }, 800);
+        }
 
         console.log(
-          `%c✅ SUCCESS: Exported recovered data to "${filename}" (${formatBytes(blob.size)})`,
+          `%c✅ SUCCESS: Exported recovered data to "${filename}" (${formatBytes(jsonContent.length)})`,
           "color: #059669; font-weight: bold; font-size: 13px;"
         );
       } catch (err) {
@@ -534,7 +534,6 @@
     return exportBundle;
   }
 
-  // Expose globally to window
   window.exportRecoveredData = exportRecoveredData;
   window.runDataRecoveryInspection = runDataRecoveryInspection;
   window.HomeGymRecovery = {
@@ -546,7 +545,6 @@
     version: "2.4.0"
   };
 
-  // Welcome banner and initial passive inspection run
   console.log(
     "%c[HomeGym Recovery Utility v2.4.0 Ready]%c Global functions: %cwindow.exportRecoveredData()%c & %cwindow.runDataRecoveryInspection()",
     "color: #2563eb; font-weight: bold;",
@@ -555,13 +553,4 @@
     "color: #4b5563;",
     "color: #7c3aed; font-weight: bold;"
   );
-
-  // Automatically execute the inspection sweep on startup
-  if (document.readyState === "complete" || document.readyState === "interactive") {
-    setTimeout(runDataRecoveryInspection, 600);
-  } else {
-    window.addEventListener("DOMContentLoaded", () => {
-      setTimeout(runDataRecoveryInspection, 600);
-    });
-  }
 })();

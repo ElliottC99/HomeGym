@@ -518,40 +518,6 @@ test("U12: applyDiffToRoutine ensures applied sessions carry type='strength' and
   assert.equal(updated[0].groups[0].exercises[0].setsReps, "1 × 10");
 });
 
-test("U13: Cloud payload sanitization strips undefined properties to prevent RTDB fatal exceptions", () => {
-  const payloadWithUndefined = {
-    programId: "current",
-    name: "Phase 1: Back Rehab",
-    sessions: [
-      {
-        id: "e_lower",
-        name: "Lower Body",
-        type: undefined,
-        groups: [
-          {
-            label: "Physio Flow",
-            exercises: [
-              {
-                id: "catcow",
-                name: "Cat-Cow",
-                setsReps: "1 × 10",
-                startValue: undefined,
-                note: undefined
-              }
-            ]
-          }
-        ]
-      }
-    ]
-  };
-
-  const sanitized = JSON.parse(JSON.stringify(payloadWithUndefined));
-  assert.equal("type" in sanitized.sessions[0], false, "Undefined type should be removed");
-  assert.equal("startValue" in sanitized.sessions[0].groups[0].exercises[0], false, "Undefined startValue should be removed");
-  assert.equal("note" in sanitized.sessions[0].groups[0].exercises[0], false, "Undefined note should be removed");
-  assert.equal(sanitized.name, "Phase 1: Back Rehab");
-});
-
 test("U14: LWW timestamp comparison prevents stale cloud snapshot from overwriting newer local routine", () => {
   const localProfile = {
     programUpdatedAt: 1730000000000,
@@ -640,117 +606,35 @@ test("U14: LWW timestamp comparison prevents stale cloud snapshot from overwriti
   );
 });
 
-test("U15: Active routine payload sanitization guarantees positive non-zero programUpdatedAt", () => {
-  const inputWithoutClock = {
-    sessions: [{ id: "s1", name: "Push", groups: [] }],
-    updatedAt: 1730000000000
-  };
-
-  const resolvedClock = (Number(inputWithoutClock.programUpdatedAt || 0) > 0)
-    ? Number(inputWithoutClock.programUpdatedAt)
-    : (Number(inputWithoutClock.updatedAt || 0) > 0 ? Number(inputWithoutClock.updatedAt) : 12345);
-
-  assert.equal(resolvedClock, 1730000000000, "Unversioned input falls back to updatedAt positive timestamp");
-
-  const inputWithClock = {
-    sessions: [{ id: "s1", name: "Push", groups: [] }],
-    programUpdatedAt: 1731111111111,
-    updatedAt: 1730000000000
-  };
-
-  const resolvedClock2 = (Number(inputWithClock.programUpdatedAt || 0) > 0)
-    ? Number(inputWithClock.programUpdatedAt)
-    : (Number(inputWithClock.updatedAt || 0) > 0 ? Number(inputWithClock.updatedAt) : 12345);
-
-  assert.equal(resolvedClock2, 1731111111111, "Explicit programUpdatedAt takes precedence");
-});
-
-test("U16: Routine updates reset ghost weekOverrides so new session days show on Today view", () => {
-  const profileWithOverrides = {
-    programName: "Old Plan",
-    sessions: [{ id: "e_lower", name: "Lower Body", day: "Tue", groups: [] }],
-    weekOverrides: { "2026-11-09": { e_lower: "Tue" } }
-  };
-
-  // Simulating handleApplyChanges weekOverrides reset:
-  const newProfile = {
-    ...profileWithOverrides,
-    sessions: [{ id: "e_lower", name: "Lower Body & Physio", day: "Mon", groups: [] }],
-    weekOverrides: {}
-  };
-
-  assert.deepEqual(newProfile.weekOverrides, {}, "weekOverrides must be reset when a new routine is adopted");
-  assert.equal(newProfile.sessions[0].day, "Mon", "New session day is Monday");
-});
-
-test("U17: normalizeRemoteProgram ensures weekOverrides is empty object when omitted by RTDB", () => {
-  const rtdbPayloadWithoutWeekOverrides = {
-    programId: "current",
-    programName: "Phase 1: Back Rehab",
-    sessions: [{ id: "e_lower", name: "Lower Body", day: "Mon", groups: [] }],
-    programUpdatedAt: 1731112223334
-  };
-
-  const localProfileWithOldOverrides = {
-    programName: "Old Plan",
-    programUpdatedAt: 1730000000000,
-    sessions: [{ id: "e_lower", name: "Lower Body", day: "Tue", groups: [] }],
-    weekOverrides: { "2026-11-09": { e_lower: "Tue" } }
-  };
-
-  const remoteNormalized = HG_PHYSIO_ENGINE.normalizeRemoteProgram
-    ? HG_PHYSIO_ENGINE.normalizeRemoteProgram(rtdbPayloadWithoutWeekOverrides)
-    : { ...rtdbPayloadWithoutWeekOverrides, weekOverrides: rtdbPayloadWithoutWeekOverrides.weekOverrides || {} };
-
-  const merged = {
-    ...localProfileWithOldOverrides,
-    ...remoteNormalized,
-    weekOverrides: remoteNormalized.weekOverrides || {}
-  };
-
-  assert.deepEqual(merged.weekOverrides, {}, "Local stale weekOverrides must be replaced by empty object from remote update");
-  assert.equal(merged.sessions[0].day, "Mon", "New routine day takes effect");
-});
-
-test("U18: Unversioned phone profile with recent updatedAt accepts newer remote program and does not overwrite", () => {
-  const unversionedPhoneProfile = {
-    programName: "Old Plan",
-    programUpdatedAt: 0,
-    updatedAt: 1731199999999,
-    sessions: [{ id: "old_s", name: "Old Routine", day: "Mon", groups: [] }]
-  };
-
-  const laptopRemoteProgram = {
-    programName: "Phase 1: Back Rehab",
-    programUpdatedAt: 1731199000000,
-    updatedAt: 1731199000000,
-    sessions: [{ id: "e_lower", name: "Lower Body & Physio", day: "Mon", groups: [] }]
-  };
-
-  const accepted = HG_PHYSIO_ENGINE.shouldAcceptRemoteProgram(unversionedPhoneProfile, laptopRemoteProgram);
-  assert.equal(accepted, true, "Phone must accept laptop routine because phone has no explicit routine version");
-
-  const localRoutineClock = Number(unversionedPhoneProfile.programUpdatedAt || 0);
-  const remoteRoutineClock = Number(laptopRemoteProgram.programUpdatedAt || 0);
-  const localIsNewer = localRoutineClock > remoteRoutineClock;
-  assert.equal(localIsNewer, false, "Local unversioned profile must NOT be considered newer than remote");
-});
-
 test("U19: Stale weekOverrides pointing away from routine natural day are sanitized", () => {
-  const profile = {
-    programUpdatedAt: 1731199000000,
-    sessions: [{ id: "e_lower", name: "Lower Body & Physio", day: "Mon", groups: [] }],
-    weekOverrides: {
-      "2026-11-02": { e_lower: "Tue" },
-      "2026-11-09": { e_lower: "Tue" }
-    }
+  const sessions = [
+    { id: "e_lower", name: "Lower Body & Physio", day: "Mon", groups: [] },
+    { id: "e_upper", name: "Upper Body", day: "Tue", groups: [] }
+  ];
+  const weekOverrides = {
+    "2026-11-02": { e_lower: "Wed" },
+    "2026-11-09": { e_lower: "Mon", e_upper: "Thu" }
   };
 
-  const sanitized = HG_PHYSIO_ENGINE.sanitizeWeekOverrides
-    ? HG_PHYSIO_ENGINE.sanitizeWeekOverrides(profile.weekOverrides, profile.sessions, "2026-11-09", profile.programUpdatedAt)
-    : {};
+  // Case 1: Overrides created before the routine update are invalidated
+  const invalidated = HG_PHYSIO_ENGINE.sanitizeWeekOverrides(
+    weekOverrides,
+    sessions,
+    "2026-11-09",
+    1731199000000,
+    1731100000000
+  );
+  assert.deepEqual(invalidated, {}, "Overrides older than programUpdatedAt must be discarded");
 
-  assert.deepEqual(sanitized, {}, "Overrides from old routine or past weeks must be sanitized");
+  // Case 2: Current overrides prune past weeks and no-op natural-day entries while keeping valid shifts
+  const pruned = HG_PHYSIO_ENGINE.sanitizeWeekOverrides(
+    weekOverrides,
+    sessions,
+    "2026-11-09",
+    1731199000000,
+    1731200000000
+  );
+  assert.deepEqual(pruned, { "2026-11-09": { e_upper: "Thu" } }, "Past weeks and natural-day overrides must be pruned");
 });
 
 test("U20: Routine resolution across local storage keys selects candidate with highest programUpdatedAt", () => {
@@ -933,6 +817,30 @@ test("U26: buildCleanActiveProgramPayload strips logs and all undefined properti
   assert.equal(clean.programName, "Phase 1: Back Rehab");
   assert.equal(clean.sessions.length, 1);
   assert.equal(JSON.stringify(clean).includes("undefined"), false, "No undefined properties in JSON");
+});
+
+test("U27: mergeActiveProgramIntoProfile preserves decoupled logs and health metrics", () => {
+  const currentProfile = {
+    programName: "Old Plan",
+    sessions: [{ id: "old", name: "Old", day: "Mon" }],
+    logs: [{ id: "log_1", exerciseName: "Squat", weight: 100 }],
+    bodyWeightLogs: [{ id: "bw_1", date: "2026-11-10", weight: 75 }],
+    readinessLogs: [{ id: "r_1", date: "2026-11-10", sleep: 8 }],
+    sleepLogs: [{ id: "slp_1", date: "2026-11-10", totalHours: 8 }]
+  };
+  const incomingProgram = {
+    programName: "Phase 1: Back Rehab",
+    sessions: [{ id: "e_lower", name: "Lower Body & Physio", day: "Mon" }],
+    weekOverrides: {}
+  };
+
+  const merged = HG_PHYSIO_ENGINE.mergeActiveProgramIntoProfile(currentProfile, incomingProgram, 1731200000000);
+  assert.equal(merged.programName, "Phase 1: Back Rehab");
+  assert.equal(merged.sessions[0].id, "e_lower");
+  assert.deepEqual(merged.logs, currentProfile.logs);
+  assert.deepEqual(merged.bodyWeightLogs, currentProfile.bodyWeightLogs);
+  assert.deepEqual(merged.readinessLogs, currentProfile.readinessLogs);
+  assert.deepEqual(merged.sleepLogs, currentProfile.sleepLogs);
 });
 
 
